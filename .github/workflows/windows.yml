@@ -62,6 +62,7 @@ jobs:
         run: |
           npm --prefix app run typecheck
           npm --prefix app run check:lipsync
+          npm --prefix app run check:script
 
       - name: A.I.VOICE 補助プロセスのテスト（偽の API で）
         shell: pwsh
