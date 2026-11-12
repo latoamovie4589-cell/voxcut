@@ -11,13 +11,16 @@ import {ResizeHandle, useResizable} from '@astryxdesign/core/Resizable';
 import {Section} from '@astryxdesign/core/Section';
 import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
-import {AudioLines, Menu, TriangleAlert, Upload} from 'lucide-react';
+import {AudioLines, Menu, Redo2, Save, TriangleAlert, Undo2, Upload} from 'lucide-react';
+import {IconButton} from '@astryxdesign/core/IconButton';
 import {framesToTimecode, projectDuration} from './model';
 import {copySelection, cutSelection, deleteClips, duplicateSelection, editableSelection, getState, hasClipboard, pasteClipboard, redo, selectAllClips, setState, splitClip, undo, useStore} from './store';
 import {boot, newProjectAction, openProject, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {ExportDialog} from './panels/ExportDialog';
 import {PasteScriptDialog} from './panels/PasteScriptDialog';
 import {DictionaryDialog} from './panels/DictionaryDialog';
+import {ShortcutsDialog} from './panels/ShortcutsDialog';
+import {useFileDrop} from './drop';
 import {api, setDirtyGetter} from './ipc';
 import {Timeline} from './timeline/Timeline';
 import {Preview} from './preview/Preview';
@@ -137,7 +140,12 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
             <DropdownMenuItem label="台本を貼り付け…" onClick={() => setState({pasteOpen: true})} />
             <DropdownMenuItem label="読み方の辞書…" onClick={() => setState({dictionaryOpen: true})} />
             <DropdownMenuItem label="設定…" onClick={openSettings} />
+            <DropdownMenuItem label="キーボードショートカット" endContent={<Text type="supporting">?</Text>} onClick={() => setState({shortcutsOpen: true})} />
           </DropdownMenu>
+          {/* よく使う操作は、メニューを開かなくても押せるように */}
+          <IconButton label="保存" tooltip={`保存（${mod}S）`} variant="ghost" size="sm" icon={<Icon icon={Save} />} clickAction={() => saveProject(notify)} />
+          <IconButton label="元に戻す" tooltip={`元に戻す（${mod}Z）`} variant="ghost" size="sm" icon={<Icon icon={Undo2} />} isDisabled={!canUndo} onClick={undo} />
+          <IconButton label="やり直す" tooltip={`やり直す（${isMac ? '⇧⌘Z' : 'Ctrl+Y'}）`} variant="ghost" size="sm" icon={<Icon icon={Redo2} />} isDisabled={!canRedo} onClick={redo} />
           <Text type="label" maxLines={1}>
             {project?.name ?? 'VoxCut'}
           </Text>
@@ -212,6 +220,9 @@ export function App() {
     return () => off?.();
   }, []);
 
+  useFileDrop(notify);
+  const dropActive = useStore(s => s.dropActive);
+
   useEffect(() => {
     setNotify(notify);
     setClearNotice(key => {
@@ -248,6 +259,9 @@ export function App() {
         void toggleFullscreen();
       } else if (typing) {
         return;
+      } else if (e.key === '?' || (m && e.key === '/')) {
+        e.preventDefault();
+        setState({shortcutsOpen: true});
       } else if (m && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -348,6 +362,15 @@ export function App() {
       <SettingsDialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} notify={notify} />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />
+      <ShortcutsDialog />
+      {dropActive && (
+        <div className="vx-drop" aria-hidden>
+          <div className="vx-drop-card">
+            <Text type="label">ここに放すと追加します</Text>
+            <Text type="supporting">画像・動画・音声は再生位置に。.voxcut は開き、.voxchar はキャラクターとして読み込みます</Text>
+          </div>
+        </div>
+      )}
       <DictionaryDialog notify={notify} />
     </Section>
   );

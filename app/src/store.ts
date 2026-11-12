@@ -53,6 +53,10 @@ export interface State {
   /** 台本の貼り付け画面に最初に入れておく文（セリフ入力欄に複数行を貼ったとき） */
   pasteText: string;
   dictionaryOpen: boolean;
+  /** キーボードショートカットの一覧を開いているか */
+  shortcutsOpen: boolean;
+  /** ファイルをドラッグして画面の上にいるか */
+  dropActive: boolean;
   /** 複数選択しているクリップ（selectedClipId も含む） */
   selectedClipIds: string[];
   /** 読み方の辞書 */
@@ -91,6 +95,8 @@ let state: State = {
   pasteOpen: false,
   pasteText: '',
   dictionaryOpen: false,
+  shortcutsOpen: false,
+  dropActive: false,
   selectedClipIds: [],
   dictionary: [],
   past: [],

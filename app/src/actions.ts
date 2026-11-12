@@ -24,8 +24,12 @@ export const clearNotice = (key: string) => clearRef(key);
 
 /** 素材を選んで再生位置に追加 */
 export async function addMedia() {
+  await addMediaPaths(await (await api).pickMedia('media', true));
+}
+
+/** パスを指定して素材を追加（選んだ・ドロップしたファイル） */
+export async function addMediaPaths(paths: string[]) {
   const a = await api;
-  const paths = await a.pickMedia('media', true);
   const items: {path: string; info: MediaInfo}[] = [];
   for (const path of paths) {
     try {
@@ -86,9 +90,9 @@ export async function exportCharacterFile(characterId: string, notify: Notify) {
   }
 }
 
-export async function importCharacterFile(notify: Notify) {
+export async function importCharacterFile(notify: Notify, given?: string) {
   const a = await api;
-  const path = await a.pickCharacterPath('open');
+  const path = given ?? (await a.pickCharacterPath('open'));
   if (!path) return;
   try {
     const ch = await a.importCharacter(path);
