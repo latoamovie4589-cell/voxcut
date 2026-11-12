@@ -18,7 +18,7 @@ import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
 import {Eye, EyeOff, ImagePlus, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {framesToSpoken, framesToTimecode, projectDuration} from '../model';
-import {getState, moveClip, removeTrack, setState, trimClip, updateTrack, addTrack, useStore} from '../store';
+import {getState, moveClip, moveClips, removeTrack, selectClip, setState, trimClip, updateTrack, addTrack, useStore} from '../store';
 import {getPeaks, onPeaks} from '../peaks';
 import {addMedia} from '../actions';
 import './timeline.css';
@@ -116,6 +116,8 @@ interface Drag {
   moved: boolean;
   targets: number[];
   snappedAt: number | null;
+  /** 一緒に動かす、ほかの選択中のクリップ（同じだけずらす） */
+  group: string[];
 }
 
 function nearest(targets: number[], f: number): number | null {
@@ -144,7 +146,7 @@ function TrackHeader({track}: {track: Track}) {
           </Text>
         )}
         <Text type="supporting" maxLines={1}>
-          {track.kind === 'voice' ? '音声と字幕' : '画像・動画・音声'}
+          {track.kind === 'voice' ? '音声と字幕' : track.duck ? '音量を自動調整' : '画像・動画・音声'}
         </Text>
       </VStack>
       <HStack gap={0} vAlign="center">
@@ -168,7 +170,28 @@ function TrackHeader({track}: {track: Track}) {
           label={`${track.name}のメニュー`}
           size="sm"
           items={[
-            ...(track.kind === 'media' ? [{label: '素材を追加…', onClick: () => void addMedia()}] : []),
+            ...(track.kind === 'media'
+              ? [
+                  {label: '素材を追加…', onClick: () => void addMedia()},
+                  {type: 'divider' as const},
+                  {
+                    label: track.duck ? '✓ セリフ中は音を下げる' : 'セリフ中は音を下げる',
+                    description: 'BGM がセリフの邪魔にならないよう、自動で下げます',
+                    onClick: () => updateTrack(track.id, {duck: !track.duck}),
+                  },
+                  ...(track.duck
+                    ? ([
+                        ['少し下げる', 0.5],
+                        ['下げる', 0.3],
+                        ['大きく下げる', 0.15],
+                      ] as const).map(([l, v]) => ({
+                        label: `${Math.abs(track.duckLevel - v) < 0.01 ? '✓ ' : '　 '}${l}（${Math.round(v * 100)}%）`,
+                        onClick: () => updateTrack(track.id, {duckLevel: v}),
+                      }))
+                    : []),
+                  {type: 'divider' as const},
+                ]
+              : []),
             {label: '名前を変える', onClick: () => setEditing(true)},
             {type: 'divider'},
             {label: 'このトラックを消す', variant: 'destructive', onClick: () => removeTrack(track.id)},
@@ -253,9 +276,55 @@ export function Timeline() {
       const drag = dragRef.current;
       const hover = hoverRef.current;
       const fps = p.video.fps;
+      const selSet = new Set(s.selectedClipIds);
+      const groupSet = new Set(drag?.mode === 'move' && drag.moved ? drag.group : []);
+      const delta = drag ? drag.start - drag.origStart : 0;
+
+      // ドラッグ中：元の場所を薄い破線で残し、落とす先で既存のクリップに重なるなら「ここに挿入」の印を出す
+      if (drag?.mode === 'move' && drag.moved) {
+        const oi = p.tracks.findIndex(t => t.id === drag.origTrack);
+        if (oi >= 0) {
+          ctx.save();
+          ctx.globalAlpha = 0.5;
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = pal.text2;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(X(drag.origStart), Y(oi) + 4, Math.max(2, drag.origDuration * z - 2), TRACK_H[p.tracks[oi].kind] - 8, 6);
+          ctx.stroke();
+          ctx.restore();
+        }
+        const ti = p.tracks.findIndex(t => t.id === drag.trackId);
+        const moving = new Set([drag.clipId, ...drag.group]);
+        const hit = p.clips.some(
+          c => c.trackId === drag.trackId && !moving.has(c.id) && drag.start < c.start + c.duration && drag.start + drag.duration > c.start,
+        );
+        if (ti >= 0 && hit) {
+          const ix = Math.round(X(drag.start));
+          const ty = Y(ti);
+          ctx.fillStyle = pal.accent;
+          ctx.fillRect(ix - 1.5, ty + 1, 3, TRACK_H[p.tracks[ti].kind] - 2);
+          ctx.beginPath();
+          ctx.moveTo(ix - 6, ty + 1);
+          ctx.lineTo(ix + 6, ty + 1);
+          ctx.lineTo(ix, ty + 8);
+          ctx.fill();
+          ctx.font = `600 11px ${FONT}`;
+          ctx.textBaseline = 'top';
+          const label = '挿入（後ろを押し出す）';
+          const lw = ctx.measureText(label).width + 10;
+          ctx.beginPath();
+          ctx.roundRect(ix + 6, ty + TRACK_H[p.tracks[ti].kind] - 22, lw, 17, 8.5);
+          ctx.fill();
+          ctx.fillStyle = pal.bg;
+          ctx.fillText(label, ix + 11, ty + TRACK_H[p.tracks[ti].kind] - 19.5);
+        }
+      }
+
       for (const c of p.clips) {
         const isDragged = drag?.clipId === c.id;
-        const start = isDragged ? drag.start : c.start;
+        const inGroup = groupSet.has(c.id);
+        const start = isDragged ? drag.start : inGroup ? Math.max(0, c.start + delta) : c.start;
         const dur = isDragged ? drag.duration : c.duration;
         if (start + dur < f0 || start > f1) continue;
         const ti = p.tracks.findIndex(t => t.id === (isDragged ? drag.trackId : c.trackId));
@@ -268,7 +337,7 @@ export function Timeline() {
         const ch = th - 8;
         if (y + ch < RULER_H || y > h) continue;
         const color = clipColor(p, c);
-        const isSel = c.id === s.selectedClipId;
+        const isSel = selSet.has(c.id);
         const unsynth = c.type === 'voice' && !c.audio;
         const failed = !!s.synthErrors[c.id];
 
@@ -403,7 +472,8 @@ export function Timeline() {
     });
   }, []);
 
-  useEffect(draw, [draw, project, selected, playhead, zoom, proxies, synthErrors]);
+  const selectedIds = useStore(s => s.selectedClipIds);
+  useEffect(draw, [draw, project, selected, selectedIds, playhead, zoom, proxies, synthErrors]);
   useEffect(() => onPeaks(draw), [draw]);
 
   // 再生中は再生位置が見えるようにスクロールを追従
@@ -520,13 +590,27 @@ export function Timeline() {
       dragRef.current = null;
       return;
     }
+    const mod = e.ctrlKey || e.metaKey;
+    // Ctrl+クリック：選択に足す／外す。Shift+クリック：同じトラックの間をまとめて選ぶ
+    if (mod || e.shiftKey) {
+      selectClip(h.clip.id, mod ? 'toggle' : 'range');
+      dragRef.current = null;
+      return;
+    }
+    const before = getState();
+    // 選んでいる中のクリップをつかんだら、選択はそのまま（まとめて動かす）
+    if (before.selectedClipIds.length > 1 && before.selectedClipIds.includes(h.clip.id)) setState({selectedClipId: h.clip.id, selectedClipIds: before.selectedClipIds});
+    else setState({selectedClipId: h.clip.id});
     const s = getState();
     const p = s.project!;
-    setState({selectedClipId: h.clip.id});
     if (h.track?.locked) return;
+    const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+    const group = h.mode === 'move' ? s.selectedClipIds.filter(id => id !== h.clip!.id && !locked.has(p.clips.find(c => c.id === id)?.trackId ?? '')) : [];
+    const moving = new Set([h.clip.id, ...group]);
     const targets = [0, s.playhead];
-    for (const c of p.clips) if (c.id !== h.clip.id) targets.push(c.start, c.start + c.duration);
+    for (const c of p.clips) if (!moving.has(c.id)) targets.push(c.start, c.start + c.duration);
     dragRef.current = {
+      group,
       clipId: h.clip.id,
       mode: h.mode,
       startX: e.clientX,
@@ -582,11 +666,17 @@ export function Timeline() {
       }
       d.start = start;
       d.duration = d.origDuration;
-      // 上下に動かすと、同じ種類のトラックへ移る
+      // まとめて動かすときは、先頭が 0 より前に出ないようにする
+      if (d.group.length) {
+        const p0 = getState().project!;
+        const minOther = Math.min(...d.group.map(id => p0.clips.find(c => c.id === id)?.start ?? Infinity));
+        d.start = Math.max(d.start, d.origStart - minOther);
+      }
+      // 上下に動かすと、同じ種類のトラックへ移る（1 つだけ動かすとき）
       const h = hitTest(e.clientX, e.clientY);
       const p = getState().project!;
       const origKind = p.tracks.find(t => t.id === d.origTrack)?.kind;
-      if (h.track && h.track.kind === origKind && !h.track.locked) {
+      if (!d.group.length && h.track && h.track.kind === origKind && !h.track.locked) {
         if (h.track.id !== d.trackId) d.moved = true;
         d.trackId = h.track.id;
       }
@@ -617,8 +707,12 @@ export function Timeline() {
     const d = dragRef.current;
     dragRef.current = null;
     if (d?.moved && (d.start !== d.origStart || d.duration !== d.origDuration || d.trackId !== d.origTrack)) {
-      if (d.mode === 'move') moveClip(d.clipId, d.start, d.trackId);
+      if (d.mode === 'move' && d.group.length) moveClips([d.clipId, ...d.group], d.start - d.origStart);
+      else if (d.mode === 'move') moveClip(d.clipId, d.start, d.trackId);
       else trimClip(d.clipId, d.start, d.duration);
+    } else if (d && !d.moved && d.group.length) {
+      // 動かさずに離したら、そのクリップだけを選ぶ
+      setState({selectedClipId: d.clipId});
     } else draw();
   };
 
@@ -637,8 +731,14 @@ export function Timeline() {
     const mod = e.ctrlKey || e.metaKey;
     const nudge = (dir: number, big: boolean) => {
       if (!sel) return;
+      const n = dir * (big ? fps : 1);
+      if (s.selectedClipIds.length > 1) {
+        const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+        moveClips(p.clips.filter(c => s.selectedClipIds.includes(c.id) && !locked.has(c.trackId)).map(c => c.id), n);
+        return;
+      }
       const track = p.tracks.find(t => t.id === sel.trackId);
-      if (!track?.locked) moveClip(sel.id, sel.start + dir * (big ? fps : 1), undefined, `nudge:${sel.id}`);
+      if (!track?.locked) moveClip(sel.id, sel.start + n, undefined, `nudge:${sel.id}`);
       setState(st => ({revealSeq: st.revealSeq + 1}));
     };
     // 一般的な編集ソフトと同じく、←→（コマ送り）・↑↓（編集点）・Home/End・J/K/L は全体のショートカットに任せる。
