@@ -12,8 +12,9 @@ import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {ScriptList} from './ScriptList';
 import {Plus, RefreshCw} from 'lucide-react';
 import {ENGINE_LABEL, speakerLabel} from '../model';
-import {addCharacter, setState, useStore} from '../store';
-import {refreshEngines} from '../actions';
+import {addCharacter, removeCharacter, setState, useStore} from '../store';
+import {exportCharacterFile, getNotify, importCharacterFile, refreshEngines} from '../actions';
+import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 
 function Swatch({color}: {color: string}) {
   return <span className="vx-swatch" style={{background: color}} aria-hidden />;
@@ -44,7 +45,29 @@ export function Sidebar() {
       <VStack gap={1}>
         <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
           <Heading level={3}>キャラクター</Heading>
-          <IconButton label="キャラクターを追加" tooltip="キャラクターを追加" variant="ghost" size="sm" icon={<Icon icon={Plus} />} onClick={addCharacter} />
+          <HStack gap={0}>
+            <IconButton label="キャラクターを追加" tooltip="キャラクターを追加" variant="ghost" size="sm" icon={<Icon icon={Plus} />} onClick={addCharacter} />
+            <MoreMenu
+              label="キャラクターのメニュー"
+              size="sm"
+              items={[
+                {label: 'ファイルから読み込む…', onClick: () => void importCharacterFile(getNotify())},
+                ...(selectedCharacterId
+                  ? [
+                      {label: '選んだキャラクターをファイルに保存…', onClick: () => void exportCharacterFile(selectedCharacterId, getNotify())},
+                      {type: 'divider' as const},
+                      {
+                        label: '選んだキャラクターを消す',
+                        variant: 'destructive' as const,
+                        onClick: () => {
+                          if (!removeCharacter(selectedCharacterId)) getNotify()('最後の 1 人は消せません');
+                        },
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          </HStack>
         </HStack>
         <List density="compact">
           {project.characters.map(c => (

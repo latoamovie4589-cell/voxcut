@@ -10,7 +10,7 @@ import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
-import type {ExportProgress} from '../ipc';
+import {api, type Encoder, type ExportProgress} from '../ipc';
 import {collectCredits, framesToSpoken, projectDuration} from '../model';
 import {useStore} from '../store';
 import {cancelExport, pickExportPath, revealInFolder, runExport} from '../actions';
@@ -55,14 +55,33 @@ function Credits() {
   );
 }
 
+const ENCODER_LABEL: Record<Encoder, string> = {
+  x264: 'CPU（どの PC でも使えます）',
+  nvenc: 'NVIDIA のグラフィックボード（速い）',
+  qsv: 'Intel のグラフィック機能（速い）',
+  amf: 'AMD のグラフィックボード（速い）',
+};
+
+// 調べた結果は覚えておく（毎回試すと開くのが遅くなる）
+let encodersCache: Promise<Encoder[]> | null = null;
+const loadEncoders = () => (encodersCache ??= api.then(a => a.videoEncoders()).catch(() => ['x264' as Encoder]));
+
 export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenChange: (o: boolean) => void}) {
   const project = useStore(s => s.project);
   const [phase, setPhase] = useState<Phase>({kind: 'setup'});
   const [quality, setQuality] = useState<Quality>('normal');
   const [height, setHeight] = useState<string>('same');
+  const [encoders, setEncoders] = useState<Encoder[] | null>(null);
+  const [encoder, setEncoder] = useState<Encoder>('x264');
 
   useEffect(() => {
-    if (isOpen) setPhase({kind: 'setup'});
+    if (!isOpen) return;
+    setPhase({kind: 'setup'});
+    void loadEncoders().then(list => {
+      setEncoders(list);
+      // グラフィックボードが使えるなら、はじめからそれにする（速い）
+      setEncoder(e => (list.includes(e) && e !== 'x264' ? e : (list.find(x => x !== 'x264') ?? 'x264')));
+    });
   }, [isOpen]);
 
   if (!project) return null;
@@ -77,7 +96,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
     if (!out) return;
     setPhase({kind: 'running', progress: null});
     try {
-      await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height)}, p => setPhase({kind: 'running', progress: p}));
+      await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height), encoder}, p => setPhase({kind: 'running', progress: p}));
       setPhase({kind: 'done', out});
     } catch (e) {
       setPhase(String(e).includes('cancelled') ? {kind: 'cancelled'} : {kind: 'error', message: String(e).replace(/^Error:\s*/, '')});
@@ -91,8 +110,9 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   };
 
   return (
-    <Dialog isOpen={isOpen} onOpenChange={close} width={480} purpose="form">
+    <Dialog isOpen={isOpen} onOpenChange={close} width={480} maxHeight="92dvh" purpose="form">
       <DialogHeader title="動画を書き出す" onOpenChange={close} />
+      <div style={{maxHeight: 'calc(92dvh - 72px)', overflowY: 'auto'}}>
       <VStack gap={4} padding={4}>
         {phase.kind === 'setup' && (
           <>
@@ -116,6 +136,15 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
               </SegmentedControl>
               <Text type="supporting">軽量にするとファイルが小さくなり、細かい部分が少し粗くなります</Text>
             </VStack>
+            <Selector
+              label="書き出しに使うもの"
+              description={encoders ? (encoders.length > 1 ? 'グラフィックボードを使うと数倍速くなります。うまくいかないときは自動で CPU に切り替えます' : 'この PC では CPU で書き出します') : 'この PC で使えるものを調べています…'}
+              value={encoder}
+              isDisabled={!encoders || encoders.length < 2}
+              options={(encoders ?? ['x264']).map(e => ({value: e, label: ENCODER_LABEL[e]}))}
+              onChange={v => setEncoder(v as Encoder)}
+              width="100%"
+            />
             {pending > 0 && <Banner status="info" title={`まだ合成していないセリフが ${pending} 件あります`} description="書き出す前にまとめて合成します" />}
             <Credits />
             <HStack gap={2} hAlign="end">
@@ -167,6 +196,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
           </>
         )}
       </VStack>
+      </div>
     </Dialog>
   );
 }

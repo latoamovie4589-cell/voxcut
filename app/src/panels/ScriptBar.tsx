@@ -39,7 +39,17 @@ export function ScriptBar({notify}: {notify: Notify}) {
         options={project.characters.map(c => ({value: c.id, label: c.name}))}
         onChange={v => setState({selectedCharacterId: v})}
       />
-      <div style={{flex: 1, minWidth: 0}} data-script-input>
+      <div
+        style={{flex: 1, minWidth: 0}}
+        data-script-input
+        onPasteCapture={e => {
+          // 何行もある文を貼ったら、台本の貼り付け画面で開く
+          const pasted = e.clipboardData.getData('text');
+          if (/\n\s*\S/.test(pasted.trim())) {
+            e.preventDefault();
+            setState({pasteOpen: true, pasteText: pasted});
+          }
+        }}>
         <TextInput
           label="セリフ"
           isLabelHidden
