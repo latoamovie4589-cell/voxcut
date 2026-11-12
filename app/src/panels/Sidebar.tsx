@@ -24,6 +24,7 @@ export function Sidebar() {
   const selectedCharacterId = useStore(s => s.selectedCharacterId);
   const selectedClipId = useStore(s => s.selectedClipId);
   const engines = useStore(s => s.engines);
+  const checking = useStore(s => s.checkingEngines);
   const voices = useStore(s => s.voices);
   const tab = useStore(s => s.sidebarTab);
   if (!project) return null;
@@ -68,18 +69,18 @@ export function Sidebar() {
         </HStack>
         <List density="compact">
           {engines.map(({engine, status}) => {
-            const ok = status.state === 'ready';
-            const text = ok ? '使えます' : status.state === 'notRunning' ? '起動していません' : '見つかりません';
+            const ok = !checking && status.state === 'ready';
+            const text = checking ? '確認しています…' : ok ? '使えます' : status.state === 'notRunning' ? '起動していません' : '見つかりません';
             return (
               <Item
                 key={engine}
                 as="li"
                 density="compact"
                 label={ENGINE_LABEL[engine]}
-                description={ok ? text : `${text}：${status.detail}`}
+                description={ok || checking || status.state === 'ready' ? text : `${text}：${status.detail}`}
                 descriptionLines={2}
                 endContent={
-                  !ok && (engine === 'aivoice' || engine === 'voicepeak') ? (
+                  checking ? undefined : !ok && (engine === 'aivoice' || engine === 'voicepeak') ? (
                     <Button label="場所を選ぶ" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
                   ) : !ok ? (
                     <Button label="設定" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
@@ -87,7 +88,7 @@ export function Sidebar() {
                 }
                 startContent={
                   <StatusDot
-                    variant={ok ? 'success' : status.state === 'notRunning' ? 'warning' : 'neutral'}
+                    variant={checking ? 'neutral' : ok ? 'success' : status.state === 'notRunning' ? 'warning' : 'neutral'}
                     label={text}
                   />
                 }

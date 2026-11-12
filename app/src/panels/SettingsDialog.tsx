@@ -72,7 +72,7 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
     try {
       await (await api).setConfig(cfg);
       onOpenChange(false);
-      notify('設定を保存しました');
+      notify('設定を保存しました。接続を確認しています…');
       void refreshEngines();
     } catch (err) {
       notify(String(err), 'error');
@@ -80,8 +80,10 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
   };
 
   return (
-    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width={560} purpose="form">
+    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width={560} maxHeight="92dvh" purpose="form">
       <DialogHeader title="設定" onOpenChange={onOpenChange} />
+      {/* 窓が小さくても「保存」が隠れないよう、中身だけをスクロールさせる */}
+      <div style={{maxHeight: 'calc(92dvh - 132px)', overflowY: 'auto', overscrollBehavior: 'contain'}}>
       <VStack gap={4} padding={4}>
         <Heading level={3}>音声合成ソフトの場所</Heading>
         <Text type="supporting">使うソフトの実行ファイルを「参照…」で選んでください。使わないソフトは空のままで構いません。</Text>
@@ -125,11 +127,13 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
           note="空のときは VoxCut に同梱の ffmpeg.exe を使います"
           onChange={p => setCfg({...cfg, ffmpegPath: p || null})}
         />
-        <HStack gap={2} hAlign="end">
-          <Button label="キャンセル" variant="ghost" onClick={() => onOpenChange(false)} />
-          <Button label="保存" variant="primary" clickAction={save} />
-        </HStack>
       </VStack>
+      </div>
+      <Divider />
+      <HStack gap={2} hAlign="end" padding={3}>
+        <Button label="キャンセル" variant="ghost" onClick={() => onOpenChange(false)} />
+        <Button label="保存" variant="primary" clickAction={save} />
+      </HStack>
     </Dialog>
   );
 }
