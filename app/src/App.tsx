@@ -3,7 +3,7 @@
 
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
-import {DropdownMenu, DropdownMenuDivider, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
+import {DropdownMenu, DropdownMenuDivider, DropdownMenuItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
 import {HStack, Layout, LayoutContent, LayoutFooter, LayoutHeader, LayoutPanel, VStack} from '@astryxdesign/core/Layout';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
@@ -13,9 +13,11 @@ import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
 import {AudioLines, Menu, TriangleAlert, Upload} from 'lucide-react';
 import {framesToTimecode, projectDuration} from './model';
-import {deleteClip, getState, redo, setState, splitClip, undo, useStore} from './store';
-import {boot, openProject, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {copySelection, cutSelection, deleteClips, duplicateSelection, editableSelection, getState, hasClipboard, pasteClipboard, redo, selectAllClips, setState, splitClip, undo, useStore} from './store';
+import {boot, newProjectAction, openProject, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {ExportDialog} from './panels/ExportDialog';
+import {PasteScriptDialog} from './panels/PasteScriptDialog';
+import {DictionaryDialog} from './panels/DictionaryDialog';
 import {api, setDirtyGetter} from './ipc';
 import {Timeline} from './timeline/Timeline';
 import {Preview} from './preview/Preview';
@@ -110,6 +112,7 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
   const busy = useStore(s => s.busy);
   const canUndo = useStore(s => s.past.length > 0);
   const canRedo = useStore(s => s.future.length > 0);
+  const recent = useStore(s => s.recent);
   return (
     <LayoutHeader hasDivider padding={1}>
       <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1}>
@@ -118,13 +121,21 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
             button={{label: 'メニュー', tooltip: 'メニュー', variant: 'ghost', size: 'sm', isIconOnly: true, icon: <Icon icon={Menu} />}}
             hasChevron={false}
             menuWidth={240}>
+            <DropdownMenuItem label="新規" endContent={<Text type="supporting">{mod}N</Text>} onClick={() => void newProjectAction(notify)} />
             <DropdownMenuItem label="開く…" endContent={<Text type="supporting">{mod}O</Text>} onClick={() => void openProject(notify)} />
+            <DropdownMenuSubMenu label="最近使ったファイル" isDisabled={!recent.length}>
+              {recent.map(path => (
+                <DropdownMenuItem key={path} label={path.split(/[\\/]/).pop() ?? path} description={path} onClick={() => void openProject(notify, path)} />
+              ))}
+            </DropdownMenuSubMenu>
             <DropdownMenuItem label="保存" endContent={<Text type="supporting">{mod}S</Text>} onClick={() => void saveProject(notify)} />
             <DropdownMenuItem label="名前を付けて保存…" onClick={() => void saveProject(notify, true)} />
             <DropdownMenuDivider />
             <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={<Text type="supporting">{mod}Z</Text>} onClick={undo} />
             <DropdownMenuItem label="やり直す" isDisabled={!canRedo} endContent={<Text type="supporting">{isMac ? '⇧⌘Z' : 'Ctrl+Y'}</Text>} onClick={redo} />
             <DropdownMenuDivider />
+            <DropdownMenuItem label="台本を貼り付け…" onClick={() => setState({pasteOpen: true})} />
+            <DropdownMenuItem label="読み方の辞書…" onClick={() => setState({dictionaryOpen: true})} />
             <DropdownMenuItem label="設定…" onClick={openSettings} />
           </DropdownMenu>
           <Text type="label" maxLines={1}>
@@ -189,7 +200,13 @@ export function App() {
     let off: (() => void) | undefined;
     void api.then(a =>
       a
-        .onCloseRequested(async () => !getState().dirty || a.ask('保存していない変更があります。保存せずに閉じますか？', '保存せずに閉じる'))
+        .onCloseRequested(async () => {
+          if (!getState().dirty) return true;
+          const ok = await a.ask('保存していない変更があります。保存せずに閉じますか？', '保存せずに閉じる');
+          // 閉じると決めたら、自動保存も消す（次の起動で戻すか聞かない）
+          if (ok) await a.autosaveClear();
+          return ok;
+        })
         .then(u => (off = u)),
     );
     return () => off?.();
@@ -201,7 +218,7 @@ export function App() {
       dismissers.current.get(key)?.();
       dismissers.current.delete(key);
     });
-    void boot().catch(e => notify(String(e), 'error'));
+    void boot(notify).catch(e => notify(String(e), 'error'));
   }, [notify]);
 
   // キーボードショートカット（入力欄にいるときは奪わない）
@@ -223,6 +240,9 @@ export function App() {
       } else if (m && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         void openProject(notify);
+      } else if (m && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        void newProjectAction(notify);
       } else if (e.key === 'Escape' && getState().previewFull) {
         e.preventDefault();
         void toggleFullscreen();
@@ -259,8 +279,24 @@ export function App() {
         jumpTo(e.key === 'Home' ? 'start' : 'end');
       } else if (e.key.toLowerCase() === 's' && getState().selectedClipId) {
         if (!splitClip(getState().selectedClipId!, getState().playhead)) notify('素材を再生位置で分けられます（セリフは分けられません）');
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && getState().selectedClipId) {
-        deleteClip(getState().selectedClipId!);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && getState().selectedClipIds.length) {
+        const ids = editableSelection().map(c => c.id);
+        if (ids.length) deleteClips(ids);
+        else notify('ロックしたトラックのクリップは消せません');
+      } else if (m && !e.shiftKey && ['c', 'x', 'v', 'd', 'a'].includes(e.key.toLowerCase())) {
+        const k = e.key.toLowerCase();
+        e.preventDefault();
+        if (k === 'a') selectAllClips();
+        else if (k === 'c') {
+          const n = copySelection();
+          if (n) notify(`${n} 個を写しました`);
+        } else if (k === 'x') {
+          const n = cutSelection();
+          if (n) notify(`${n} 個を切り取りました`);
+        } else if (k === 'v') {
+          if (!hasClipboard()) notify('貼り付けるものがありません。台本の文を貼るときは、メニューの「台本を貼り付け」を使ってください');
+          else pasteClipboard();
+        } else if (k === 'd') duplicateSelection();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -311,6 +347,8 @@ export function App() {
       />
       <SettingsDialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} notify={notify} />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
+      <PasteScriptDialog notify={notify} />
+      <DictionaryDialog notify={notify} />
     </Section>
   );
 }

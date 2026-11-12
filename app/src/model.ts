@@ -53,6 +53,16 @@ export interface Portrait {
   mouth: [string | null, string | null, string | null];
   transform: Transform;
   visible: boolean;
+  /** 表情差分（セリフごとに名前で選ぶ） */
+  expressions: Expression[];
+}
+
+/** 表情。指定したパーツだけ通常の画像と差し替える */
+export interface Expression {
+  name: string;
+  base: string | null;
+  eyes: [string | null, string | null, string | null];
+  mouth: [string | null, string | null, string | null];
 }
 
 export const newPortrait = (base: string): Portrait => ({
@@ -61,17 +71,25 @@ export const newPortrait = (base: string): Portrait => ({
   mouth: [null, null, null],
   transform: {x: 560, y: 140, scale: 1, opacity: 1},
   visible: true,
+  expressions: [],
 });
 
-/** Rust の Portrait::layers と同じ（無い差分は 1 つ目で代用） */
-export function portraitLayers(p: Portrait, eyes: number, mouth: number): string[] {
-  const v = [p.base];
-  const e = p.eyes[eyes] ?? p.eyes[0];
+const variant = (parts: (string | null)[], i: number) => parts[i] ?? parts[0] ?? null;
+
+/** Rust の Portrait::layers と同じ（無い差分は 1 つ目で代用。expr は 0 が通常、1 以降が expressions[expr-1]） */
+export function portraitLayers(p: Portrait, eyes: number, mouth: number, expr = 0): string[] {
+  const ex = expr > 0 ? p.expressions?.[expr - 1] : undefined;
+  const v = [ex?.base || p.base];
+  const e = (ex && variant(ex.eyes, eyes)) ?? variant(p.eyes, eyes);
   if (e) v.push(e);
-  const m = p.mouth[mouth] ?? p.mouth[0];
+  const m = (ex && variant(ex.mouth, mouth)) ?? variant(p.mouth, mouth);
   if (m) v.push(m);
   return v;
 }
+
+/** 表情の名前 → 番号（0 は通常） */
+export const expressionIndex = (p: Portrait, name: string | null | undefined): number =>
+  name ? (p.expressions ?? []).findIndex(e => e.name === name) + 1 : 0;
 
 export interface Character {
   id: string;
@@ -88,6 +106,10 @@ export interface Track {
   name: string;
   muted: boolean;
   locked: boolean;
+  /** セリフの間だけ、このトラックの音（BGM など）を下げる */
+  duck: boolean;
+  /** 下げたときの音量（0〜1） */
+  duckLevel: number;
 }
 
 export interface AudioRef {
@@ -111,6 +133,10 @@ export interface VoiceClip extends ClipBase {
   audio: AudioRef | null;
   gapAfter: Frame;
   lockDuration: boolean;
+  /** この行だけ話者（VOICEVOX のスタイルなど）を変える */
+  speakerOverride?: string | null;
+  /** この行の間の立ち絵の表情（Portrait.expressions の名前） */
+  expression?: string | null;
 }
 
 export interface MediaClip extends ClipBase {

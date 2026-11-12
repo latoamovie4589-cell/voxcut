@@ -1,7 +1,7 @@
 // Rust（src-tauri/src/commands.rs）との窓口。
 // ブラウザで開いたとき（Tauri 外）は、デザイン確認用の模擬実装に切り替わる。
 
-import type {EngineId, EngineStatus, Project, VoiceClip, VoiceInfo} from './model';
+import type {Character, EngineId, EngineStatus, Project, VoiceClip, VoiceInfo} from './model';
 import {defaultParams, reflowVoiceTrack} from './model';
 
 export interface SynthProgress {
@@ -19,6 +19,22 @@ export interface ExportRequest {
   crf: number;
   /** 出力の高さ（null ならプロジェクトのまま） */
   height: number | null;
+  /** 動画のエンコーダー（グラフィックボードを使うと速い） */
+  encoder?: Encoder;
+}
+
+/** x264 は CPU、nvenc は NVIDIA、qsv は Intel、amf は AMD */
+export type Encoder = 'x264' | 'nvenc' | 'qsv' | 'amf';
+
+export interface DictEntry {
+  word: string;
+  reading: string;
+}
+
+export interface Autosave {
+  project: Project;
+  projectPath: string | null;
+  savedAt: number;
 }
 
 export interface MediaInfo {
@@ -38,6 +54,8 @@ export interface AppConfig {
     voicevox: {host: string; port: number};
   };
   ffmpegPath: string | null;
+  dictionary: DictEntry[];
+  recent: string[];
 }
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -78,6 +96,18 @@ export interface Api {
   /** 動画のプロキシを作り、画面で読める URL を返す */
   makeProxy(src: string, projectPath: string | null, durationMs: number): Promise<string>;
   onProxyProgress(cb: (p: {src: string; ratio: number}) => void): Promise<Unlisten>;
+  /** この PC で使える書き出しの方法（先頭は CPU） */
+  videoEncoders(): Promise<Encoder[]>;
+  addRecent(path: string): Promise<string[]>;
+  removeRecent(path: string): Promise<string[]>;
+  setDictionary(entries: DictEntry[]): Promise<void>;
+  autosaveWrite(project: Project, projectPath: string | null): Promise<void>;
+  autosaveRead(): Promise<Autosave | null>;
+  autosaveClear(): Promise<void>;
+  /** キャラクター設定のファイル */
+  pickCharacterPath(mode: 'save' | 'open', suggested?: string): Promise<string | null>;
+  exportCharacter(path: string, character: Character, projectPath: string | null): Promise<void>;
+  importCharacter(path: string): Promise<Character>;
 }
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'avif'];
@@ -168,6 +198,24 @@ async function tauriApi(): Promise<Api> {
     makeProxy: async (src, projectPath, durationMs) =>
       convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs})),
     onProxyProgress: cb => listen<{src: string; ratio: number}>('proxy-progress', e => cb(e.payload)),
+    videoEncoders: () => invoke('video_encoders'),
+    addRecent: path => invoke('add_recent', {path}),
+    removeRecent: path => invoke('remove_recent', {path}),
+    setDictionary: entries => invoke('set_dictionary', {entries}),
+    autosaveWrite: (project, projectPath) => invoke('autosave_write', {project, projectPath}),
+    autosaveRead: () => invoke('autosave_read'),
+    autosaveClear: () => invoke('autosave_clear'),
+    pickCharacterPath: async (mode, suggested) => {
+      const filters = [{name: 'VoxCut キャラクター', extensions: ['voxchar']}];
+      if (mode === 'save') {
+        const path = await import('@tauri-apps/api/path');
+        return dialog.save({defaultPath: await path.join(await path.documentDir(), `${suggested ?? 'キャラクター'}.voxchar`), filters});
+      }
+      const r = await dialog.open({filters});
+      return typeof r === 'string' ? r : null;
+    },
+    exportCharacter: (path, character, projectPath) => invoke('export_character', {path, character, projectPath}),
+    importCharacter: path => invoke('import_character', {path}),
   };
 }
 
@@ -224,14 +272,15 @@ function mockProject(): Project {
           eyes: ['/sample/eye0.png', '/sample/eye1.png', '/sample/eye2.png'],
           mouth: ['/sample/mouth0.png', '/sample/mouth1.png', '/sample/mouth2.png'],
           transform: {x: 600, y: 240, scale: 1.1, opacity: 1},
+          expressions: [],
           visible: true,
         },
       },
       {id: 'ch_b', name: 'アシスタント', color: '#FF9F0A', voice: {engine: 'aivoice', speaker: '琴葉 茜', params: defaultParams()}, subtitle: {...sub, color: '#FFE08A', animation: 'typewriter' as const}, portrait: null},
     ],
     tracks: [
-      {id: 't_voice', kind: 'voice', name: 'セリフ', muted: false, locked: false},
-      {id: 't_media', kind: 'media', name: '素材', muted: false, locked: false},
+      {id: 't_voice', kind: 'voice', name: 'セリフ', muted: false, locked: false, duck: false, duckLevel: 0.3},
+      {id: 't_media', kind: 'media', name: '素材', muted: false, locked: false, duck: false, duckLevel: 0.3},
     ],
     clips: lines.map(([ch, text], i) => ({
       id: `c${i + 1}`,
@@ -260,7 +309,11 @@ function mockApi(): Api {
   let config: AppConfig = {
     engines: {voicepeakPath: null, aivoiceBridgePath: null, aivoiceDir: null, voisona: {host: '127.0.0.1', port: 32766, user: '', password: '', timeoutSecs: 60}, voicevox: {host: '127.0.0.1', port: 50021}},
     ffmpegPath: null,
+    dictionary: [],
+    recent: [],
   };
+  let autosave: Autosave | null = null;
+  const savedChars = new Map<string, Character>();
   const synth = async (project: Project, clipIds?: string[]) => {
     const targets = project.clips.filter(
       (c): c is VoiceClip => c.type === 'voice' && (!clipIds || clipIds.includes(c.id)) && c.text.trim() !== '',
@@ -360,6 +413,28 @@ function mockApi(): Api {
     onProxyProgress: async cb => {
       proxyListeners.add(cb);
       return () => proxyListeners.delete(cb);
+    },
+    videoEncoders: async () => ['x264', 'nvenc'],
+    addRecent: async path => (config.recent = [path, ...config.recent.filter(p => p !== path)].slice(0, 10)),
+    removeRecent: async path => (config.recent = config.recent.filter(p => p !== path)),
+    setDictionary: async entries => {
+      config = {...config, dictionary: entries};
+    },
+    autosaveWrite: async (project, projectPath) => {
+      autosave = {project, projectPath, savedAt: Date.now()};
+    },
+    autosaveRead: async () => autosave,
+    autosaveClear: async () => {
+      autosave = null;
+    },
+    pickCharacterPath: async (mode, suggested) => (mode === 'save' ? `${suggested ?? 'キャラクター'}.voxchar` : [...savedChars.keys()].at(-1) ?? null),
+    exportCharacter: async (path, character) => {
+      savedChars.set(path, structuredClone(character));
+    },
+    importCharacter: async path => {
+      const c = savedChars.get(path);
+      if (!c) throw new Error('VoxCut のキャラクターファイルではありません');
+      return structuredClone(c);
     },
   };
 }

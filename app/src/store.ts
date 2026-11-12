@@ -3,7 +3,7 @@
 
 import {useSyncExternalStore} from 'react';
 import type {Character, Clip, EngineId, EngineStatus, MediaClip, Portrait, Project, Track, VoiceClip, VoiceInfo} from './model';
-import type {MediaInfo} from './ipc';
+import type {DictEntry, MediaInfo} from './ipc';
 import {defaultParams, newId, reflowVoiceTrack} from './model';
 
 export interface State {
@@ -46,6 +46,17 @@ export interface State {
   revealSeq: number;
   /** 設定画面を開いているか（左パネルの「場所を選ぶ」からも開く） */
   settingsOpen: boolean;
+  /** 最近使ったプロジェクト */
+  recent: string[];
+  /** 台本の貼り付け画面・辞書の画面を開いているか */
+  pasteOpen: boolean;
+  /** 台本の貼り付け画面に最初に入れておく文（セリフ入力欄に複数行を貼ったとき） */
+  pasteText: string;
+  dictionaryOpen: boolean;
+  /** 複数選択しているクリップ（selectedClipId も含む） */
+  selectedClipIds: string[];
+  /** 読み方の辞書 */
+  dictionary: DictEntry[];
   past: Project[];
   future: Project[];
 }
@@ -76,6 +87,12 @@ let state: State = {
   sidebarTab: 'characters',
   revealSeq: 0,
   settingsOpen: false,
+  recent: [],
+  pasteOpen: false,
+  pasteText: '',
+  dictionaryOpen: false,
+  selectedClipIds: [],
+  dictionary: [],
   past: [],
   future: [],
 };
@@ -90,6 +107,8 @@ export const getState = () => state;
 
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)) {
   const p = typeof patch === 'function' ? patch(state) : patch;
+  // 1 つだけ選んだときは、複数選択もその 1 つにする
+  if ('selectedClipId' in p && !('selectedClipIds' in p)) p.selectedClipIds = p.selectedClipId ? [p.selectedClipId] : [];
   state = {...state, ...p};
   listeners.forEach(l => l());
 }
@@ -179,6 +198,32 @@ export function addCharacter(): string {
   return id;
 }
 
+/** 読み込んだキャラクターを足す（ID は新しく、名前が重なれば番号を付ける） */
+export function addCharacterFrom(ch: Character): string {
+  const id = newId('ch');
+  commit(p => {
+    let name = ch.name;
+    for (let n = 2; p.characters.some(c => c.name === name); n++) name = `${ch.name} ${n}`;
+    return {...p, characters: [...p.characters, {...ch, id, name}]};
+  });
+  setState({selectedCharacterId: id, selectedClipId: null});
+  return id;
+}
+
+/** キャラクターを消す（そのキャラクターのセリフも消える。元に戻すで戻せる）。最後の 1 人は消せない */
+export function removeCharacter(id: string): boolean {
+  const p = state.project;
+  if (!p || p.characters.length <= 1) return false;
+  commit(pr => {
+    const tracks = new Set(pr.clips.filter(c => c.type === 'voice' && c.characterId === id).map(c => c.trackId));
+    let next = {...pr, characters: pr.characters.filter(c => c.id !== id), clips: pr.clips.filter(c => !(c.type === 'voice' && c.characterId === id))};
+    for (const t of tracks) next = reflowVoiceTrack(next, t);
+    return next;
+  });
+  setState(s => ({selectedCharacterId: s.project?.characters[0]?.id ?? null, selectedClipId: null}));
+  return true;
+}
+
 /**
  * 同じトラックのクリップが重ならないように後ろへ押し出す。
  * `pinnedId` のクリップは、同じ開始位置のクリップより前に置く（ドロップした場所に「挿入」する）。
@@ -246,6 +291,46 @@ export function addLine(characterId: string, text: string): string {
   return id;
 }
 
+/** 何行もまとめて追加する（台本の貼り付け）。1 回の「元に戻す」で全部戻る。追加した行の ID を返す */
+export function addLines(items: {characterId: string; text: string}[]): string[] {
+  const ids: string[] = [];
+  let at = 0;
+  commit(p => {
+    const ins = insertionPoint(p);
+    if (!ins || !items.length) return p;
+    at = ins.start;
+    let start = ins.start;
+    const clips: VoiceClip[] = items.map(({characterId, text}) => {
+      const id = newId('c');
+      ids.push(id);
+      const duration = Math.max(30, Math.round([...text].length * 0.12 * p.video.fps)); // 合成前の仮の長さ
+      const c: VoiceClip = {
+        id,
+        trackId: ins.trackId,
+        start,
+        duration,
+        type: 'voice',
+        characterId,
+        text,
+        subtitle: null,
+        paramsOverride: null,
+        audio: null,
+        gapAfter: 6,
+        lockDuration: false,
+      };
+      start += duration + c.gapAfter;
+      return c;
+    });
+    // 後ろにあった行は、まとめて押し出す
+    const shift = start - ins.start;
+    const after = new Set(p.clips.filter(c => c.trackId === ins.trackId && c.start >= ins.start).map(c => c.id));
+    const moved = p.clips.map(c => (after.has(c.id) ? {...c, start: c.start + shift} : c));
+    return resolveOverlaps({...p, clips: [...moved, ...clips]}, ins.trackId, ids[0]);
+  });
+  if (ids.length) setState(s => ({selectedClipId: ids.at(-1)!, playhead: at, revealSeq: s.revealSeq + 1}));
+  return ids;
+}
+
 export function deleteClip(id: string) {
   commit(p => {
     const clip = p.clips.find(c => c.id === id);
@@ -294,7 +379,7 @@ export function addTrack(kind: Track['kind']): string {
   const id = newId('t');
   commit(p => {
     const n = p.tracks.filter(t => t.kind === kind).length + 1;
-    const track: Track = {id, kind, name: kind === 'voice' ? `セリフ ${n}` : `素材 ${n}`, muted: false, locked: false};
+    const track: Track = {id, kind, name: kind === 'voice' ? `セリフ ${n}` : `素材 ${n}`, muted: false, locked: false, duck: false, duckLevel: 0.3};
     // セリフトラックはセリフの並びの後ろ、素材トラックは一番下へ
     const lastVoice = p.tracks.map(t => t.kind).lastIndexOf('voice');
     const tracks = [...p.tracks];
@@ -352,7 +437,7 @@ export function addMediaClips(items: {path: string; info: MediaInfo}[]) {
   commit(pr => {
     let tracks = pr.tracks;
     if (!track) {
-      track = {id: newId('t'), kind: 'media', name: '素材', muted: false, locked: false};
+      track = {id: newId('t'), kind: 'media', name: '素材', muted: false, locked: false, duck: false, duckLevel: 0.3};
       tracks = [...tracks, track];
     }
     let at = state.playhead;
@@ -385,4 +470,149 @@ export function addMediaClips(items: {path: string; info: MediaInfo}[]) {
 
 export function setPortrait(characterId: string, portrait: Portrait | null) {
   updateCharacter(characterId, {portrait});
+}
+
+// ───────────── 複数選択・コピー・貼り付け ─────────────
+
+/**
+ * クリップを選ぶ。
+ * - replace：それだけを選ぶ
+ * - toggle：選択に足す／外す（Ctrl+クリック）
+ * - range：いま選んでいるクリップから、同じトラックのそのクリップまでをまとめて選ぶ（Shift+クリック）
+ */
+export function selectClip(id: string | null, mode: 'replace' | 'toggle' | 'range' = 'replace') {
+  const s = state;
+  const p = s.project;
+  if (!p || !id) return setState({selectedClipId: null});
+  if (mode === 'toggle') {
+    const has = s.selectedClipIds.includes(id);
+    const ids = has ? s.selectedClipIds.filter(x => x !== id) : [...s.selectedClipIds, id];
+    return setState({selectedClipIds: ids, selectedClipId: has ? (ids.at(-1) ?? null) : id});
+  }
+  if (mode === 'range') {
+    const anchor = p.clips.find(c => c.id === s.selectedClipId);
+    const target = p.clips.find(c => c.id === id);
+    if (anchor && target && anchor.trackId === target.trackId) {
+      const [a, b] = [Math.min(anchor.start, target.start), Math.max(anchor.start, target.start)];
+      const ids = p.clips.filter(c => c.trackId === target.trackId && c.start >= a && c.start <= b).map(c => c.id);
+      return setState({selectedClipIds: [...new Set([...s.selectedClipIds, ...ids])], selectedClipId: s.selectedClipId});
+    }
+  }
+  setState({selectedClipId: id});
+}
+
+export function selectAllClips() {
+  const p = state.project;
+  if (!p) return;
+  const ids = p.clips.map(c => c.id);
+  setState({selectedClipIds: ids, selectedClipId: state.selectedClipId ?? ids[0] ?? null});
+}
+
+/** 選んでいるクリップ（ロックしたトラックのものは除く） */
+export function editableSelection(): Clip[] {
+  const p = state.project;
+  if (!p) return [];
+  const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+  const ids = new Set(state.selectedClipIds);
+  return p.clips.filter(c => ids.has(c.id) && !locked.has(c.trackId));
+}
+
+export function deleteClips(ids: string[]) {
+  if (!ids.length) return;
+  const del = new Set(ids);
+  commit(p => {
+    const tracks = new Set(p.clips.filter(c => del.has(c.id) && c.type === 'voice').map(c => c.trackId));
+    let next = {...p, clips: p.clips.filter(c => !del.has(c.id))};
+    for (const t of tracks) next = reflowVoiceTrack(next, t);
+    return next;
+  });
+  setState({selectedClipId: null});
+}
+
+/** まとめて動かす（同じトラックの中で、同じだけずらす）。重なったら後ろを押し出す */
+export function moveClips(ids: string[], delta: number) {
+  if (!ids.length || !delta) return;
+  const move = new Set(ids);
+  commit(p => {
+    // 先頭のクリップが 0 より前に出ないように、ずらす量を抑える
+    const minStart = Math.min(...p.clips.filter(c => move.has(c.id)).map(c => c.start));
+    const d = Math.max(-minStart, Math.round(delta));
+    let next = {...p, clips: p.clips.map(c => (move.has(c.id) ? {...c, start: c.start + d} : c))};
+    const first = next.clips.filter(c => move.has(c.id)).sort((a, b) => a.start - b.start)[0];
+    for (const t of new Set(next.clips.filter(c => move.has(c.id)).map(c => c.trackId))) next = resolveOverlaps(next, t, first?.id);
+    return next;
+  });
+}
+
+let clipboard: {clips: Clip[]; base: number} | null = null;
+
+export const hasClipboard = () => !!clipboard?.clips.length;
+
+/** 選んだクリップを写す。セリフは「名前：セリフ」の文としてもクリップボードに入れる（台本の貼り付けで使える） */
+export function copySelection(): number {
+  const p = state.project;
+  const ids = new Set(state.selectedClipIds);
+  const clips = p?.clips.filter(c => ids.has(c.id)).sort((a, b) => a.start - b.start) ?? [];
+  if (!p || !clips.length) return 0;
+  clipboard = {clips: structuredClone(clips), base: clips[0].start};
+  const text = clips
+    .filter((c): c is VoiceClip => c.type === 'voice')
+    .map(c => `${p.characters.find(ch => ch.id === c.characterId)?.name ?? ''}：${c.text}`)
+    .join('\n');
+  if (text) void navigator.clipboard?.writeText(text).catch(() => {});
+  return clips.length;
+}
+
+export function cutSelection(): number {
+  const n = copySelection();
+  if (n) deleteClips(editableSelection().map(c => c.id));
+  return n;
+}
+
+/**
+ * 貼り付ける。セリフを選んでいればその後ろ、そうでなければ再生位置に、写したときの並びのまま置く。
+ * 元のトラックが無い・ロックされているときは、同じ種類の最初のトラックへ
+ */
+export function pasteClipboard(): number {
+  const p = state.project;
+  if (!p || !clipboard?.clips.length) return 0;
+  const sel = p.clips.find(c => c.id === state.selectedClipId);
+  const anchor = sel?.type === 'voice' && clipboard.clips.some(c => c.type === 'voice') ? sel.start + sel.duration + sel.gapAfter : state.playhead;
+  const usable = (kind: Track['kind'], id: string) => {
+    const t = p.tracks.find(x => x.id === id);
+    if (t && t.kind === kind && !t.locked) return t.id;
+    return p.tracks.find(x => x.kind === kind && !x.locked)?.id ?? null;
+  };
+  const pasted: Clip[] = [];
+  for (const c of clipboard.clips) {
+    const trackId = sel?.type === 'voice' && c.type === 'voice' ? sel.trackId : usable(c.type === 'voice' ? 'voice' : 'media', c.trackId);
+    if (!trackId) continue;
+    pasted.push({...structuredClone(c), id: newId(c.type === 'voice' ? 'c' : 'm'), trackId, start: anchor + (c.start - clipboard.base)} as Clip);
+  }
+  if (!pasted.length) return 0;
+  commit(pr => {
+    let next = {...pr, clips: [...pr.clips, ...pasted]};
+    for (const t of new Set(pasted.map(c => c.trackId))) next = resolveOverlaps(next, t, pasted.find(c => c.trackId === t)?.id);
+    return next;
+  });
+  setState(s => ({selectedClipIds: pasted.map(c => c.id), selectedClipId: pasted[0].id, playhead: anchor, revealSeq: s.revealSeq + 1}));
+  return pasted.length;
+}
+
+/** 選んだクリップを複製して、すぐ後ろに置く */
+export function duplicateSelection(): number {
+  if (!copySelection()) return 0;
+  const p = state.project!;
+  const ids = new Set(state.selectedClipIds);
+  const last = p.clips.filter(c => ids.has(c.id)).reduce((m, c) => (c.start + c.duration > m.start + m.duration ? c : m));
+  // 最後のクリップを選んだ状態で貼ると、その後ろに入る
+  setState({selectedClipId: last.id, playhead: last.start + last.duration});
+  return pasteClipboard();
+}
+
+/** 選んだセリフのキャラクターをまとめて変える */
+export function setCharacterForSelection(characterId: string) {
+  const ids = new Set(editableSelection().filter(c => c.type === 'voice').map(c => c.id));
+  if (!ids.size) return;
+  commit(p => ({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, characterId, audio: null} : c))}));
 }
