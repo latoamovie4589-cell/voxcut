@@ -8,7 +8,8 @@
     "theme:build": "astryx theme build src/themes/voxcut/voxcutTheme.ts",
     "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs",
     "typecheck": "tsc -b",
-    "check:lipsync": "node scripts/check-lipsync.ts"
+    "check:lipsync": "node scripts/check-lipsync.ts",
+    "check:script": "node scripts/check-script.ts"
   },
   "dependencies": {
     "@astryxdesign/core": "^0.7.14",
