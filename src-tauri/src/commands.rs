@@ -6,9 +6,10 @@ use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 use voxcut_core::cache::AudioCache;
 use voxcut_core::jobs;
-use voxcut_core::render::{self, ExportOptions};
+use voxcut_core::render::{self, Encoder, ExportOptions};
+use voxcut_core::text::{DictEntry, Dictionary};
 use voxcut_core::tts::{build_engines, EngineConfig, EngineStatus, TtsEngine, VoiceInfo};
-use voxcut_core::{lipsync, subtitle, waveform, EngineId, Project};
+use voxcut_core::{lipsync, subtitle, waveform, Character, EngineId, Project};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -22,7 +23,13 @@ pub struct AppConfig {
     pub engines: EngineConfig,
     /// 未指定なら、アプリと同じフォルダの ffmpeg → PATH の順に探す
     pub ffmpeg_path: Option<PathBuf>,
+    /// 読み方の辞書（すべてのソフトに共通）
+    pub dictionary: Vec<DictEntry>,
+    /// 最近使ったプロジェクト（新しい順）
+    pub recent: Vec<PathBuf>,
 }
+
+const RECENT_MAX: usize = 10;
 
 pub struct AppState {
     /// 書き出しの取り消し
@@ -34,6 +41,10 @@ pub struct AppState {
     config: RwLock<AppConfig>,
     engines: RwLock<Vec<Arc<dyn TtsEngine>>>,
     cache: AudioCache,
+    /// 自動保存の置き場所
+    autosave_path: PathBuf,
+    /// 使えるハードウェアエンコーダー（初回だけ調べる）
+    hw_encoders: std::sync::Mutex<Option<Vec<Encoder>>>,
 }
 
 impl AppState {
@@ -46,7 +57,29 @@ impl AppState {
         let cache = AudioCache::new(app.path().app_cache_dir()?.join("audio"));
         std::fs::create_dir_all(cache.root())?;
         let proxy_root = app.path().app_cache_dir()?.join("proxy");
-        Ok(Self { export_cancel: Default::default(), proxy_root, proxy_lock: Default::default(), config_path, engines: RwLock::new(build_engines(&config.engines)), config: RwLock::new(config), cache })
+        let autosave_path = app.path().app_data_dir()?.join("autosave.json");
+        Ok(Self {
+            export_cancel: Default::default(),
+            proxy_root,
+            proxy_lock: Default::default(),
+            config_path,
+            engines: RwLock::new(build_engines(&config.engines)),
+            config: RwLock::new(config),
+            cache,
+            autosave_path,
+            hw_encoders: Default::default(),
+        })
+    }
+
+    fn dictionary(&self) -> Dictionary {
+        Dictionary::new(&self.config.read().unwrap().dictionary)
+    }
+
+    fn write_config(&self, config: &AppConfig) -> CmdResult<()> {
+        if let Some(dir) = self.config_path.parent() {
+            std::fs::create_dir_all(dir).map_err(err)?;
+        }
+        std::fs::write(&self.config_path, serde_json::to_string_pretty(config).map_err(err)?).map_err(err)
     }
 
     fn engines(&self) -> Vec<Arc<dyn TtsEngine>> {
@@ -111,13 +144,143 @@ pub fn get_config(state: State<'_, AppState>) -> AppConfig {
 
 #[tauri::command]
 pub fn set_config(state: State<'_, AppState>, config: AppConfig) -> CmdResult<()> {
-    if let Some(dir) = state.config_path.parent() {
-        std::fs::create_dir_all(dir).map_err(err)?;
-    }
-    std::fs::write(&state.config_path, serde_json::to_string_pretty(&config).map_err(err)?).map_err(err)?;
+    state.write_config(&config)?;
     *state.engines.write().unwrap() = build_engines(&config.engines);
     *state.config.write().unwrap() = config;
     Ok(())
+}
+
+/// 最近使ったファイルの先頭に入れる（開いた・保存したとき）。新しい一覧を返す
+#[tauri::command]
+pub fn add_recent(state: State<'_, AppState>, path: PathBuf) -> CmdResult<Vec<PathBuf>> {
+    let mut cfg = state.config.read().unwrap().clone();
+    cfg.recent.retain(|p| p != &path);
+    cfg.recent.insert(0, path);
+    cfg.recent.truncate(RECENT_MAX);
+    state.write_config(&cfg)?;
+    let list = cfg.recent.clone();
+    *state.config.write().unwrap() = cfg;
+    Ok(list)
+}
+
+/// 最近使ったファイルから外す（見つからなかったときなど）
+#[tauri::command]
+pub fn remove_recent(state: State<'_, AppState>, path: PathBuf) -> CmdResult<Vec<PathBuf>> {
+    let mut cfg = state.config.read().unwrap().clone();
+    cfg.recent.retain(|p| p != &path);
+    state.write_config(&cfg)?;
+    let list = cfg.recent.clone();
+    *state.config.write().unwrap() = cfg;
+    Ok(list)
+}
+
+/// 読み方の辞書だけを保存する
+#[tauri::command]
+pub fn set_dictionary(state: State<'_, AppState>, entries: Vec<DictEntry>) -> CmdResult<()> {
+    let mut cfg = state.config.read().unwrap().clone();
+    cfg.dictionary = entries;
+    state.write_config(&cfg)?;
+    *state.config.write().unwrap() = cfg;
+    Ok(())
+}
+
+// ───────────── 自動保存 ─────────────
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Autosave {
+    project: Project,
+    project_path: Option<PathBuf>,
+    /// UNIX 時刻（ミリ秒）
+    saved_at: u64,
+}
+
+/// 保存していない作業を書いておく（落ちても次の起動で戻せるように）
+#[tauri::command]
+pub async fn autosave_write(state: State<'_, AppState>, project: Project, project_path: Option<PathBuf>) -> CmdResult<()> {
+    let path = state.autosave_path.clone();
+    blocking(move || {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(err)?;
+        }
+        let saved_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string(&Autosave { project, project_path, saved_at }).map_err(err)?).map_err(err)?;
+        std::fs::rename(&tmp, &path).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn autosave_read(app: AppHandle, state: State<'_, AppState>) -> Option<Autosave> {
+    let a: Autosave = serde_json::from_str(&std::fs::read_to_string(&state.autosave_path).ok()?).ok()?;
+    a.project.validate().ok()?;
+    if let Some(dir) = a.project_path.as_deref().and_then(Path::parent) {
+        let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    }
+    Some(a)
+}
+
+#[tauri::command]
+pub fn autosave_clear(state: State<'_, AppState>) {
+    let _ = std::fs::remove_file(&state.autosave_path);
+}
+
+// ───────────── キャラクターの書き出し・読み込み ─────────────
+
+/// キャラクター設定（声・字幕・立ち絵）をファイルにする。立ち絵の相対パスは絶対パスに直す
+#[tauri::command]
+pub async fn export_character(path: PathBuf, mut character: Character, project_path: Option<PathBuf>) -> CmdResult<()> {
+    blocking(move || {
+        let base = project_path.as_deref().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
+        let abs = |s: &mut String| {
+            if !s.is_empty() && Path::new(s.as_str()).is_relative() {
+                *s = base.join(s.as_str()).to_string_lossy().into_owned();
+            }
+        };
+        if let Some(pt) = character.portrait.as_mut() {
+            abs(&mut pt.base);
+            for x in pt.eyes.iter_mut().chain(pt.mouth.iter_mut()).flatten() {
+                abs(x);
+            }
+            for e in pt.expressions.iter_mut() {
+                if let Some(b) = e.base.as_mut() {
+                    abs(b);
+                }
+                for x in e.eyes.iter_mut().chain(e.mouth.iter_mut()).flatten() {
+                    abs(x);
+                }
+            }
+        }
+        let json = serde_json::json!({"voxcutCharacter": 1, "character": character});
+        std::fs::write(&path, serde_json::to_string_pretty(&json).map_err(err)?).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn import_character(app: AppHandle, path: PathBuf) -> CmdResult<Character> {
+    let ch = blocking(move || {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(err)?).map_err(err)?;
+        if v.get("voxcutCharacter").is_none() {
+            return Err("VoxCut のキャラクターファイルではありません".to_string());
+        }
+        serde_json::from_value::<Character>(v["character"].clone()).map_err(err)
+    })
+    .await?;
+    // 立ち絵をプレビューで読めるようにする
+    if let Some(pt) = &ch.portrait {
+        let mut files: Vec<&str> = vec![pt.base.as_str()];
+        files.extend(pt.eyes.iter().chain(pt.mouth.iter()).flatten().map(String::as_str));
+        for e in &pt.expressions {
+            files.extend(e.base.as_deref());
+            files.extend(e.eyes.iter().chain(e.mouth.iter()).flatten().map(String::as_str));
+        }
+        for f in files {
+            allow_dir(&app, Path::new(f));
+        }
+    }
+    Ok(ch)
 }
 
 // ───────────── 音声合成 ─────────────
@@ -166,8 +329,9 @@ pub async fn synthesize(
 ) -> CmdResult<SynthOutcome> {
     let engines = state.engines();
     let cache = state.cache.clone();
+    let dict = state.dictionary();
     blocking(move || {
-        let (todo, mut ready) = jobs::plan(&project, &cache, clip_ids.as_deref());
+        let (todo, mut ready) = jobs::plan(&project, &cache, clip_ids.as_deref(), &dict);
         let results = jobs::run(todo, &engines, &cache, &|p| {
             let _ = app.emit("synth-progress", &p);
         });
@@ -221,13 +385,14 @@ pub async fn export_video(
     let engines = state.engines();
     let cache = state.cache.clone();
     let ffmpeg = state.ffmpeg();
+    let dict = state.dictionary();
     blocking(move || {
         let mut project = project;
         let emit = |stage, ratio| {
             let _ = app.emit("export-progress", ExportProgress { stage, ratio });
         };
         emit("synth", 0.0);
-        let (todo, mut ready) = jobs::plan(&project, &cache, None);
+        let (todo, mut ready) = jobs::plan(&project, &cache, None, &dict);
         ready.extend(jobs::run(todo, &engines, &cache, &|p| emit("synth", p.done as f64 / p.total.max(1) as f64)));
         let failed = jobs::apply(&mut project, ready);
         if let Some((id, e)) = failed.first() {
@@ -249,14 +414,26 @@ pub async fn export_video(
             opt.crf = crf.clamp(10, 40);
         }
         opt.out_height = options.height;
+        opt.encoder = options.encoder.unwrap_or_default();
         let lookup = |id: &str| {
             project.clips.iter().find(|c| c.id == id).and_then(|c| c.as_voice()).and_then(|v| v.audio.as_ref()).and_then(|a| cache.get(&a.cache_key))
         };
-        let args = render::build_args(&project, &lookup, &portraits, Some(&ass), &opt).map_err(err)?;
         let total = project.video.frames_to_secs(project.duration());
-        let r = render::run_cancellable(&args, &ffmpeg, total, &mut |x| emit("encode", x), Some(&cancel));
+        let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
+        let run = |opt: &ExportOptions| -> CmdResult<()> {
+            let mut args = render::build_args(&project, &lookup, &portraits, Some(&ass), opt).map_err(err)?;
+            render::externalize_filter(&mut args, &work.join("graph.txt"), new_syntax, 6000).map_err(err)?;
+            render::run_cancellable(&args, &ffmpeg, total, &mut |x| emit("encode", x), Some(&cancel)).map_err(err)
+        };
+        let mut r = run(&opt);
+        // グラフィックボードで失敗したら、CPU でやり直す
+        if r.is_err() && opt.encoder != Encoder::X264 && !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            opt.encoder = Encoder::X264;
+            emit("encode", 0.0);
+            r = run(&opt);
+        }
         let _ = std::fs::remove_dir_all(&work);
-        r.map_err(err)?;
+        r?;
         Ok(project)
     })
     .await
@@ -268,6 +445,32 @@ pub async fn export_video(
 pub struct ExportRequest {
     crf: Option<u8>,
     height: Option<u32>,
+    encoder: Option<Encoder>,
+}
+
+/// この PC で使える書き出しの方法（CPU は常に使える）
+#[tauri::command]
+pub async fn video_encoders(state: State<'_, AppState>) -> CmdResult<Vec<Encoder>> {
+    if let Some(v) = state.hw_encoders.lock().unwrap().clone() {
+        return Ok(v);
+    }
+    let ffmpeg = state.ffmpeg();
+    let mut v = blocking(move || Ok(render::detect_hw_encoders(&ffmpeg))).await?;
+    v.insert(0, Encoder::X264);
+    *state.hw_encoders.lock().unwrap() = Some(v.clone());
+    Ok(v)
+}
+
+/// FFmpeg の大きい版番号（分からなければ 0）。"ffmpeg version 7.1" / "N-118000-g..."（開発版は新しい扱い）
+fn ffmpeg_major(ffmpeg: &Path) -> u32 {
+    let out = voxcut_core::tts::hidden_command(ffmpeg).arg("-version").output();
+    let Ok(out) = out else { return 0 };
+    let s = String::from_utf8_lossy(&out.stdout);
+    let ver = s.split_whitespace().nth(2).unwrap_or("");
+    if ver.starts_with('N') {
+        return 99;
+    }
+    ver.trim_start_matches('n').split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0)
 }
 
 /// 書き出しを取り消す（FFmpeg を止め、書きかけのファイルを消す）

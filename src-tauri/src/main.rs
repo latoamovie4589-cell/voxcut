@@ -31,6 +31,15 @@ fn main() {
             commands::allow_paths,
             commands::make_proxy,
             commands::cancel_export,
+            commands::video_encoders,
+            commands::add_recent,
+            commands::remove_recent,
+            commands::set_dictionary,
+            commands::autosave_write,
+            commands::autosave_read,
+            commands::autosave_clear,
+            commands::export_character,
+            commands::import_character,
         ])
         .run(tauri::generate_context!())
         .expect("VoxCut を起動できませんでした");
