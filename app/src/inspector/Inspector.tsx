@@ -1,4 +1,5 @@
 import {useState} from 'react';
+import {Collapsible} from '@astryxdesign/core/Collapsible';
 // 右パネル。選んだセリフ、またはキャラクターの設定を編集する。
 
 import {Banner} from '@astryxdesign/core/Banner';
@@ -48,9 +49,17 @@ function EmotionSliders({voice, value, onChange}: {voice: Voice; value: VoicePar
     else emotions[k] = n;
     onChange({...value, emotions});
   };
+  const active = names.filter(n => (value.emotions[n] ?? 0) > 0);
   return (
-    <VStack gap={3}>
-      <Text type="label">感情</Text>
+    <Collapsible
+      defaultIsOpen={active.length > 0}
+      trigger={
+        <HStack gap={2} vAlign="center">
+          <Text type="label">感情</Text>
+          <Text type="supporting">{active.length ? active.map(n => EMOTION_LABEL[n] ?? n).join('・') : 'なし'}</Text>
+        </HStack>
+      }>
+    <VStack gap={3} paddingBlockStart={2}>
       {names.map(n => (
         <Slider
           key={n}
@@ -65,6 +74,7 @@ function EmotionSliders({voice, value, onChange}: {voice: Voice; value: VoicePar
         />
       ))}
     </VStack>
+    </Collapsible>
   );
 }
 
@@ -85,7 +95,6 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
   const busy = useStore(s => s.busy);
   const error = useStore(s => s.synthErrors[clip.id]);
   const fps = project.video.fps;
-  const ch = project.characters.find(c => c.id === clip.characterId);
   return (
     <>
       <Section title="セリフ">
@@ -128,71 +137,100 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         </HStack>
       </Section>
       <Divider />
-      <LineStyleSection clip={clip} />
-      <Divider />
-      <Section title="この行の声">
-        <Switch
-          label="キャラクターの設定と変える"
-          value={clip.paramsOverride !== null}
-          onChange={on => updateClip(clip.id, {paramsOverride: on ? {...(ch?.voice.params ?? defaultParams())} : null, audio: null})}
-          labelPosition="start"
-          labelSpacing="spread"
-          width="100%"
-        />
-        {clip.paramsOverride && ch && (
-          <>
-            <ParamSliders value={clip.paramsOverride} onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})} />
-            <EmotionSliders
-              voice={{...ch.voice, speaker: clip.speakerOverride || ch.voice.speaker}}
-              value={clip.paramsOverride}
-              onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})}
-            />
-          </>
-        )}
-        <NumberInput
-          label="次のセリフまでの間（フレーム）"
-          value={clip.gapAfter}
-          min={0}
-          max={600}
-          onChange={v => updateClip(clip.id, {gapAfter: v})}
-        />
-      </Section>
+      <LineOverrides clip={clip} />
     </>
   );
 }
 
-/** この行の表情（立ち絵）と話し方（話者のスタイル） */
-function LineStyleSection({clip}: {clip: VoiceClip}) {
+/**
+ * この行だけ変える設定（表情・話し方・声・間）。普段は使わないので、たたんでおく。
+ * 何か変えている行では最初から開き、見出しに何を変えているかを出す
+ */
+function LineOverrides({clip}: {clip: VoiceClip}) {
   const ch = useStore(s => s.project!.characters.find(c => c.id === clip.characterId));
+  const fps = useStore(s => s.project!.video.fps);
   const voices = useStore(s => (ch ? s.voices[ch.voice.engine] : undefined));
+  const changed = [clip.expression && `表情：${clip.expression}`, clip.speakerOverride && '話し方', clip.paramsOverride && '声', clip.gapAfter !== 6 && '間'].filter(Boolean) as string[];
+  const [open, setOpen] = useState(changed.length > 0);
   if (!ch) return null;
-  const expressions = ch.portrait?.expressions ?? [];
+  const pt = ch.portrait;
+  const expressions = pt?.expressions ?? [];
   // 同じキャラクターの別のスタイル（VOICEVOX はクレジットが同じもの）。それ以外のソフトは同じソフトの話者すべて
   const base = voices?.find(v => v.speaker === ch.voice.speaker);
   const styles = (voices ?? []).filter(v => (ch.voice.engine === 'voicevox' ? v.credit === base?.credit : true));
+  const goPortrait = () => setState({selectedClipId: null, selectedCharacterId: ch.id, inspectorTab: 'portrait', sidebarTab: 'characters'});
   return (
-    <Section title="この行の表情と話し方">
-      <Selector
-        label="表情"
-        description={expressions.length ? 'この行の間だけ立ち絵の表情を変えます' : '立ち絵の設定で表情を足すと選べます'}
-        value={clip.expression ?? ''}
-        isDisabled={!expressions.length}
-        options={[{value: '', label: '通常'}, ...expressions.map(e => ({value: e.name, label: e.name}))]}
-        onChange={v => updateClip(clip.id, {expression: v || null})}
-        width="100%"
-      />
-      {styles.length > 1 && (
-        <Selector
-          label={ch.voice.engine === 'voicevox' ? 'スタイル' : '話者'}
-          description="この行だけ変えます"
-          value={clip.speakerOverride ?? ''}
-          options={[{value: '', label: `キャラクターと同じ（${base?.displayName ?? ch.voice.speaker}）`}, ...styles.filter(v => v.speaker !== ch.voice.speaker).map(v => ({value: v.speaker, label: v.displayName}))]}
-          hasSearch={styles.length > 8}
-          onChange={v => updateClip(clip.id, {speakerOverride: v || null, audio: null})}
-          width="100%"
-        />
-      )}
-    </Section>
+    <VStack paddingInline={4} paddingBlock={3}>
+      <Collapsible
+        isOpen={open}
+        onOpenChange={setOpen}
+        trigger={
+          <VStack gap={0}>
+            <Heading level={3}>この行だけ変える</Heading>
+            <Text type="supporting" maxLines={1}>
+              {changed.length ? changed.join('・') : '表情・話し方・声・次の行までの間'}
+            </Text>
+          </VStack>
+        }>
+        <VStack gap={3} paddingBlockStart={3}>
+          {pt && expressions.length > 0 && (
+            <Selector
+              label="表情"
+              description="この行の間だけ立ち絵の表情を変えます"
+              value={clip.expression ?? ''}
+              options={[{value: '', label: '通常'}, ...expressions.map(e => ({value: e.name, label: e.name}))]}
+              onChange={v => updateClip(clip.id, {expression: v || null})}
+              width="100%"
+            />
+          )}
+          {pt && !expressions.length && (
+            <VStack gap={1}>
+              <Text type="label">表情</Text>
+              <Text type="supporting">立ち絵に表情（笑顔など）を足すと、行ごとに選べます</Text>
+              <div>
+                <Button label="表情を足しに行く" size="sm" onClick={goPortrait} />
+              </div>
+            </VStack>
+          )}
+          {styles.length > 1 && (
+            <Selector
+              label={ch.voice.engine === 'voicevox' ? 'スタイル' : '話者'}
+              value={clip.speakerOverride ?? ''}
+              options={[{value: '', label: `キャラクターと同じ（${base?.displayName ?? ch.voice.speaker}）`}, ...styles.filter(v => v.speaker !== ch.voice.speaker).map(v => ({value: v.speaker, label: v.displayName}))]}
+              hasSearch={styles.length > 8}
+              onChange={v => updateClip(clip.id, {speakerOverride: v || null, audio: null})}
+              width="100%"
+            />
+          )}
+          <Switch
+            label="声の速さ・高さ・感情を変える"
+            value={clip.paramsOverride !== null}
+            onChange={on => updateClip(clip.id, {paramsOverride: on ? {...(ch.voice.params ?? defaultParams())} : null, audio: null})}
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+          />
+          {clip.paramsOverride && (
+            <>
+              <ParamSliders value={clip.paramsOverride} onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})} />
+              <EmotionSliders
+                voice={{...ch.voice, speaker: clip.speakerOverride || ch.voice.speaker}}
+                value={clip.paramsOverride}
+                onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})}
+              />
+            </>
+          )}
+          <NumberInput
+            label="次のセリフまでの間（フレーム）"
+            description={`${(clip.gapAfter / fps).toFixed(2)} 秒。合成し直したとき、次の行をこの間をあけて詰めます`}
+            value={clip.gapAfter}
+            min={0}
+            max={600}
+            onChange={v => updateClip(clip.id, {gapAfter: v})}
+          />
+        </VStack>
+      </Collapsible>
+    </VStack>
   );
 }
 
@@ -370,6 +408,21 @@ function PortraitSection({character}: {character: Character}) {
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
+/** Windows に最初から入っている和文フォント（書き出しの ASS 字幕でもこの名前で探す） */
+const FONTS: [string, string][] = [
+  ['Yu Gothic UI', '游ゴシック UI（標準）'],
+  ['Yu Gothic', '游ゴシック'],
+  ['Meiryo', 'メイリオ'],
+  ['BIZ UDPGothic', 'BIZ UDP ゴシック（読みやすい）'],
+  ['UD Digi Kyokasho NK-B', 'UD デジタル 教科書体（太）'],
+  ['Yu Mincho', '游明朝'],
+  ['MS Gothic', 'ＭＳ ゴシック'],
+];
+const fontOptions = (current: string) => {
+  const list = FONTS.map(([value, label]) => ({value, label}));
+  return list.some(o => o.value === current) ? list : [{value: current, label: current}, ...list];
+};
+
 /** 色の四角（押すと OS の色選択が開く） */
 function ColorSwatchInput({label, value, onChange}: {label: string; value: string; onChange: (v: string) => void}) {
   return (
@@ -487,6 +540,15 @@ function CharacterInspector({character}: {character: Character}) {
               value={character.subtitle.animation}
               options={(Object.keys(ANIMATION_LABEL) as SubtitleAnimation[]).map(a => ({value: a, label: ANIMATION_LABEL[a]}))}
               onChange={v => update({subtitle: {...character.subtitle, animation: v as SubtitleAnimation}})}
+              width="100%"
+            />
+            <Selector
+              label="フォント"
+              description="書き出した動画でも同じフォントを使います（この PC に入っているもの）"
+              value={character.subtitle.fontFamily}
+              options={fontOptions(character.subtitle.fontFamily)}
+              hasSearch
+              onChange={v => update({subtitle: {...character.subtitle, fontFamily: v}})}
               width="100%"
             />
             <HStack gap={2}>
