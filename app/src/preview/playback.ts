@@ -5,7 +5,8 @@
 // 音声は再生開始時に、再生位置以降のセリフだけを予約する。デコード結果はキャッシュする。
 
 import {api} from '../ipc';
-import type {VoiceClip} from '../model';
+import type {MediaClip, VoiceClip} from '../model';
+import {scheduleDuck, voiceIntervals} from '../ducking';
 import {projectDuration} from '../model';
 import {getState, setState} from '../store';
 import {pauseAll} from './video';
@@ -29,6 +30,19 @@ function load(cacheKey: string): Promise<AudioBuffer | null> {
       .then(data => (data ? audioCtx().decodeAudioData(data) : null))
       .catch(() => null);
     buffers.set(cacheKey, b);
+  }
+  return b;
+}
+
+/** 素材の音声ファイル（BGM・効果音）を読む。URL ごとにデコード結果を使い回す */
+function loadUrl(url: string): Promise<AudioBuffer | null> {
+  let b = buffers.get(url);
+  if (!b) {
+    b = fetch(url)
+      .then(r => r.arrayBuffer())
+      .then(data => audioCtx().decodeAudioData(data))
+      .catch(() => null);
+    buffers.set(url, b);
   }
   return b;
 }
@@ -81,6 +95,33 @@ export async function play(rate = 1) {
         const offset = Math.max(0, (startFrame - c.start) / fps);
         const when = t0 + Math.max(0, (c.start - startFrame) / fps / rate);
         src.start(Math.max(when, ac.currentTime), offset);
+        sources.push(src);
+      });
+    }
+    // 素材の音声（BGM など）。「セリフ中は下げる」トラックは書き出しと同じ動きで音量を下げる
+    const intervals = voiceIntervals(p);
+    const a = await api;
+    const audioClips = p.clips.filter(
+      (c): c is MediaClip => c.type === 'media' && c.mediaKind === 'audio' && !mutedTracks.has(c.trackId) && c.start + c.duration > startFrame,
+    );
+    for (const c of audioClips) {
+      const track = p.tracks.find(t => t.id === c.trackId);
+      void loadUrl(a.mediaUrl(c.src, s.projectPath)).then(buf => {
+        const st = getState();
+        if (!buf || !st.isPlaying || st.playRate !== rate) return;
+        const src = ac.createBufferSource();
+        src.buffer = buf;
+        src.playbackRate.value = rate;
+        const gain = ac.createGain();
+        if (track?.duck && intervals.length) scheduleDuck(gain.gain, intervals, track.duckLevel, c.volume, t0, startFrame / fps, rate);
+        else gain.gain.value = c.volume;
+        src.connect(gain).connect(ac.destination);
+        const into = Math.max(0, startFrame - c.start);
+        const offset = (c.inPoint + into) / fps;
+        const when = t0 + Math.max(0, (c.start - startFrame) / fps / rate);
+        const at = Math.max(when, ac.currentTime);
+        src.start(at, offset);
+        src.stop(at + (c.duration - into) / fps / rate);
         sources.push(src);
       });
     }

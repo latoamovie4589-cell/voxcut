@@ -5,7 +5,8 @@ import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
 import type {Character, MediaClip, Project, Transform, VoiceClip} from '../model';
-import {projectDuration, portraitLayers} from '../model';
+import {expressionIndex, projectDuration, portraitLayers} from '../model';
+import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
 import {getPeaks, onPeaks} from '../peaks';
 import {commit, getState, setState, useStore} from '../store';
@@ -243,6 +244,8 @@ export function Preview() {
     ctx.fillRect(0, 0, w, h);
 
     const at = (c: {start: number; duration: number}) => playhead >= c.start && playhead < c.start + c.duration;
+    let ivCache: [number, number][] | null = null;
+    const duckIv = () => (ivCache ??= voiceIntervals(p));
     const targets: Target[] = [];
     const ov = overrideRef.current;
     const tf = (key: string, t: Transform) => (ov?.key === key ? ov.transform : t);
@@ -268,7 +271,10 @@ export function Preview() {
           const info = media[m.src];
           if (px?.url && info?.width && info.height) {
             const v = videoFor(px.url, bump);
-            const vol = m.hasAudio ? m.volume : 0;
+            const tr = p.tracks.find(t => t.id === m.trackId);
+            // 「セリフ中は下げる」トラックの動画の音（書き出しと同じ動き）
+            const duck = tr?.duck ? duckGain(duckIv(), tr.duckLevel, playhead / fps) : 1;
+            const vol = m.hasAudio ? m.volume * duck : 0;
             if (syncVideo(v, (m.inPoint + playhead - m.start) / fps, isPlaying, vol, playRate)) {
               const key = `m:${m.id}`;
               const rect = place(ctx, v, tf(key, m.transform), w, h, scale, [info.width, info.height]);
@@ -298,12 +304,17 @@ export function Preview() {
       if (!pt?.visible || !pt.base) continue;
       const eyes = eyesAt(playhead, blinkFor(ch.id, fps, total));
       let mouth = 0;
+      // 表情：セリフで選んだ表情（core/src/lipsync.rs の expression_track と同じく、後ろのクリップが勝つ）
+      let expr = 0;
       for (const c of p.clips) {
-        if (c.type !== 'voice' || c.characterId !== ch.id || !visible.has(c.trackId) || !at(c) || !c.audio) continue;
+        if (c.type !== 'voice' || c.characterId !== ch.id || !visible.has(c.trackId) || !at(c)) continue;
+        const e = expressionIndex(pt, c.expression);
+        if (e > 0) expr = e;
+        if (!c.audio) continue;
         const pk = getPeaks(c.audio.cacheKey);
         if (pk) mouth = Math.max(mouth, mouthAt(pk.data, pk.max, playhead - c.start, fps));
       }
-      const layers = portraitLayers(pt, eyes, mouth).map(src => image(src, projectPath, bump));
+      const layers = portraitLayers(pt, eyes, mouth, expr).map(src => image(src, projectPath, bump));
       const key = `p:${ch.id}`;
       if (layers.every(Boolean)) {
         let rect: Rect | null = null;
