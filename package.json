@@ -1,0 +1,17 @@
+{
+  "name": "voxcut",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "postinstall": "npm --prefix app ci",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "cargo test -p voxcut-core && npm --prefix app run typecheck && npm --prefix app run check:lipsync",
+    "tauri": "tauri",
+    "sidecars": "pwsh scripts/prepare-sidecars.ps1",
+    "build:windows": "pwsh scripts/build-windows.ps1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

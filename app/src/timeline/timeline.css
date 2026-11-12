@@ -1,0 +1,76 @@
+/* タイムライン専用。色は Astryx のトークンを参照する（不透明な面のみ） */
+.vx-timeline {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--color-background-surface);
+}
+.vx-timeline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding-inline: 8px;
+  border-bottom: 0.5px solid var(--color-border);
+  flex: none;
+}
+.vx-timeline-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.vx-timeline-headers {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-inline-end: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  min-height: 0;
+}
+.vx-ruler-corner {
+  flex: none;
+  border-bottom: 0.5px solid var(--color-border);
+}
+.vx-track-headers-clip {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.vx-track-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding-inline: 12px 4px;
+  border-bottom: 0.5px solid var(--color-border);
+  box-sizing: border-box;
+}
+.vx-track-header[data-muted] {
+  opacity: 0.55;
+}
+.vx-timeline-scroll {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  outline: none;
+}
+.vx-timeline-scroll:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+.vx-timeline-canvas {
+  position: sticky;
+  left: 0;
+  top: 0;
+  display: block;
+  touch-action: none;
+  cursor: default;
+}
+/* 中身の大きさだけを持つ空要素（スクロール量を決める）。Canvas は表示枠の大きさで sticky */
+.vx-timeline-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}

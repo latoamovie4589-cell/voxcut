@@ -1,0 +1,108 @@
+/* Astryx の CSS（reset → core → theme の順）。Liquid Glass は使わず、面はすべて不透明 */
+@import '@astryxdesign/core/reset.css';
+@import '@astryxdesign/core/astryx.css';
+@import './themes/voxcut/voxcut.css';
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  /* テーマは書体名を指定するだけなので、文書のフォントはここで決める（HIG：システムフォント） */
+  font-family: var(--font-family-body);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+.vx-center {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.vx-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.vx-split {
+  flex: none;
+  height: 9px;
+  margin-block: -4px;
+  position: relative;
+  z-index: 1;
+  cursor: row-resize;
+  display: grid;
+  place-items: center;
+  outline: none;
+}
+.vx-split::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  height: 1px;
+  background: var(--color-border);
+}
+.vx-split-pill {
+  width: 36px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-border);
+  position: relative;
+}
+.vx-split:hover .vx-split-pill,
+.vx-split:focus-visible .vx-split-pill {
+  background: var(--color-accent);
+}
+
+.vx-color-swatch {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--color-border);
+  cursor: pointer;
+}
+.vx-color-swatch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.vx-color-swatch:has(input:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.vx-credit {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--color-background-muted);
+  font-family: var(--font-family-code, ui-monospace, monospace);
+  font-size: 13px;
+  user-select: text;
+}

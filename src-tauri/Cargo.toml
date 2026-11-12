@@ -1,0 +1,17 @@
+[package]
+name = "voxcut"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "合成音声と連携する軽量動画編集ソフト"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+voxcut-core = { path = "../core" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true

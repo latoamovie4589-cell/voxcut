@@ -1,0 +1,11 @@
+node_modules/
+target/
+app/dist/
+src-tauri/gen/
+bridges/aivoice-bridge/bin/
+bridges/aivoice-bridge/obj/
+*.voxcut.tmp
+*.tsbuildinfo
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
+bridges/aivoice-bridge/test/out/

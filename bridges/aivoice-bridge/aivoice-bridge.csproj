@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A.I.VOICE Editor API を VoxCut から使うための補助プロセス。
+    API の DLL（AI.Talk.Editor.Api.dll）は .NET Framework 向けなので net48 で作る（Windows 10/11 に標準で入っている）。
+    DLL はコンパイル時に参照せず、実行時にインストール先から読み込んでリフレクションで呼ぶ
+    （A.I.VOICE が入っていない PC や CI でもビルドでき、DLL を再配布しない）。
+    JSON は MiniJson.cs で読み書きし、追加の DLL を持たない単一 exe にする（Tauri のサイドカーとして配るため）。
+
+    ビルド：dotnet build -c Release
+    （Linux / macOS で文法だけ確かめるとき：dotnet build -p:TargetFramework=net8.0）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>aivoice-bridge</AssemblyName>
+    <RootNamespace>VoxCut.AivoiceBridge</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- test/ 以下（偽 API）は本体に含めない -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);test/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <!-- Visual Studio が無い環境（CI など）でも net48 を作れるようにする -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

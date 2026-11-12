@@ -1,0 +1,84 @@
+# Windows でテストし、インストーラー（NSIS）を作る。
+# - プッシュ・プルリクエスト：テストとインストーラー作成（成果物として 14 日間ダウンロードできる）
+# - v で始まるタグ（例：v0.2.0）：上に加えて GitHub Releases に下書きで公開
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 同梱する実行ファイルを用意（FFmpeg・A.I.VOICE 補助プロセス）
+        shell: pwsh
+        run: ./scripts/prepare-sidecars.ps1
+
+      - name: テストのため FFmpeg を PATH に入れる
+        shell: pwsh
+        run: |
+          $d = New-Item -ItemType Directory -Force -Path target/ffmpeg-path
+          Copy-Item src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe "$d/ffmpeg.exe"
+          Copy-Item src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe "$d/ffprobe.exe"
+          "$($d.FullName)" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: Rust コアのテスト
+        run: cargo test -p voxcut-core
+
+      - name: 画面の型チェックと口パク計算の一致確認
+        run: |
+          npm --prefix app run typecheck
+          npm --prefix app run check:lipsync
+
+      - name: A.I.VOICE 補助プロセスのテスト（偽の API で）
+        shell: pwsh
+        run: ./bridges/aivoice-bridge/test/run-test.ps1
+
+      - name: インストーラーを作る
+        run: npx tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoxCut-setup
+          path: target/release/bundle/nsis/*.exe
+          retention-days: 14
+
+      - name: リリース（下書き）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: target/release/bundle/nsis/*.exe

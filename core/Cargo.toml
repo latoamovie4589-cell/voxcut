@@ -1,0 +1,19 @@
+[package]
+name = "voxcut-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VoxCut のコア：プロジェクトモデル・音声合成連携・キャッシュ・字幕・書き出し"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+hound = "3.5"
+# 同期 HTTP（VoiSona Talk 用）。小さく、TLS 不要の localhost 通信だけなので機能を絞る
+ureq = { version = "2", default-features = false, features = ["json"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
