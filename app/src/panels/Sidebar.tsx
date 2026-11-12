@@ -10,8 +10,9 @@ import {List} from '@astryxdesign/core/List';
 import {StatusDot} from '@astryxdesign/core/StatusDot';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {ScriptList} from './ScriptList';
-import {Plus, RefreshCw} from 'lucide-react';
-import {ENGINE_LABEL, speakerLabel} from '../model';
+import {ChevronDown, ChevronUp, Plus, RefreshCw} from 'lucide-react';
+import {useState} from 'react';
+import {ENGINE_LABEL, isSpeakerMissing, speakerLabel} from '../model';
 import {addCharacter, removeCharacter, setState, useStore} from '../store';
 import {exportCharacterFile, getNotify, importCharacterFile, refreshEngines} from '../actions';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
@@ -28,7 +29,13 @@ export function Sidebar() {
   const checking = useStore(s => s.checkingEngines);
   const voices = useStore(s => s.voices);
   const tab = useStore(s => s.sidebarTab);
+  // 一覧は、使っているソフトに問題があるときだけ開いておく（問題がなければ要約 1 行にたたむ）
+  const [enginesOpen, setEnginesOpen] = useState<boolean | null>(null);
   if (!project) return null;
+  const used = new Set(project.characters.map(c => c.voice.engine));
+  const problems = checking ? [] : engines.filter(e => used.has(e.engine) && e.status.state !== 'ready').map(e => e.engine);
+  const readyCount = engines.filter(e => e.status.state === 'ready').length;
+  const showEngines = enginesOpen ?? (problems.length > 0 || readyCount === 0);
   return (
     <VStack gap={3} padding={3}>
       <TabList value={tab} onChange={v => setState({sidebarTab: v as 'characters' | 'script'})} layout="fill" size="sm" role="tablist">
@@ -76,7 +83,7 @@ export function Sidebar() {
               as="li"
               density="compact"
               label={c.name}
-              description={`${ENGINE_LABEL[c.voice.engine]} · ${speakerLabel(c.voice, voices)}`}
+              description={`${ENGINE_LABEL[c.voice.engine]} · ${speakerLabel(c.voice, voices)}${problems.includes(c.voice.engine) ? '（今は使えません）' : isSpeakerMissing(c.voice, voices) ? '（話者が入っていません）' : ''}`}
               startContent={<Swatch color={c.color} />}
               isSelected={!selectedClipId && c.id === selectedCharacterId}
               onClick={() => setState({selectedCharacterId: c.id, selectedClipId: null})}
@@ -87,9 +94,26 @@ export function Sidebar() {
 
       <VStack gap={1}>
         <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
-          <Heading level={3}>音声合成ソフト</Heading>
-          <IconButton label="接続を確認し直す" tooltip="接続を確認し直す" variant="ghost" size="sm" icon={<Icon icon={RefreshCw} />} clickAction={refreshEngines} />
+          <VStack gap={0}>
+            <Heading level={3}>音声合成ソフト</Heading>
+            <Text type="supporting" maxLines={1}>
+              {checking || !engines.length ? '確認しています…' : problems.length ? `${problems.map(e => ENGINE_LABEL[e]).join('・')} が使えません` : `${readyCount} つ使えます`}
+            </Text>
+          </VStack>
+          <HStack gap={0}>
+            <IconButton label="接続を確認し直す" tooltip="接続を確認し直す" variant="ghost" size="sm" icon={<Icon icon={RefreshCw} />} clickAction={refreshEngines} />
+            <IconButton
+              label={showEngines ? '音声合成ソフトの一覧をたたむ' : '音声合成ソフトの一覧を出す'}
+              tooltip={showEngines ? 'たたむ' : '一覧を出す'}
+              variant="ghost"
+              size="sm"
+              aria-expanded={showEngines}
+              icon={<Icon icon={showEngines ? ChevronUp : ChevronDown} />}
+              onClick={() => setEnginesOpen(!showEngines)}
+            />
+          </HStack>
         </HStack>
+        {showEngines && (
         <List density="compact">
           {engines.map(({engine, status}) => {
             const ok = !checking && status.state === 'ready';
@@ -119,8 +143,6 @@ export function Sidebar() {
             );
           })}
         </List>
-        {engines.length === 0 && (
-          <Text type="supporting">確認しています…</Text>
         )}
       </VStack>
       </VStack>

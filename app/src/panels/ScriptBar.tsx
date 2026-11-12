@@ -7,7 +7,8 @@ import {Icon} from '@astryxdesign/core/Icon';
 import {HStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {CornerDownLeft} from 'lucide-react';
+import {ClipboardPaste, CornerDownLeft} from 'lucide-react';
+import {IconButton} from '@astryxdesign/core/IconButton';
 import {addLine, setState, useStore} from '../store';
 import {synthesize, type Notify} from '../actions';
 
@@ -60,6 +61,13 @@ export function ScriptBar({notify}: {notify: Notify}) {
           width="100%"
         />
       </div>
+      <IconButton
+        label="台本をまとめて貼り付け"
+        tooltip="台本をまとめて貼り付け（「名前：セリフ」の形）"
+        variant="ghost"
+        icon={<Icon icon={ClipboardPaste} />}
+        onClick={() => setState({pasteOpen: true, pasteText: text.includes('\n') ? text : ''})}
+      />
       <Button label="追加" icon={<Icon icon={CornerDownLeft} />} onClick={submit} isDisabled={!text.trim()} />
     </HStack>
   );
