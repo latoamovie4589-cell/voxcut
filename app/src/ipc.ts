@@ -96,6 +96,7 @@ async function tauriApi(): Promise<Api> {
   const {invoke, convertFileSrc} = await import('@tauri-apps/api/core');
   const {listen} = await import('@tauri-apps/api/event');
   const dialog = await import('@tauri-apps/plugin-dialog');
+  const lastSaveDir: Partial<Record<'project' | 'video', string>> = {};
   return {
     newProject: () => invoke('new_project'),
     openProject: path => invoke('open_project', {path}),
@@ -132,11 +133,22 @@ async function tauriApi(): Promise<Api> {
       const r = await dialog.open({filters: [{name: 'VoxCut', extensions: ['voxcut']}]});
       return typeof r === 'string' ? r : null;
     },
-    pickSavePath: async (kind, suggested) =>
-      dialog.save({
-        defaultPath: suggested,
+    pickSavePath: async (kind, suggested) => {
+      // フォルダが付いていない名前だけのときは、動画は「ビデオ」（前回書き出した場所があればそこ）、
+      // プロジェクトは「ドキュメント」から始める。直前に別の画面で開いたフォルダから始まらないように
+      let defaultPath = suggested;
+      if (!/[\\/]/.test(suggested)) {
+        const path = await import('@tauri-apps/api/path');
+        const base = kind === 'video' ? (lastSaveDir.video ?? (await path.videoDir())) : (lastSaveDir.project ?? (await path.documentDir()));
+        defaultPath = await path.join(base, suggested);
+      }
+      const r = await dialog.save({
+        defaultPath,
         filters: kind === 'project' ? [{name: 'VoxCut', extensions: ['voxcut']}] : [{name: 'MP4', extensions: ['mp4']}],
-      }),
+      });
+      if (r) lastSaveDir[kind] = r.replace(/[\\/][^\\/]*$/, '');
+      return r;
+    },
     pickMedia: async (kind, multiple) => {
       const r = await dialog.open({
         multiple,

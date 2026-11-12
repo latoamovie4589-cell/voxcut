@@ -14,7 +14,7 @@ import {useToast} from '@astryxdesign/core/Toast';
 import {AudioLines, Menu, TriangleAlert, Upload} from 'lucide-react';
 import {framesToTimecode, projectDuration} from './model';
 import {deleteClip, getState, redo, setState, splitClip, undo, useStore} from './store';
-import {boot, openProject, saveProject, setNotify, synthesize, type Notify} from './actions';
+import {boot, openProject, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {ExportDialog} from './panels/ExportDialog';
 import {api, setDirtyGetter} from './ipc';
 import {Timeline} from './timeline/Timeline';
@@ -164,7 +164,16 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
 
 export function App() {
   const showToast = useToast();
-  const notify = useCallback<Notify>((body, type = 'info') => void showToast({body, type}), [showToast]);
+  // エラーも時間がたてば消す（詳しい内容は右パネルとタイムラインに残る）。key 付きは同じ種類を置き換える
+  const dismissers = useRef(new Map<string, () => void>());
+  const notify = useCallback<Notify>(
+    (body, type = 'info', key) => {
+      if (key) dismissers.current.get(key)?.();
+      const dismiss = showToast({body, type, isAutoHide: true, autoHideDuration: type === 'error' ? 10000 : 5000});
+      if (key) dismissers.current.set(key, dismiss);
+    },
+    [showToast],
+  );
   const settingsOpen = useStore(s => s.settingsOpen);
   const setSettingsOpen = (o: boolean) => setState({settingsOpen: o});
   const [exportOpen, setExportOpen] = useState(false);
@@ -188,6 +197,10 @@ export function App() {
 
   useEffect(() => {
     setNotify(notify);
+    setClearNotice(key => {
+      dismissers.current.get(key)?.();
+      dismissers.current.delete(key);
+    });
     void boot().catch(e => notify(String(e), 'error'));
   }, [notify]);
 

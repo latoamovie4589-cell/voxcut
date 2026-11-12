@@ -2,17 +2,23 @@
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait} from './model';
-import {newPortrait} from './model';
+import {ENGINE_LABEL, isSpeakerMissing, newPortrait} from './model';
 import {addMediaClips, getState, replaceProject, setPortrait, setState} from './store';
 import {forget, stop} from './preview/playback';
 
-export type Notify = (body: string, type?: 'info' | 'error') => void;
+/** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
+export type Notify = (body: string, type?: 'info' | 'error', key?: string) => void;
 
 // 引数で受け取れない場所（ボタンの clickAction など）から使う通知先
 let notifyRef: Notify = () => {};
 export const setNotify = (n: Notify) => {
   notifyRef = n;
 };
+let clearRef: (key: string) => void = () => {};
+export const setClearNotice = (c: (key: string) => void) => {
+  clearRef = c;
+};
+export const clearNotice = (key: string) => clearRef(key);
 
 /** 素材を選んで再生位置に追加 */
 export async function addMedia() {
@@ -83,6 +89,8 @@ export async function pickPortraitPart(characterId: string, part: 'base' | 'eyes
 export function friendlyError(e: unknown): string {
   const msg = String(e).replace(/^Error:\s*/, '');
   if (/接続できません|NotRunning|起動/.test(msg)) return msg;
+  if (/VOICEPEAK/.test(msg) && /Internal BUG|BUG REPORT/i.test(msg))
+    return 'VOICEPEAK の中でエラーが起きました。話者がこのPCの VOICEPEAK に入っているか、VOICEPEAK の画面を閉じてから試してください';
   if (/HostNotFound/.test(msg)) return 'A.I.VOICE が見つかりません。インストールされているか確かめてください';
   if (/os error 2|No such file|見つかりません/.test(msg)) return `ファイルが見つかりません（${msg}）`;
   return msg.length > 160 ? `${msg.slice(0, 160)}…` : msg;
@@ -97,7 +105,13 @@ export async function boot() {
 
 export async function refreshEngines() {
   const a = await api;
-  const engines = await a.engineStatus();
+  setState({checkingEngines: true});
+  let engines;
+  try {
+    engines = await a.engineStatus();
+  } finally {
+    setState({checkingEngines: false});
+  }
   setState({engines});
   // 使えるエンジンの話者一覧を並列に取得
   await Promise.all(
@@ -106,10 +120,30 @@ export async function refreshEngines() {
       .map(e =>
         a
           .listVoices(e.engine)
-          .then(v => setState(s => ({voices: {...s.voices, [e.engine]: v}})))
+          .then(v => {
+            setState(s => ({voices: {...s.voices, [e.engine]: v}}));
+            fixUntouchedSpeakers();
+          })
           .catch(() => {}),
       ),
   );
+}
+
+/**
+ * まだ何も編集していない（サンプルの）プロジェクトで、このPCのソフトに入っていない話者を
+ * 入っている最初の話者に置き換える。利用者が作ったプロジェクトは勝手に変えない
+ */
+function fixUntouchedSpeakers() {
+  const s = getState();
+  if (!s.project || s.dirty || s.projectPath || s.past.length) return;
+  let changed = false;
+  const characters = s.project.characters.map(ch => {
+    if (!isSpeakerMissing(ch.voice, s.voices)) return ch;
+    const first = s.voices[ch.voice.engine]![0];
+    changed = true;
+    return {...ch, voice: {...ch.voice, speaker: first.speaker}};
+  });
+  if (changed) setState({project: {...s.project, characters}});
 }
 
 export async function loadVoices(engine: EngineId) {
@@ -123,6 +157,23 @@ export async function synthesize(notify: Notify, clipIds?: string[]) {
   const s = getState();
   if (!s.project || s.busy) return;
   const a = await api;
+  clearNotice('synth');
+  // このPCのソフトに入っていない話者の行は送らず、分かる言葉で知らせる
+  const missing = new Map<string, string>();
+  for (const c of s.project.clips) {
+    if (c.type !== 'voice' || (clipIds && !clipIds.includes(c.id))) continue;
+    const ch = s.project.characters.find(x => x.id === c.characterId);
+    if (ch && isSpeakerMissing(ch.voice, s.voices)) {
+      missing.set(c.id, `話者「${ch.voice.speaker}」は ${ENGINE_LABEL[ch.voice.engine]} に入っていません。右のパネルで「${ch.name}」の話者を選び直してください`);
+    }
+  }
+  if (missing.size) {
+    const ids = (clipIds ?? s.project.clips.filter(c => c.type === 'voice').map(c => c.id)).filter(id => !missing.has(id));
+    setState(st => ({synthErrors: {...st.synthErrors, ...Object.fromEntries(missing)}}));
+    notify(`${missing.size} 件のセリフを合成できませんでした：${[...missing.values()][0]}`, 'error', 'synth');
+    if (!ids.length) return;
+    clipIds = ids;
+  }
   setState({busy: {label: '音声を合成しています', ratio: 0}});
   const off = await a.onSynthProgress(p => setState({busy: {label: '音声を合成しています', ratio: p.done / Math.max(1, p.total)}}));
   try {
@@ -141,7 +192,7 @@ export async function synthesize(notify: Notify, clipIds?: string[]) {
       for (const [id, msg] of failed) errors[id] = friendlyError(msg);
       return {synthErrors: errors};
     });
-    if (failed.length) notify(`${failed.length} 件のセリフを合成できませんでした：${friendlyError(failed[0][1])}`, 'error');
+    if (failed.length) notify(`${failed.length} 件のセリフを合成できませんでした：${friendlyError(failed[0][1])}`, 'error', 'synth');
   } catch (e) {
     notify(friendlyError(e), 'error');
   } finally {

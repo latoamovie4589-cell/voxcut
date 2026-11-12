@@ -28,6 +28,8 @@ export interface State {
   previewFull: boolean;
   zoom: number; // 1 フレームあたりのピクセル
   engines: {engine: EngineId; status: EngineStatus}[];
+  /** 接続を確認し直している最中 */
+  checkingEngines: boolean;
   voices: Partial<Record<EngineId, VoiceInfo[]>>;
   busy: null | {label: string; ratio: number | null};
   /** 素材の情報（ffprobe の結果。プロジェクトには保存しない） */
@@ -64,6 +66,7 @@ let state: State = {
   previewFull: false,
   zoom: 4,
   engines: [],
+  checkingEngines: false,
   voices: {},
   busy: null,
   media: {},

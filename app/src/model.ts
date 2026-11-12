@@ -197,6 +197,12 @@ export function reflowVoiceTrack(p: Project, trackId: string): Project {
   return {...p, clips: p.clips.map(c => updated.get(c.id) ?? c)};
 }
 
+/** 話者一覧を取れているのに、その中に話者がいない（ソフトに入っていない）か */
+export function isSpeakerMissing(voice: Voice, voices: Partial<Record<EngineId, VoiceInfo[]>>): boolean {
+  const list = voices[voice.engine];
+  return !!list && list.length > 0 && !list.some(v => v.speaker === voice.speaker);
+}
+
 /** 話者の表示名（VOICEVOX の話者は番号なので、一覧から名前を引く） */
 export function speakerLabel(voice: Voice, voices: Partial<Record<EngineId, VoiceInfo[]>>): string {
   return voices[voice.engine]?.find(v => v.speaker === voice.speaker)?.displayName ?? (voice.speaker || '話者未設定');
