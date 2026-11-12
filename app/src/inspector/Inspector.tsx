@@ -1,3 +1,4 @@
+import {useState} from 'react';
 // 右パネル。選んだセリフ、またはキャラクターの設定を編集する。
 
 import {Banner} from '@astryxdesign/core/Banner';
@@ -13,15 +14,15 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {AudioLines, ImagePlus, MousePointerClick, Scissors, Trash2, X} from 'lucide-react';
+import {AudioLines, ImagePlus, MousePointerClick, Plus, Scissors, Trash2, X} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
-import type {Character, EngineId, MediaClip, Portrait, Transform, VoiceClip, VoiceParams} from '../model';
+import type {Character, EngineId, Expression, MediaClip, Portrait, Transform, Voice, VoiceClip, VoiceParams} from '../model';
 import {ENGINE_LABEL, defaultParams, framesToTimecode, isSpeakerMissing} from '../model';
 import {ANIMATION_LABEL, type SubtitleAnimation} from '../subtitleAnim';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
-import {deleteClip, getState, setPortrait, setState, splitClip, updateCharacter, updateClip, useStore} from '../store';
+import {deleteClip, deleteClips, duplicateSelection, editableSelection, getState, setCharacterForSelection, setPortrait, setState, splitClip, updateCharacter, updateClip, useStore} from '../store';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
-import {loadVoices, pickPortraitPart, synthesize, type Notify} from '../actions';
+import {loadVoices, pickImagePath, pickPortraitPart, synthesize, type Notify} from '../actions';
 
 function ParamSliders({value, onChange}: {value: VoiceParams; onChange: (v: VoiceParams) => void}) {
   const set = (k: keyof Omit<VoiceParams, 'emotions'>) => (n: number) => onChange({...value, [k]: n});
@@ -33,6 +34,42 @@ function ParamSliders({value, onChange}: {value: VoiceParams; onChange: (v: Voic
     </VStack>
   );
 }
+
+/** 感情（VOICEPEAK の感情、VoiSona のスタイル）。話者が対応していなければ出さない */
+function EmotionSliders({voice, value, onChange}: {voice: Voice; value: VoiceParams; onChange: (v: VoiceParams) => void}) {
+  const info = useStore(s => s.voices[voice.engine]?.find(v => v.speaker === voice.speaker));
+  const names = info?.emotions ?? [];
+  if (!names.length) return null;
+  // VOICEPEAK は 0〜100、VoiSona は 0〜1 の重み
+  const max = voice.engine === 'voisona' ? 1 : 100;
+  const set = (k: string, n: number) => {
+    const emotions = {...value.emotions};
+    if (n <= 0) delete emotions[k];
+    else emotions[k] = n;
+    onChange({...value, emotions});
+  };
+  return (
+    <VStack gap={3}>
+      <Text type="label">感情</Text>
+      {names.map(n => (
+        <Slider
+          key={n}
+          label={EMOTION_LABEL[n] ?? n}
+          value={value.emotions[n] ?? 0}
+          min={0}
+          max={max}
+          step={max / 100}
+          valueDisplay="text"
+          formatValue={v => `${Math.round((v / max) * 100)}%`}
+          onChange={(v: number) => set(n, v)}
+        />
+      ))}
+    </VStack>
+  );
+}
+
+/** VOICEPEAK の感情名（英語）を日本語にする */
+const EMOTION_LABEL: Record<string, string> = {happy: '喜び', fun: '楽しさ', angry: '怒り', sad: '悲しみ', bosoboso: 'ぼそぼそ', doyaru: 'ドヤ', honwaka: 'ほんわか', teary: '涙声', ochoushimono: 'お調子者', angry2: '怒り（強）'};
 
 function Section({title, children}: {title: string; children: React.ReactNode}) {
   return (
@@ -91,6 +128,8 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         </HStack>
       </Section>
       <Divider />
+      <LineStyleSection clip={clip} />
+      <Divider />
       <Section title="この行の声">
         <Switch
           label="キャラクターの設定と変える"
@@ -100,8 +139,15 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
           labelSpacing="spread"
           width="100%"
         />
-        {clip.paramsOverride && (
-          <ParamSliders value={clip.paramsOverride} onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})} />
+        {clip.paramsOverride && ch && (
+          <>
+            <ParamSliders value={clip.paramsOverride} onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})} />
+            <EmotionSliders
+              voice={{...ch.voice, speaker: clip.speakerOverride || ch.voice.speaker}}
+              value={clip.paramsOverride}
+              onChange={v => updateClip(clip.id, {paramsOverride: v, audio: null})}
+            />
+          </>
         )}
         <NumberInput
           label="次のセリフまでの間（フレーム）"
@@ -112,6 +158,41 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         />
       </Section>
     </>
+  );
+}
+
+/** この行の表情（立ち絵）と話し方（話者のスタイル） */
+function LineStyleSection({clip}: {clip: VoiceClip}) {
+  const ch = useStore(s => s.project!.characters.find(c => c.id === clip.characterId));
+  const voices = useStore(s => (ch ? s.voices[ch.voice.engine] : undefined));
+  if (!ch) return null;
+  const expressions = ch.portrait?.expressions ?? [];
+  // 同じキャラクターの別のスタイル（VOICEVOX はクレジットが同じもの）。それ以外のソフトは同じソフトの話者すべて
+  const base = voices?.find(v => v.speaker === ch.voice.speaker);
+  const styles = (voices ?? []).filter(v => (ch.voice.engine === 'voicevox' ? v.credit === base?.credit : true));
+  return (
+    <Section title="この行の表情と話し方">
+      <Selector
+        label="表情"
+        description={expressions.length ? 'この行の間だけ立ち絵の表情を変えます' : '立ち絵の設定で表情を足すと選べます'}
+        value={clip.expression ?? ''}
+        isDisabled={!expressions.length}
+        options={[{value: '', label: '通常'}, ...expressions.map(e => ({value: e.name, label: e.name}))]}
+        onChange={v => updateClip(clip.id, {expression: v || null})}
+        width="100%"
+      />
+      {styles.length > 1 && (
+        <Selector
+          label={ch.voice.engine === 'voicevox' ? 'スタイル' : '話者'}
+          description="この行だけ変えます"
+          value={clip.speakerOverride ?? ''}
+          options={[{value: '', label: `キャラクターと同じ（${base?.displayName ?? ch.voice.speaker}）`}, ...styles.filter(v => v.speaker !== ch.voice.speaker).map(v => ({value: v.speaker, label: v.displayName}))]}
+          hasSearch={styles.length > 8}
+          onChange={v => updateClip(clip.id, {speakerOverride: v || null, audio: null})}
+          width="100%"
+        />
+      )}
+    </Section>
   );
 }
 
@@ -193,6 +274,65 @@ function PartRow({label, path, onPick, onClear}: {label: string; path: string | 
   );
 }
 
+/** 表情差分。差し替えたいパーツだけ選ぶ（選ばなかったパーツは通常の画像のまま） */
+function ExpressionEditor({portrait, onChange}: {portrait: Portrait; onChange: (e: Expression[]) => void}) {
+  const list = portrait.expressions ?? [];
+  const [current, setCurrent] = useState(0);
+  const ex = list[Math.min(current, list.length - 1)];
+  const idx = list.indexOf(ex);
+  const update = (patch: Partial<Expression>) => onChange(list.map((e, i) => (i === idx ? {...e, ...patch} : e)));
+  const add = () => {
+    let n = list.length + 1;
+    while (list.some(e => e.name === `表情 ${n}`)) n++;
+    onChange([...list, {name: `表情 ${n}`, base: null, eyes: [null, null, null], mouth: [null, null, null]}]);
+    setCurrent(list.length);
+  };
+  const pick = async (part: 'base' | 'eyes' | 'mouth', i = 0) => {
+    const path = await pickImagePath();
+    if (!path) return;
+    if (part === 'base') update({base: path});
+    else {
+      const arr = [...ex[part]] as Expression['eyes'];
+      arr[i] = path;
+      update({[part]: arr});
+    }
+  };
+  const clear = (part: 'base' | 'eyes' | 'mouth', i = 0) => {
+    if (part === 'base') update({base: null});
+    else {
+      const arr = [...ex[part]] as Expression['eyes'];
+      arr[i] = null;
+      update({[part]: arr});
+    }
+  };
+  return (
+    <VStack gap={3}>
+      <HStack gap={2} vAlign="center" hAlign="between">
+        <Text type="label">表情</Text>
+        <Button label="表情を足す" size="sm" icon={<Icon icon={Plus} />} onClick={add} />
+      </HStack>
+      {!ex ? (
+        <Text type="supporting">笑顔・怒りなどの差分画像を登録すると、セリフごとに選べます。差し替えたいパーツだけ選んでください。</Text>
+      ) : (
+        <>
+          {list.length > 1 && (
+            <Selector label="編集する表情" value={String(idx)} options={list.map((e, i) => ({value: String(i), label: e.name}))} onChange={v => setCurrent(Number(v))} width="100%" />
+          )}
+          <TextInput label="表情の名前" value={ex.name} onChange={name => update({name})} />
+          <PartRow label="体" path={ex.base} onPick={() => void pick('base')} onClear={() => clear('base')} />
+          {['目（開）', '目（半目）', '目（閉）'].map((l, i) => (
+            <PartRow key={l} label={l} path={ex.eyes[i]} onPick={() => void pick('eyes', i)} onClear={() => clear('eyes', i)} />
+          ))}
+          {['口（閉）', '口（半開き）', '口（開）'].map((l, i) => (
+            <PartRow key={l} label={l} path={ex.mouth[i]} onPick={() => void pick('mouth', i)} onClear={() => clear('mouth', i)} />
+          ))}
+          <Button label="この表情を消す" size="sm" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => onChange(list.filter((_, i) => i !== idx))} />
+        </>
+      )}
+    </VStack>
+  );
+}
+
 function PortraitSection({character}: {character: Character}) {
   const pt = character.portrait;
   if (!pt) {
@@ -221,6 +361,7 @@ function PortraitSection({character}: {character: Character}) {
       {mouth.map((l, i) => (
         <PartRow key={l} label={l} path={pt.mouth[i]} onPick={() => void pickPortraitPart(character.id, 'mouth', i)} onClear={() => clearPart('mouth', i)} />
       ))}
+      <ExpressionEditor portrait={pt} onChange={expressions => set({expressions})} />
       <TransformFields value={pt.transform} onChange={transform => set({transform})} />
       <Button label="立ち絵を外す" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => setPortrait(character.id, null)} />
     </Section>
@@ -315,6 +456,7 @@ function CharacterInspector({character}: {character: Character}) {
               />
             )}
             <ParamSliders value={character.voice.params} onChange={params => setVoice({params})} />
+            <EmotionSliders voice={character.voice} value={character.voice.params} onChange={params => setVoice({params})} />
             <Slider
               label="音量"
               value={character.voice.params.volume}
@@ -361,11 +503,48 @@ function CharacterInspector({character}: {character: Character}) {
   );
 }
 
+/** 複数選んでいるとき：まとめてできること */
+function MultiInspector({ids, notify}: {ids: string[]; notify: Notify}) {
+  const project = useStore(s => s.project)!;
+  const clips = project.clips.filter(c => ids.includes(c.id));
+  const lines = clips.filter((c): c is VoiceClip => c.type === 'voice');
+  const fps = project.video.fps;
+  const start = Math.min(...clips.map(c => c.start));
+  const end = Math.max(...clips.map(c => c.start + c.duration));
+  return (
+    <Section title={`${clips.length} 個を選んでいます`}>
+      <Text type="supporting" hasTabularNumbers>
+        セリフ {lines.length} 行・素材 {clips.length - lines.length} 個（{framesToTimecode(start, fps)} 〜 {framesToTimecode(end, fps)}）
+      </Text>
+      {lines.length > 0 && (
+        <Selector
+          label="セリフのキャラクターをまとめて変える"
+          value={lines.every(l => l.characterId === lines[0].characterId) ? lines[0].characterId : ''}
+          placeholder="キャラクターを選ぶ"
+          options={project.characters.map(c => ({value: c.id, label: c.name}))}
+          onChange={v => setCharacterForSelection(v)}
+          width="100%"
+        />
+      )}
+      <HStack gap={2} wrap="wrap">
+        {lines.length > 0 && (
+          <Button label="選んだ行を合成" icon={<Icon icon={AudioLines} />} onClick={() => void synthesize(notify, lines.map(l => l.id))} />
+        )}
+        <Button label="複製" variant="ghost" onClick={() => duplicateSelection()} />
+        <Button label="削除" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => deleteClips(editableSelection().map(c => c.id))} />
+      </HStack>
+      <Text type="supporting">Ctrl+C で写す・Ctrl+V で貼る・Ctrl+D で複製。Alt+←→ でまとめて動かせます。</Text>
+    </Section>
+  );
+}
+
 export function Inspector({notify}: {notify: Notify}) {
   const project = useStore(s => s.project);
   const selectedClipId = useStore(s => s.selectedClipId);
   const selectedCharacterId = useStore(s => s.selectedCharacterId);
+  const multi = useStore(s => s.selectedClipIds);
   if (!project) return null;
+  if (multi.length > 1) return <MultiInspector ids={multi} notify={notify} />;
   const clip = project.clips.find(c => c.id === selectedClipId);
   if (clip?.type === 'voice') return <ClipInspector key={clip.id} clip={clip} notify={notify} />;
   if (clip?.type === 'media') return <MediaInspector key={clip.id} clip={clip} notify={notify} />;
