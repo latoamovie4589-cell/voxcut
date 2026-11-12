@@ -385,7 +385,7 @@ mod tests {
         assert!(fc.contains("amix=inputs=3"));
         assert!(fc.contains("overlay=x=(W-w)/2+0.0"));
         assert!(fc.contains("ass='/tmp/s.ass'[vout]"));
-        assert!(args.contains(&"/proj/bg.png".to_string()));
+        assert!(args.contains(&Path::new("/proj").join("bg.png").to_string_lossy().into_owned()));
         // 背景の長さ＝最後のクリップの終わり（270 フレーム = 9 秒）
         assert!(args.iter().any(|a| a.ends_with(":d=9.000")));
     }
