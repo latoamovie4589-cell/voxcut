@@ -3,6 +3,7 @@
 
 use crate::cache::{cache_key, AudioCache};
 use crate::model::{AudioRef, EngineId, Project, TrackKind, Voice};
+use crate::text::Dictionary;
 use crate::tts::{SynthRequest, TtsEngine};
 use crate::{Error, Result};
 use serde::Serialize;
@@ -34,7 +35,8 @@ pub struct JobResult {
 }
 
 /// 合成が必要なジョブと、キャッシュから即座に埋められる結果に分ける
-pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>) -> (Vec<SynthJob>, Vec<JobResult>) {
+/// `dict` の読み方で置き換えた文を合成する（キャッシュも置き換え後の文で引く）
+pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>, dict: &Dictionary) -> (Vec<SynthJob>, Vec<JobResult>) {
     let mut by_key: BTreeMap<String, SynthJob> = BTreeMap::new();
     let mut ready = vec![];
     for c in &p.clips {
@@ -46,7 +48,8 @@ pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>) -> (Vec<Sy
             continue;
         }
         let Some(voice) = p.effective_voice(v) else { continue };
-        let key = cache_key(&voice, &v.text);
+        let text = dict.apply(&v.text);
+        let key = cache_key(&voice, &text);
         if let Some(path) = cache.get(&key) {
             ready.push(JobResult {
                 clip_ids: vec![c.id.clone()],
@@ -57,7 +60,7 @@ pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>) -> (Vec<Sy
         by_key
             .entry(key.clone())
             .and_modify(|j| j.clip_ids.push(c.id.clone()))
-            .or_insert(SynthJob { clip_ids: vec![c.id.clone()], voice, text: v.text.clone(), key });
+            .or_insert(SynthJob { clip_ids: vec![c.id.clone()], voice, text, key });
     }
     (by_key.into_values().collect(), ready)
 }
@@ -197,7 +200,7 @@ mod tests {
         let ai = FakeEngine::new(EngineId::Aivoice);
         let engines: Vec<Arc<dyn TtsEngine>> = vec![vp.clone(), ai.clone()];
 
-        let (jobs, ready) = plan(&p, &cache, None);
+        let (jobs, ready) = plan(&p, &cache, None, &Dictionary::default());
         assert_eq!(jobs.len(), 2);
         assert!(ready.is_empty());
         let progress = Mutex::new(vec![]);
@@ -212,7 +215,7 @@ mod tests {
         assert_eq!(p.clips[1].start, 63 + 6);
 
         // 2回目は全部キャッシュから
-        let (jobs, ready) = plan(&p, &cache, None);
+        let (jobs, ready) = plan(&p, &cache, None, &Dictionary::default());
         assert!(jobs.is_empty());
         assert_eq!(ready.len(), 3);
     }
@@ -227,7 +230,7 @@ mod tests {
         }
         let vp = FakeEngine::new(EngineId::Voicepeak);
         let engines: Vec<Arc<dyn TtsEngine>> = vec![vp.clone()];
-        let (jobs, _) = plan(&p, &cache, None);
+        let (jobs, _) = plan(&p, &cache, None, &Dictionary::default());
         run(jobs, &engines, &cache, &|_| {});
         assert_eq!(vp.calls.load(Ordering::SeqCst), 3);
         assert_eq!(vp.max_seen.load(Ordering::SeqCst), 1);
@@ -238,9 +241,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let cache = AudioCache::new(d.path());
         let mut p = Project::sample();
-        let (jobs, _) = plan(&p, &cache, None);
+        let (jobs, _) = plan(&p, &cache, None, &Dictionary::default());
         let res = run(jobs, &[], &cache, &|_| {});
         let failed = apply(&mut p, res);
         assert_eq!(failed.len(), 3);
+    }
+
+    #[test]
+    fn dictionary_and_speaker_override_change_the_job() {
+        let d = tempfile::tempdir().unwrap();
+        let cache = AudioCache::new(d.path());
+        let mut p = Project::sample();
+        let dict = Dictionary::new(&[crate::text::DictEntry { word: "VoxCut".into(), reading: "ボックスカット".into() }]);
+        let (jobs, _) = plan(&p, &cache, Some(&["c1".to_string()]), &dict);
+        assert_eq!(jobs[0].text, "こんにちは。ボックスカット のサンプルです。");
+        let (plain, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
+        assert_ne!(jobs[0].key, plain[0].key, "読みが変われば別の音声として合成し直す");
+        p.clips[0].as_voice_mut().unwrap().speaker_override = Some("Japanese Male 1".into());
+        let (jobs, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
+        assert_eq!(jobs[0].voice.speaker, "Japanese Male 1");
     }
 }

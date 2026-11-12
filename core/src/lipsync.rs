@@ -23,11 +23,13 @@ pub const MOUTH_OPENED: u8 = 2;
 pub struct PortraitState {
     pub eyes: u8,
     pub mouth: u8,
+    /// 表情（0 は通常、1 以降は Portrait.expressions の番号 + 1）
+    pub expr: u8,
 }
 
 impl PortraitState {
     pub fn index(&self) -> usize {
-        self.eyes as usize * 3 + self.mouth as usize
+        self.expr as usize * 9 + self.eyes as usize * 3 + self.mouth as usize
     }
 }
 
@@ -129,11 +131,35 @@ pub fn mouth_states_for_clip(peaks: &[i8], duration: Frame, fps: f64) -> Vec<u8>
     out
 }
 
+/// 表情：そのキャラクターのセリフの間だけ、セリフで選んだ表情にする
+pub fn expression_track(p: &Project, character: &Character, total: Frame) -> Vec<u8> {
+    let total = total.max(0) as usize;
+    let mut out = vec![0u8; total];
+    let Some(pt) = &character.portrait else { return out };
+    let muted: std::collections::HashSet<&str> = p.tracks.iter().filter(|t| t.muted).map(|t| t.id.as_str()).collect();
+    for c in &p.clips {
+        let ClipBody::Voice(v) = &c.body else { continue };
+        if v.character_id != character.id || muted.contains(c.track_id.as_str()) {
+            continue;
+        }
+        let e = pt.expression_index(v.expression.as_deref());
+        if e == 0 {
+            continue;
+        }
+        let (a, b) = (c.start.max(0) as usize, (c.end().max(0) as usize).min(total));
+        if a < b {
+            out[a..b].fill(e);
+        }
+    }
+    out
+}
+
 /// 立ち絵のあるキャラクターについて、フレームごとの状態を作る
 pub fn portrait_track(p: &Project, character: &Character, total: Frame, peaks_for: &dyn Fn(&str) -> Option<Vec<i8>>) -> Vec<PortraitState> {
     let eyes = blink_track(&character.id, p.video.fps, total);
     let mouth = mouth_track(p, character, total, peaks_for);
-    eyes.into_iter().zip(mouth).map(|(eyes, mouth)| PortraitState { eyes, mouth }).collect()
+    let expr = expression_track(p, character, total);
+    eyes.into_iter().zip(mouth).zip(expr).map(|((eyes, mouth), expr)| PortraitState { eyes, mouth, expr }).collect()
 }
 
 /// 同じ状態が続く区間にまとめる（ffconcat の行数を減らす）
@@ -191,9 +217,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn expression_only_during_its_line() {
+        use crate::model::{Expression, Portrait, Transform};
+        let mut p = Project::sample();
+        p.characters[0].portrait = Some(Portrait {
+            base: "b.png".into(),
+            eyes: Default::default(),
+            mouth: Default::default(),
+            transform: Transform::default(),
+            visible: true,
+            expressions: vec![Expression { name: "怒り".into(), ..Default::default() }],
+        });
+        // c1（0〜84）だけ怒り、c3 は表情なし
+        p.clips[0].as_voice_mut().unwrap().expression = Some("怒り".into());
+        let t = expression_track(&p, &p.characters[0], 300);
+        assert_eq!((t[0], t[83], t[84], t[200]), (1, 1, 0, 0));
+        let st = portrait_track(&p, &p.characters[0], 300, &|_| None);
+        assert_eq!(st[10].expr, 1);
+        assert_eq!(st[10].index(), 9);
+    }
+
+    #[test]
     fn runs_compress() {
-        let a = PortraitState { eyes: 0, mouth: 0 };
-        let b = PortraitState { eyes: 0, mouth: 2 };
+        let a = PortraitState { eyes: 0, mouth: 0, expr: 0 };
+        let b = PortraitState { eyes: 0, mouth: 2, expr: 0 };
         assert_eq!(runs(&[a, a, b, b, b, a]), vec![(a, 2), (b, 3), (a, 1)]);
     }
 }

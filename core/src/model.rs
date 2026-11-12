@@ -162,6 +162,22 @@ pub struct Portrait {
     pub transform: Transform,
     #[serde(default = "yes")]
     pub visible: bool,
+    /// 表情差分。セリフごとに名前で選ぶ（選ばなければ通常の画像）
+    #[serde(default)]
+    pub expressions: Vec<Expression>,
+}
+
+/// 表情。指定したパーツだけ通常の画像と差し替える（空のパーツは通常のまま）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Expression {
+    pub name: String,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub eyes: [Option<String>; 3],
+    #[serde(default)]
+    pub mouth: [Option<String>; 3],
 }
 
 fn portrait_transform() -> Transform {
@@ -173,17 +189,30 @@ fn yes() -> bool {
     true
 }
 
+/// パーツの i 番目（無ければ 0 番目）
+fn variant(parts: &[Option<String>; 3], i: usize) -> Option<&str> {
+    parts.get(i).and_then(|x| x.as_deref()).or(parts[0].as_deref())
+}
+
 impl Portrait {
-    /// 重ねる画像の一覧（存在するものだけ）
-    pub fn layers(&self, eyes: usize, mouth: usize) -> Vec<&str> {
-        let mut v = vec![self.base.as_str()];
-        if let Some(e) = self.eyes.get(eyes).and_then(|e| e.as_deref()).or(self.eyes[0].as_deref()) {
+    /// 重ねる画像の一覧（存在するものだけ）。`expr` は 0 が通常、1 以降が expressions[expr-1]
+    pub fn layers(&self, eyes: usize, mouth: usize, expr: usize) -> Vec<&str> {
+        let ex = expr.checked_sub(1).and_then(|i| self.expressions.get(i));
+        // 表情側にあればそれ、無ければ通常の画像
+        let base = ex.and_then(|e| e.base.as_deref()).filter(|b| !b.is_empty()).unwrap_or(self.base.as_str());
+        let mut v = vec![base];
+        if let Some(e) = ex.and_then(|e| variant(&e.eyes, eyes)).or_else(|| variant(&self.eyes, eyes)) {
             v.push(e);
         }
-        if let Some(m) = self.mouth.get(mouth).and_then(|m| m.as_deref()).or(self.mouth[0].as_deref()) {
+        if let Some(m) = ex.and_then(|e| variant(&e.mouth, mouth)).or_else(|| variant(&self.mouth, mouth)) {
             v.push(m);
         }
         v
+    }
+
+    /// 表情の名前 → 番号（0 は通常）
+    pub fn expression_index(&self, name: Option<&str>) -> u8 {
+        name.and_then(|n| self.expressions.iter().position(|e| e.name == n)).map(|i| (i + 1).min(255) as u8).unwrap_or(0)
     }
 }
 
@@ -217,6 +246,16 @@ pub struct Track {
     pub muted: bool,
     #[serde(default)]
     pub locked: bool,
+    /// セリフの間だけ、このトラックの音（BGM など）を下げる
+    #[serde(default)]
+    pub duck: bool,
+    /// 下げたときの音量（0〜1）
+    #[serde(default = "duck_level")]
+    pub duck_level: f64,
+}
+
+fn duck_level() -> f64 {
+    0.3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -266,6 +305,12 @@ pub struct VoiceClip {
     /// true なら合成後も duration を自動で変えない
     #[serde(default)]
     pub lock_duration: bool,
+    /// この行だけ話者（VOICEVOX のスタイルなど）を変える
+    #[serde(default)]
+    pub speaker_override: Option<String>,
+    /// この行の間の立ち絵の表情（Portrait.expressions の名前）
+    #[serde(default)]
+    pub expression: Option<String>,
 }
 
 fn default_gap() -> Frame {
@@ -352,8 +397,8 @@ impl Project {
             video: VideoSettings::default(),
             characters: vec![],
             tracks: vec![
-                Track { id: "t_voice".into(), kind: TrackKind::Voice, name: "セリフ".into(), muted: false, locked: false },
-                Track { id: "t_media".into(), kind: TrackKind::Media, name: "素材".into(), muted: false, locked: false },
+                Track { id: "t_voice".into(), kind: TrackKind::Voice, name: "セリフ".into(), muted: false, locked: false, duck: false, duck_level: 0.3 },
+                Track { id: "t_media".into(), kind: TrackKind::Media, name: "素材".into(), muted: false, locked: false, duck: false, duck_level: 0.3 },
             ],
             clips: vec![],
         }
@@ -458,6 +503,9 @@ impl Project {
         if let Some(p) = &clip.params_override {
             voice.params = p.clone();
         }
+        if let Some(sp) = clip.speaker_override.as_ref().filter(|s| !s.is_empty()) {
+            voice.speaker = sp.clone();
+        }
         Some(voice)
     }
 
@@ -501,6 +549,8 @@ impl Project {
                     audio: None,
                     gap_after: 6,
                     lock_duration: false,
+                    speaker_override: None,
+                    expression: None,
                 }),
             });
         }
@@ -583,9 +633,20 @@ mod tests {
             mouth: [Some("m0.png".into()), None, None],
             transform: Transform::default(),
             visible: true,
+            expressions: vec![Expression {
+                name: "笑顔".into(),
+                base: None,
+                eyes: [Some("smile.png".into()), None, None],
+                mouth: [None, None, None],
+            }],
         };
-        assert_eq!(pt.layers(2, 2), vec!["b.png", "e2.png", "m0.png"]);
-        assert_eq!(pt.layers(1, 0), vec!["b.png", "e0.png", "m0.png"]);
+        assert_eq!(pt.layers(2, 2, 0), vec!["b.png", "e2.png", "m0.png"]);
+        assert_eq!(pt.layers(1, 0, 0), vec!["b.png", "e0.png", "m0.png"]);
+        // 表情：目だけ差し替え、口は通常のまま
+        assert_eq!(pt.layers(0, 0, 1), vec!["b.png", "smile.png", "m0.png"]);
+        assert_eq!(pt.expression_index(Some("笑顔")), 1);
+        assert_eq!(pt.expression_index(Some("無い")), 0);
+        assert_eq!(pt.expression_index(None), 0);
         let json = r#"{"base":"b.png"}"#;
         let p2: Portrait = serde_json::from_str(json).unwrap();
         assert!(p2.visible && p2.eyes == [None, None, None]);

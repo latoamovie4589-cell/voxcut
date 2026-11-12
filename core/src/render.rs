@@ -1,7 +1,7 @@
 //! FFmpeg での書き出し。引数の組み立て（テスト可能な純粋関数）と、実行・進捗の読み取り。
 
 use crate::lipsync;
-use crate::model::{ClipBody, MediaKind, Project, Transform};
+use crate::model::{ClipBody, MediaKind, Project, TrackKind, Transform};
 use crate::{Error, Result};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -18,12 +18,130 @@ pub struct ExportOptions {
     pub preset: String,
     /// 出力の高さ（None ならプロジェクトの大きさのまま）。字幕は元の大きさで描いてから縮める
     pub out_height: Option<u32>,
+    /// 動画のエンコーダー（グラフィックボードを使うと速い）
+    pub encoder: Encoder,
 }
 
 impl ExportOptions {
     pub fn new(ffmpeg: impl Into<PathBuf>, out: impl Into<PathBuf>, project_dir: impl Into<PathBuf>) -> Self {
-        Self { ffmpeg: ffmpeg.into(), out: out.into(), project_dir: project_dir.into(), crf: 20, preset: "veryfast".into(), out_height: None }
+        Self {
+            ffmpeg: ffmpeg.into(),
+            out: out.into(),
+            project_dir: project_dir.into(),
+            crf: 20,
+            preset: "veryfast".into(),
+            out_height: None,
+            encoder: Encoder::X264,
+        }
     }
+}
+
+/// H.264 のエンコーダー
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoder {
+    /// CPU（どの PC でも動く）
+    #[default]
+    X264,
+    /// NVIDIA
+    Nvenc,
+    /// Intel
+    Qsv,
+    /// AMD
+    Amf,
+}
+
+impl Encoder {
+    pub const HARDWARE: [Encoder; 3] = [Encoder::Nvenc, Encoder::Qsv, Encoder::Amf];
+
+    pub fn codec(&self) -> &'static str {
+        match self {
+            Encoder::X264 => "libx264",
+            Encoder::Nvenc => "h264_nvenc",
+            Encoder::Qsv => "h264_qsv",
+            Encoder::Amf => "h264_amf",
+        }
+    }
+
+    /// 画質（x264 の CRF 相当の数値）からエンコーダーごとの引数を作る
+    pub fn args(&self, crf: u8, preset: &str) -> Vec<String> {
+        let q = crf.to_string();
+        let v: Vec<&str> = match self {
+            Encoder::X264 => vec!["-c:v", "libx264", "-preset", preset, "-crf", &q, "-pix_fmt", "yuv420p"],
+            Encoder::Nvenc => vec!["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", &q, "-b:v", "0", "-pix_fmt", "yuv420p"],
+            Encoder::Qsv => vec!["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", &q, "-pix_fmt", "nv12"],
+            Encoder::Amf => vec!["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", &q, "-qp_p", &q, "-pix_fmt", "yuv420p"],
+        };
+        v.into_iter().map(String::from).collect()
+    }
+}
+
+/// この PC の FFmpeg で実際に使えるハードウェアエンコーダーを調べる（小さな映像を試しに作る）
+pub fn detect_hw_encoders(ffmpeg: &Path) -> Vec<Encoder> {
+    Encoder::HARDWARE
+        .into_iter()
+        .filter(|e| {
+            let mut cmd = crate::tts::hidden_command(ffmpeg);
+            cmd.args(["-hide_banner", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:r=30:d=0.2"]);
+            cmd.args(e.args(23, "veryfast"));
+            cmd.args(["-frames:v", "3", "-f", "null", "-"]);
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            cmd.status().is_ok_and(|s| s.success())
+        })
+        .collect()
+}
+
+/// BGM を下げる区間（秒）。セリフ同士の間が短いときは 1 つにまとめる（音量が上下にばたつかないように）
+pub const DUCK_RAMP: f64 = 0.25;
+const DUCK_MERGE_GAP: f64 = 0.6;
+
+pub fn voice_intervals(p: &Project) -> Vec<(f64, f64)> {
+    let v = &p.video;
+    let voice_tracks: std::collections::HashSet<&str> =
+        p.tracks.iter().filter(|t| t.kind == TrackKind::Voice && !t.muted).map(|t| t.id.as_str()).collect();
+    let mut iv: Vec<(f64, f64)> = p
+        .clips
+        .iter()
+        .filter(|c| c.as_voice().is_some() && voice_tracks.contains(c.track_id.as_str()))
+        .map(|c| (v.frames_to_secs(c.start), v.frames_to_secs(c.end())))
+        .collect();
+    iv.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = vec![];
+    for (s, e) in iv {
+        match out.last_mut() {
+            Some(last) if s - last.1 < DUCK_MERGE_GAP => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// FFmpeg の volume フィルタに渡す式。区間の前後 DUCK_RAMP 秒で滑らかに下げ・戻す。
+/// プレビュー（app/src/ducking.ts）と同じ形
+pub fn duck_expr(intervals: &[(f64, f64)], level: f64) -> String {
+    if intervals.is_empty() {
+        return "1".into();
+    }
+    let r = DUCK_RAMP;
+    let terms: Vec<String> = intervals
+        .iter()
+        .map(|(s, e)| format!("min(clip((t-{a:.3})/{r},0,1),clip(({b:.3}-t)/{r},0,1))", a = s - r, b = e + r))
+        .collect();
+    let l = level.clamp(0.0, 1.0);
+    format!("1-{d:.3}*min(1,{})", terms.join("+"), d = 1.0 - l)
+}
+
+/// フィルタグラフが長いときは、ファイルに書き出してそれを読ませる（Windows のコマンドの長さ制限を避ける）。
+/// `new_syntax` は FFmpeg 7 以降の `-/filter_complex <ファイル>` を使うか
+pub fn externalize_filter(args: &mut [String], script: &Path, new_syntax: bool, threshold: usize) -> Result<bool> {
+    let Some(i) = args.iter().position(|a| a == "-filter_complex") else { return Ok(false) };
+    if args[i + 1].len() <= threshold {
+        return Ok(false);
+    }
+    std::fs::write(script, &args[i + 1])?;
+    args[i] = if new_syntax { "-/filter_complex".into() } else { "-filter_complex_script".into() };
+    args[i + 1] = script.to_string_lossy().into_owned();
+    Ok(true)
 }
 
 /// FFmpeg のフィルタ引数の中に書くパス（Windows の "C:\..." の ":" と "\" を逃がす）
@@ -72,7 +190,7 @@ pub fn prepare_portraits(
             if images.contains_key(&st.index()) {
                 continue;
             }
-            let layers: Vec<String> = pt.layers(st.eyes as usize, st.mouth as usize).into_iter().map(|l| resolve(project_dir, l)).collect();
+            let layers: Vec<String> = pt.layers(st.eyes as usize, st.mouth as usize, st.expr as usize).into_iter().map(|l| resolve(project_dir, l)).collect();
             let img = if layers.len() == 1 {
                 PathBuf::from(&layers[0])
             } else {
@@ -148,11 +266,18 @@ pub fn build_args(
     let mut audio_labels: Vec<String> = vec![];
     let mut last_v = "0:v".to_string();
 
+    let intervals = voice_intervals(p);
     // 配列の先頭（画面で上）のトラックほど手前に描くので、逆順に重ねる
     for track in p.tracks.iter().rev() {
         if track.muted {
             continue;
         }
+        // BGM を下げる設定のトラックは、音量をセリフに合わせて動かす
+        let duck = if track.duck && track.kind == TrackKind::Media && !intervals.is_empty() {
+            format!(",volume='{}':eval=frame", duck_expr(&intervals, track.duck_level))
+        } else {
+            String::new()
+        };
         let mut clips: Vec<_> = p.clips.iter().filter(|c| c.track_id == track.id).collect();
         clips.sort_by_key(|c| c.start);
         for c in clips {
@@ -178,7 +303,7 @@ pub fn build_args(
                         MediaKind::Audio => {
                             push_input(&mut args, vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{dur:.3}")], src);
                             let l = format!("a{idx}");
-                            fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}[{l}]", v.sample_rate, m.volume));
+                            fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                             audio_labels.push(l);
                         }
                         MediaKind::Image | MediaKind::Video => {
@@ -191,7 +316,7 @@ pub fn build_args(
                             // 動画の音声
                             if m.media_kind == MediaKind::Video && m.has_audio {
                                 let l = format!("a{idx}");
-                                fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}[{l}]", v.sample_rate, m.volume));
+                                fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
                             let t = &m.transform;
@@ -260,14 +385,9 @@ pub fn build_args(
         "[vout]".into(),
         "-map".into(),
         "[aout]".into(),
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        opt.preset.clone(),
-        "-crf".into(),
-        opt.crf.to_string(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
+    ]);
+    args.extend(opt.encoder.args(opt.crf, &opt.preset));
+    args.extend([
         "-r".into(),
         v.fps.to_string(),
         "-c:a".into(),
@@ -368,6 +488,63 @@ mod tests {
             }),
         });
         p
+    }
+
+    #[test]
+    fn ducking_lowers_bgm_only_during_lines() {
+        let mut p = Project::sample();
+        p.clips.push(Clip {
+            id: "bgm".into(),
+            track_id: "t_media".into(),
+            start: 0,
+            duration: 300,
+            body: ClipBody::Media(MediaClip {
+                src: "/m/bgm.mp3".into(),
+                media_kind: MediaKind::Audio,
+                has_audio: true,
+                in_point: 0,
+                volume: 1.0,
+                transform: Transform::default(),
+            }),
+        });
+        // サンプルの 3 行は 0.2 秒の間で続いているので 1 つにまとまる
+        assert_eq!(voice_intervals(&p), vec![(0.0, 8.8)]);
+        let opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
+        let wav = |id: &str| Some(PathBuf::from(format!("/c/{id}.wav")));
+        let fc = |p: &Project| {
+            let a = build_args(p, &wav, &[], None, &opt).unwrap();
+            a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1].clone()
+        };
+        assert!(!fc(&p).contains("eval=frame"), "既定では下げない");
+        p.tracks[1].duck = true;
+        let g = fc(&p);
+        assert!(g.contains("volume='1-0.700*min(1,min(clip((t--0.250)/0.25,0,1),clip((9.050-t)/0.25,0,1)))':eval=frame"), "{g}");
+        // 離れたセリフは別の区間
+        p.clips[2].start = 300;
+        assert_eq!(voice_intervals(&p).len(), 2);
+    }
+
+    #[test]
+    fn encoder_args() {
+        assert_eq!(Encoder::X264.args(20, "veryfast")[..4], ["-c:v", "libx264", "-preset", "veryfast"]);
+        assert!(Encoder::Nvenc.args(20, "x").contains(&"h264_nvenc".to_string()));
+        let mut opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
+        opt.encoder = Encoder::Qsv;
+        let a = build_args(&Project::sample(), &|id| Some(PathBuf::from(format!("/c/{id}.wav"))), &[], None, &opt).unwrap();
+        assert!(a.windows(2).any(|w| w[0] == "-c:v" && w[1] == "h264_qsv"));
+        assert!(!a.contains(&"libx264".to_string()));
+    }
+
+    #[test]
+    fn long_filter_goes_to_a_file() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a: Vec<String> = ["-i", "x", "-filter_complex", "abc", "-map"].map(String::from).to_vec();
+        let f = d.path().join("g.txt");
+        assert!(!externalize_filter(&mut a, &f, true, 10).unwrap());
+        a[3] = "x".repeat(20);
+        assert!(externalize_filter(&mut a, &f, true, 10).unwrap());
+        assert_eq!(a[2], "-/filter_complex");
+        assert_eq!(std::fs::read_to_string(&f).unwrap().len(), 20);
     }
 
     #[test]
@@ -511,6 +688,7 @@ mod tests {
             mouth: [Some("mouth0.png".into()), None, Some("mouth2.png".into())],
             transform: Transform { x: 180.0, y: 20.0, scale: 0.8, opacity: 1.0 },
             visible: true,
+            expressions: vec![],
         });
         let dir2 = d.path().to_path_buf();
         let portraits = prepare_portraits(&p, d.path(), Path::new("ffmpeg"), d.path(), &|key| {
