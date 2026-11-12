@@ -433,6 +433,22 @@ export function Timeline() {
         ctx.globalAlpha = 1;
       }
 
+      // トラックの下の空いたところに、知られにくい操作の案内を薄く出す
+      {
+        const bottom = RULER_H + trackTops(p).height - sy;
+        if (bottom + 44 < h) {
+          ctx.font = `12px ${FONT}`;
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = pal.text2;
+          ctx.globalAlpha = 0.8;
+          const tips = !p.clips.some(c => c.type === 'voice')
+            ? ['下の入力欄にセリフを打って Enter で追加。台本をまとめて貼ることもできます', '画像・動画・BGM はこの画面にドラッグ＆ドロップで追加できます']
+            : ['画像・動画・BGM はドラッグ＆ドロップで追加できます', 'Ctrl+クリックで複数選択 ・ ? でショートカット一覧'];
+          tips.forEach((t, i) => ctx.fillText(t, 16, bottom + 18 + i * 20));
+          ctx.globalAlpha = 1;
+        }
+      }
+
       // ルーラー（上に固定）
       ctx.fillStyle = pal.bg;
       ctx.fillRect(0, 0, w, RULER_H);
