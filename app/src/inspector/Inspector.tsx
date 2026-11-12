@@ -16,7 +16,7 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {AudioLines, ImagePlus, MousePointerClick, Scissors, Trash2, X} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import type {Character, EngineId, MediaClip, Portrait, Transform, VoiceClip, VoiceParams} from '../model';
-import {ENGINE_LABEL, defaultParams, framesToTimecode} from '../model';
+import {ENGINE_LABEL, defaultParams, framesToTimecode, isSpeakerMissing} from '../model';
 import {ANIMATION_LABEL, type SubtitleAnimation} from '../subtitleAnim';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {deleteClip, getState, setPortrait, setState, splitClip, updateCharacter, updateClip, useStore} from '../store';
@@ -260,8 +260,10 @@ function CharacterInspector({character}: {character: Character}) {
   const update = (patch: Partial<Character>) => updateCharacter(character.id, patch);
   const setVoice = (patch: Partial<Character['voice']>) => update({voice: {...character.voice, ...patch}});
   const speakerOptions = (voices ?? []).map(v => ({value: v.speaker, label: v.displayName}));
+  const allVoices = useStore(s => s.voices);
+  const missing = isSpeakerMissing(character.voice, allVoices);
   if (!speakerOptions.some(o => o.value === character.voice.speaker)) {
-    speakerOptions.unshift({value: character.voice.speaker, label: character.voice.speaker});
+    speakerOptions.unshift({value: character.voice.speaker, label: missing ? `${character.voice.speaker}（入っていません）` : character.voice.speaker});
   }
   const tab = useStore(s => s.inspectorTab);
   return (
@@ -305,6 +307,13 @@ function CharacterInspector({character}: {character: Character}) {
               onChange={v => setVoice({speaker: v})}
               width="100%"
             />
+            {missing && (
+              <Banner
+                status="warning"
+                title="この話者はこのPCに入っていません"
+                description={`${ENGINE_LABEL[character.voice.engine]} に入っている話者を選び直してください`}
+              />
+            )}
             <ParamSliders value={character.voice.params} onChange={params => setVoice({params})} />
             <Slider
               label="音量"
