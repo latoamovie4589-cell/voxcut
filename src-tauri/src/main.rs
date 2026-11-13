@@ -8,6 +8,15 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        // 起動は 1 つだけ。2 回目に起動したら、今のウィンドウを前に出す（2 つで同じ作業を上書きしあわないように）。
+        // 一番先に登録する（ほかのプラグインより前でないと、2 回目の起動でも初期化が走る）
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
