@@ -104,6 +104,8 @@ export interface State {
   revealSeq: number;
   /** セリフ入力欄の追加モード（YMM4 と同じ）：通常＝再生位置に入れるだけ／追記＝入れた後その末尾へ進む／連結＝同じトラックの直前のセリフを延ばしてつなぐ */
   inputMode: InputMode;
+  /** セリフ入力欄で選んでいる声のプリセット（キャラクター ID → プリセット ID。null は通常）。キャラクターを切り替えても覚えておく */
+  inputPresets: Record<string, string | null>;
   /** 設定画面を開いているか（左パネルの「場所を選ぶ」からも開く） */
   settingsOpen: boolean;
   /** 最近使ったプロジェクト */
@@ -159,6 +161,7 @@ let state: State = {
   inspectorTab: 'voice',
   revealSeq: 0,
   inputMode: loadInputMode(),
+  inputPresets: {},
   settingsOpen: false,
   recent: [],
   pasteOpen: false,
@@ -438,6 +441,43 @@ export function addCharacterFrom(ch: Character): string {
 }
 
 /** キャラクターを消す（そのキャラクターのセリフも消える。元に戻すで戻せる）。最後の 1 人は消せない */
+/**
+ * 感情ごとに分けて作ったキャラクター（例「茜_怒り」）を、ほかのキャラクター（例「茜_通常」）の声のプリセットにまとめる。
+ * - その声（声の種類・パラメータ）を、name のプリセットとして to に足す（from のプリセットも to へ移す）
+ * - from のセリフ・立ち絵アイテムは to のものになり、まとめたプリセットを使う
+ * - from は消える。元に戻すで戻せる。音声合成ソフトが違うとまとめられない（false を返す）
+ */
+export function mergeCharacterAsPreset(fromId: string, toId: string, name: string): boolean {
+  const p0 = state.project;
+  const from = p0?.characters.find(c => c.id === fromId);
+  const to = p0?.characters.find(c => c.id === toId);
+  if (!p0 || !from || !to || from.id === to.id || from.voice.engine !== to.voice.engine) return false;
+  const presetId = newId('vp');
+  const moved = (from.voicePresets ?? []).map(x => ({...x, name: `${name}・${x.name}`}));
+  const own = new Set(moved.map(x => x.id));
+  commit(p => {
+    const preset: VoicePreset = {id: presetId, name: name.trim() || from.name, speaker: from.voice.speaker !== to.voice.speaker ? from.voice.speaker : null, params: {...from.voice.params}};
+    const next: Project = {
+      ...p,
+      characters: p.characters.filter(c => c.id !== from.id).map(c => (c.id === to.id ? {...c, voicePresets: [...(c.voicePresets ?? []), preset, ...moved]} : c)),
+      clips: p.clips.map(c =>
+        c.type === 'voice' && c.characterId === from.id
+          ? {...c, characterId: to.id, presetId: c.presetId && own.has(c.presetId) ? c.presetId : presetId}
+          : c.type === 'portrait' && c.characterId === from.id
+            ? {...c, characterId: to.id}
+            : c,
+      ),
+    };
+    return invalidateChangedVoices(p, next);
+  });
+  setState(s => ({
+    selectedCharacterId: s.selectedCharacterId === fromId ? toId : s.selectedCharacterId,
+    dialogCharacterId: s.dialogCharacterId === fromId ? toId : s.dialogCharacterId,
+    inputPresets: {...s.inputPresets, [toId]: s.selectedCharacterId === fromId ? presetId : (s.inputPresets[toId] ?? null)},
+  }));
+  return true;
+}
+
 export function removeCharacter(id: string): boolean {
   const p = state.project;
   if (!p || p.characters.length <= 1) return false;
@@ -551,9 +591,13 @@ export function lineInsertPoint(characterId: string): number {
 
 const provisional = (p: Project, text: string) => Math.max(30, Math.round([...text].length * 0.12 * p.video.fps)); // 合成前の仮の長さ
 
-function newVoiceClip(p: Project, id: string, trackId: string, start: number, characterId: string, text: string): VoiceClip {
-  const gap = p.characters.find(c => c.id === characterId)?.gapAfter ?? 6;
+function newVoiceClip(p: Project, id: string, trackId: string, start: number, characterId: string, text: string, presetId: string | null = null): VoiceClip {
+  const ch = p.characters.find(c => c.id === characterId);
+  const gap = ch?.gapAfter ?? 6;
+  // 消えたプリセットは通常に
+  const preset = presetId && ch?.voicePresets?.some(x => x.id === presetId) ? presetId : null;
   return {
+    ...(preset ? {presetId: preset} : {}),
     id,
     trackId,
     start,
@@ -574,7 +618,7 @@ function newVoiceClip(p: Project, id: string, trackId: string, start: number, ch
  * セリフを追加（YMM4 のセリフ入力欄と同じ）。キャラクターのトラックの再生位置に入れ、後ろのアイテムは押し出す。
  * 連結モードでは、同じトラックの直前のセリフの余韻を延ばして、すき間なくつなぐ
  */
-export function addLine(characterId: string, text: string): string {
+export function addLine(characterId: string, text: string, presetId: string | null = null): string {
   const id = newId('c');
   const mode = state.inputMode;
   let placed: VoiceClip | null = null;
@@ -595,7 +639,7 @@ export function addLine(characterId: string, text: string): string {
       const cover = clips.find(c => c.trackId === trackId && c.start < start && start < c.start + c.duration);
       if (cover) start = cover.start + cover.duration;
     }
-    const clip = newVoiceClip(p, id, trackId, start, characterId, text);
+    const clip = newVoiceClip(p, id, trackId, start, characterId, text, presetId);
     // 入れた分だけ、後ろのアイテムを全トラックでずらす（YMM4 の「後ろのアイテムを移動」。掛け合いの順番を崩さない）
     const moved = rippleFrom({...p, clips}, start, clip.duration);
     const next = {...moved, clips: [...moved.clips, clip]};
