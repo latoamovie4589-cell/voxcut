@@ -214,7 +214,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <WindowMenu />
         <WorkspaceMenu />
         <DropdownMenuDivider />
-        <DropdownMenuCheckboxItem label="項目の説明を表示" description="入力欄の下の説明文。オフでも、入力中の項目とラベルのツールチップで見られます" value={hints} onChange={v => setHintsShown(v)} />
+        <DropdownMenuCheckboxItem label="項目の説明を表示" description="オンなら、項目にマウスを 3 秒乗せると説明が出ます" value={hints} onChange={v => setHintsShown(v)} />
       </DropdownMenu>
       <DropdownMenu button={menu('ツール')} hasChevron={false} menuWidth={260} menuMaxHeight={maxH}>
         <DropdownMenuItem label="キャラクターの編集…" onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))} />
