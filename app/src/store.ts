@@ -28,6 +28,7 @@ import {
   audioTracks,
   captionLayerFor,
   charactersOnTrack,
+  isLineTrack,
   defaultParams,
   effectiveVoice,
   isSeparatedVoice,
@@ -893,7 +894,7 @@ export function addVisualItem(kind: 'text' | 'shape', shape: ShapeKind = 'rect')
   // 選んでいるアイテムの映像トラックが空いていればそこ、無ければ空いている映像トラック（V1 から。重ねて既存のアイテムを押し出さないように）
   const vt = videoTracks(p);
   // キャラクターのセリフ用のトラックには置かない（テキスト・図形は別のトラックへ。どれも同じ決まり）
-  const forLines = (t: Track) => charactersOnTrack(p, t.id).length > 0 || p.clips.some(c => c.trackId === t.id && (c.type === 'voice' || c.type === 'caption'));
+  const forLines = (t: Track) => isLineTrack(p, t.id) || charactersOnTrack(p, t.id).length > 0;
   const ok = (t: Track) => !t.locked && !busy(t) && !forLines(t);
   const selTrack = sel ? vt.find(t => t.id === sel.trackId && ok(t)) : undefined;
   let track = selTrack ?? vt.find(ok);

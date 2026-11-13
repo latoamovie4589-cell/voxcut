@@ -716,17 +716,25 @@ export function overlappingLines(p: Project): Set<string> {
 }
 
 /**
- * そのトラックを使うキャラクター（映像トラック：セリフを置くトラック、音声トラック：分離した声を置くトラックとして設定・使用しているもの）
+ * そのレイヤーに今いるキャラクター（そのキャラクターのセリフ・分離した字幕・立ち絵アイテムが置いてあるもの）。
+ * レイヤーの見出しに出す。セリフを別のレイヤーへ動かせば、見出しからも消える
  */
 export function charactersOnTrack(p: Project, trackId: string): Character[] {
-  if (!p.tracks.some(x => x.id === trackId)) return [];
-  // セリフを置くレイヤー、分離した声を置くレイヤー、そのキャラクターのセリフ・立ち絵アイテムがあるレイヤー
-  return p.characters.filter(
-    ch =>
-      p.tracks[captionLayerFor(p, ch.id)]?.id === trackId ||
-      (ch.audioLayer && p.tracks[ch.audioLayer - 1]?.id === trackId) ||
-      p.clips.some(c => (c.type === 'portrait' || c.type === 'voice') && c.characterId === ch.id && c.trackId === trackId),
-  );
+  const ids = new Set<string>();
+  for (const c of p.clips) {
+    if (c.trackId !== trackId) continue;
+    if (c.type === 'voice' || c.type === 'portrait') ids.add(c.characterId);
+    else if (c.type === 'caption') {
+      const v = p.clips.find(x => x.id === c.voiceId);
+      if (v?.type === 'voice') ids.add(v.characterId);
+    }
+  }
+  return p.characters.filter(ch => ids.has(ch.id));
+}
+
+/** セリフを置くレイヤーとして決まっている（設定・最後に置いた場所）か */
+export function isLineTrack(p: Project, trackId: string): boolean {
+  return p.characters.some(ch => p.tracks[captionLayerFor(p, ch.id)]?.id === trackId || (ch.audioLayer && p.tracks[ch.audioLayer - 1]?.id === trackId));
 }
 
 /** 互換用（レイヤーは映像と音声を分けない） */
