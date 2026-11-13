@@ -62,11 +62,7 @@
   align-items: center;
   gap: 4px;
 }
-.vx-track-duck {
-  display: inline-flex;
-  flex: none;
-}
-/* V1・A1 などの番号（Premiere Pro と同じく、映像と音声で色を分ける） */
+/* レイヤーの番号 */
 .vx-track-code {
   flex: none;
   min-width: 26px;
@@ -148,13 +144,4 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
-}
-
-/* トラックを使うキャラクターの色 */
-.vx-track-owner {
-  flex: none;
-  width: 4px;
-  align-self: stretch;
-  margin-block: 6px;
-  border-radius: 2px;
 }

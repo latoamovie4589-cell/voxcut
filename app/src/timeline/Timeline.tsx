@@ -16,9 +16,9 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Eye, EyeOff, ImagePlus, Link2, PersonStanding, TrendingDown, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
-import {SHAPE_LABEL, type ShapeKind, charactersOnTrack, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
+import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
   getState,
   moveClip,
@@ -54,7 +54,7 @@ import './timeline.css';
 const RULER_H = 26;
 /** トラックの高さ */
 const LAYER_H = 32;
-const HEADER_W = 260;
+const HEADER_W = 224;
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 40;
 /** 端をつかめる幅（px） */
@@ -194,22 +194,6 @@ function TrackHeader({track}: {track: Track}) {
   const label = useStore(s => (s.project ? layerLabel(s.project, track.id) : ''));
   const code = useStore(s => (s.project ? trackCode(s.project, track.id) : ''));
   const index = useStore(s => (s.project ? s.project.tracks.findIndex(t => t.id === track.id) : 0));
-  const content = useStore(s => {
-    const cs = s.project?.clips.filter(c => c.trackId === track.id) ?? [];
-    const kinds = [cs.some(c => c.type === 'voice') && 'セリフ', cs.some(c => c.type === 'caption') && '字幕', cs.some(c => c.type !== 'voice' && c.type !== 'caption') && '素材'].filter(Boolean);
-    return kinds.join('・');
-  });
-  // このトラックを使うキャラクター（名前を付けていなければ、見出しに色と名前を出す）
-  const owners = useStore(s =>
-    s.project
-      ? charactersOnTrack(s.project, track.id)
-          .map(c => `${c.color}\u0001${c.name}`)
-          .join('\u0002')
-      : '',
-  );
-  const ownerList = owners ? owners.split('\u0002').map(x => x.split('\u0001') as [string, string]) : [];
-  // 読み上げるボタン名には、見出しに出ているキャラクター名も入れる（例「レイヤー 2（ナレーター）を表示」）
-  const named = track.name ? label : ownerList.length ? `${label}（${ownerList.map(o => o[1]).join('・')}）` : label;
   const finish = () => {
     setEditing(false);
     if (name !== track.name) updateTrack(track.id, {name: name.trim()});
@@ -229,30 +213,19 @@ function TrackHeader({track}: {track: Track}) {
       <span className="vx-track-code" aria-hidden title={code}>
         {index + 1}
       </span>
-      {/* 名前は付けたときだけ出す。ダブルクリックで名前を変える */}
-      <div
-        className="vx-track-name"
-        title={[ownerList.length ? `キャラクター：${ownerList.map(o => o[1]).join('・')}` : '', content ? `中身：${content}` : '空のトラック'].filter(Boolean).join('\n')}
-        onDoubleClick={() => setEditing(true)}>
+      {/* YMM4 と同じく、名前は付けたときだけ出す。ダブルクリックで名前を変える */}
+      <div className="vx-track-name" onDoubleClick={() => setEditing(true)}>
         {editing ? (
-          <TextInput label="トラック名" isLabelHidden size="sm" value={name} placeholder={code} onChange={setName} onEnter={finish} onBlur={finish} hasAutoFocus width={80} />
+          <TextInput label="レイヤー名" isLabelHidden size="sm" value={name} placeholder={code} onChange={setName} onEnter={finish} onBlur={finish} hasAutoFocus width={80} />
         ) : (
-          <>
-            {!track.name && ownerList.length > 0 && <span className="vx-track-owner" style={{background: ownerList[0][0]}} aria-hidden />}
-            <Text type={track.name ? 'label' : 'supporting'} maxLines={1}>
-              {track.name || ownerList.map(o => o[1]).join('・')}
-            </Text>
-          </>
-        )}
-        {track.duck && (
-          <span className="vx-track-duck" title={`セリフ中は音を下げる（${Math.round(track.duckLevel * 100)}%）`}>
-            <Icon icon={TrendingDown} size="sm" color="secondary" />
-          </span>
+          <Text type="label" maxLines={1}>
+            {track.name}
+          </Text>
         )}
       </div>
       <HStack gap={0} vAlign="center">
         <IconButton
-          label={`${named}を表示`}
+          label={`${label}を表示`}
           tooltip={track.hidden ? 'レイヤーを表示する（見出しをホイールクリックでも）' : 'レイヤーを隠す（映像も音も出さない。見出しをホイールクリックでも）'}
           variant="ghost"
           size="sm"
@@ -264,7 +237,7 @@ function TrackHeader({track}: {track: Track}) {
           type="button"
           className="vx-track-toggle"
           aria-pressed={track.muted}
-          aria-label={`${named}をミュート`}
+          aria-label={`${label}をミュート`}
           title={track.muted ? 'ミュートを解除' : 'ミュート（音だけ止める）'}
           onClick={() => updateTrack(track.id, {muted: !track.muted})}>
           M
@@ -274,13 +247,13 @@ function TrackHeader({track}: {track: Track}) {
           className="vx-track-toggle"
           data-solo
           aria-pressed={!!track.solo}
-          aria-label={`${named}をソロ`}
+          aria-label={`${label}をソロ`}
           title={track.solo ? 'ソロを解除' : 'ソロ（このレイヤーの音だけ鳴らす）'}
           onClick={() => updateTrack(track.id, {solo: !track.solo})}>
           S
         </button>
         <IconButton
-          label={`${named}をロック`}
+          label={`${label}をロック`}
           tooltip={track.locked ? 'ロックを外す' : 'レイヤーをロック（動かせなくする）'}
           variant="ghost"
           size="sm"
@@ -289,7 +262,7 @@ function TrackHeader({track}: {track: Track}) {
           onClick={() => updateTrack(track.id, {locked: !track.locked})}
         />
         <MoreMenu
-          label={`${named}のメニュー`}
+          label={`${label}のメニュー`}
           size="sm"
           items={[
             {label: '素材を追加…', onClick: () => void addMedia()},
