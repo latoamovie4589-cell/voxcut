@@ -73,3 +73,10 @@
   border-radius: 0;
   box-shadow: none;
 }
+
+/* 選択枠とつまみ（プレビューの外まではみ出して描く。Preview.tsx） */
+.vx-preview-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}

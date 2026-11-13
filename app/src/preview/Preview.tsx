@@ -243,6 +243,7 @@ export function Preview() {
       : null;
   const targetsRef = useRef<Target[]>([]);
   const scaleRef = useRef(1);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const overrideRef = useRef<{key: string; transform: Transform} | null>(null);
 
@@ -464,24 +465,46 @@ export function Preview() {
       ctx.restore();
     }
 
-    // 選んでいるもの（素材か立ち絵）に枠と四隅のつまみを出す
+    // 選んでいるもの（素材か立ち絵）に枠と四隅のつまみを出す。
+    // 画面の外にはみ出していても大きさを変えられるよう、プレビューの外側まで描ける重ねた canvas に描く
     targetsRef.current = targets;
     scaleRef.current = scale;
     const sel = targets.find(t => t.key === selectedKey);
-    if (sel && !isPlaying) {
-      const r = sel.rect;
-      ctx.strokeStyle = '#0A84FF';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(r.x, r.y, r.w, r.h);
-      ctx.fillStyle = '#fff';
-      for (const [cx, cy] of corners(r)) {
-        ctx.fillRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
-        ctx.strokeRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
+    const ovc = overlayRef.current;
+    const root = rootRef.current;
+    if (ovc && root) {
+      const wr = wrap.getBoundingClientRect();
+      const rr = root.getBoundingClientRect();
+      const cr = canvas.getBoundingClientRect();
+      const odpr = window.devicePixelRatio || 1;
+      ovc.style.left = `${wr.left - rr.left}px`;
+      ovc.style.top = `${wr.top - rr.top}px`;
+      ovc.style.width = `${wr.width}px`;
+      ovc.style.height = `${wr.height}px`;
+      if (ovc.width !== Math.round(wr.width * odpr) || ovc.height !== Math.round(wr.height * odpr)) {
+        ovc.width = Math.round(wr.width * odpr);
+        ovc.height = Math.round(wr.height * odpr);
+      }
+      const o = ovc.getContext('2d')!;
+      o.setTransform(odpr, 0, 0, odpr, 0, 0);
+      o.clearRect(0, 0, wr.width, wr.height);
+      if (sel && !isPlaying) {
+        o.translate(cr.left - wr.left, cr.top - wr.top);
+        const r = sel.rect;
+        o.strokeStyle = '#0A84FF';
+        o.lineWidth = 1.5;
+        o.strokeRect(r.x, r.y, r.w, r.h);
+        o.fillStyle = '#fff';
+        for (const [cx, cy] of corners(r)) {
+          o.fillRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
+          o.strokeRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
+        }
       }
     }
   }, [project, projectPath, playhead, isPlaying, playRate, proxies, media, tick, selectedKey, previewZoom, previewQuality, showSafeArea]);
 
   const hit = (e: React.PointerEvent) => {
+    // プレビューの外（まわりの余白）でも、プレビューの左上からの位置で数える
     const c = canvasRef.current!.getBoundingClientRect();
     return {x: e.clientX - c.left, y: e.clientY - c.top};
   };
@@ -521,7 +544,7 @@ export function Preview() {
   const onPointerMove = (e: React.PointerEvent) => {
     const g = gestureRef.current;
     const pt = hit(e);
-    const canvas = e.target as HTMLElement;
+    const canvas = wrapRef.current!;
     if (!g) {
       const sel = targetsRef.current.find(t => t.key === selectedKey);
       const onHandle = sel && corners(sel.rect).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE);
@@ -585,17 +608,16 @@ export function Preview() {
         ref={wrapRef}
         className="vx-preview"
         data-zoomed={previewZoom !== 'fit' || undefined}
+        onScroll={() => setTick(x => x + 1)}
+        // つまみが画面の外にあってもつかめるよう、まわりの余白でも受ける
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onDoubleClick={e => {
           // 何もないところをダブルクリックで全画面（一般的な編集ソフトと同じ）
-          if (
-            !targetsRef.current.some(t =>
-              inside(t.rect, {
-                x: e.nativeEvent.offsetX,
-                y: e.nativeEvent.offsetY,
-              }),
-            )
-          )
-            void toggleFullscreen(rootRef.current);
+          const c = canvasRef.current!.getBoundingClientRect();
+          if (!targetsRef.current.some(t => inside(t.rect, {x: e.clientX - c.left, y: e.clientY - c.top}))) void toggleFullscreen(rootRef.current);
         }}>
         <canvas
           ref={canvasRef}
@@ -606,13 +628,10 @@ export function Preview() {
           aria-label={
             selectedKey ? 'プレビュー。選んでいる素材や立ち絵を、ドラッグか矢印キーで動かせます（Shift で 10 ずつ）。四隅のつまみで大きさを変えられます' : 'プレビュー。素材や立ち絵を押すと選べます'
           }
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
           onKeyDown={onKeyDown}
         />
       </div>
+      <canvas ref={overlayRef} className="vx-preview-overlay" aria-hidden />
       <PreviewControls fullscreenTarget={rootRef} />
     </div>
   );
