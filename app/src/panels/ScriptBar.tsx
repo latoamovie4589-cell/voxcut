@@ -27,6 +27,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
   const project = useStore(s => s.project);
   const characterId = useStore(s => s.selectedCharacterId);
   const mode = useStore(s => s.inputMode);
+  const inputPresets = useStore(s => s.inputPresets);
   // 再生位置・内容が変わったら、入る時刻の案内を出し直す
   useStore(s => s.playhead);
   const [text, setText] = useState('');
@@ -37,6 +38,10 @@ export function ScriptBar({notify}: {notify: Notify}) {
   const layer = current ? `${at(project.tracks[captionLayerFor(project, current)]?.id, 'レイヤー 1')}` : '';
   // 入る時刻も出す（クリックで再生位置が動いても、どこに入るか分かるように）
   const insertAt = current ? framesToTimecode(lineInsertPoint(current), project.video.fps) : '';
+  // 声のプリセット（感情など）。キャラクターを分けなくても、ここで切り替えて足せる
+  const presets = project.characters.find(c => c.id === current)?.voicePresets ?? [];
+  const presetId = presets.some(x => x.id === inputPresets[current]) ? (inputPresets[current] ?? null) : null;
+  const setPreset = (id: string | null) => setState(s => ({inputPresets: {...s.inputPresets, [current]: id}}));
   const m = MODES.find(x => x.value === mode)!;
 
   const submit = () => {
@@ -57,7 +62,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
       return;
     }
     if (!current) return;
-    const id = addLine(current, t);
+    const id = addLine(current, t, presetId);
     setText('');
     void synthesize(notify, [id]).then(() => {
       // 合成で長さが決まってから、ほかのキャラクターのセリフと重なっていないか確かめる
@@ -78,6 +83,18 @@ export function ScriptBar({notify}: {notify: Notify}) {
         options={project.characters.map(c => ({value: c.id, label: c.name}))}
         onChange={v => setState({selectedCharacterId: v})}
       />
+      {presets.length > 0 && (
+        <Selector
+          label="声のプリセット"
+          isLabelHidden
+          variant="secondary"
+          size="sm"
+          width={130}
+          value={presetId ?? ''}
+          options={[{value: '', label: '通常'}, ...presets.map(x => ({value: x.id, label: x.name}))]}
+          onChange={v => setPreset(v || null)}
+        />
+      )}
       <IconButton
         label="キャラクター設定"
         tooltip="キャラクター設定（声・字幕・立ち絵・トラック）"
@@ -96,6 +113,15 @@ export function ScriptBar({notify}: {notify: Notify}) {
       <div
         style={{flex: 1, minWidth: 0}}
         data-script-input
+        onKeyDownCapture={e => {
+          // 打ちながら声のプリセットを切り替える：Alt+1〜9 でプリセット、Alt+0 で通常
+          if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || !/^Digit\d$/.test(e.code)) return;
+          const n = Number(e.code.slice(5));
+          if (n === 0) setPreset(null);
+          else if (presets[n - 1]) setPreset(presets[n - 1].id);
+          else return;
+          e.preventDefault();
+        }}
         onPasteCapture={e => {
           // 何行もある文を貼ったら、台本読み込みで開く
           const pasted = e.clipboardData.getData('text');

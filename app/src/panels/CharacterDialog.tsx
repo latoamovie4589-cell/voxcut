@@ -12,11 +12,52 @@ import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {CharactersPanel} from './Sidebar';
 import {CharacterSubtitleTab, CharacterVoiceTab, ColorSwatchInput, PortraitSection} from '../inspector/Inspector';
-import {getState, setState, updateCharacter, useStore} from '../store';
+import {getState, mergeCharacterAsPreset, setState, updateCharacter, useStore} from '../store';
+import {Heading} from '@astryxdesign/core/Heading';
 import {loadVoices} from '../actions';
-import {layerLabel, type EngineId} from '../model';
+import {layerLabel, type Character, type EngineId} from '../model';
 
 type TabId = 'general' | 'voice' | 'subtitle' | 'portrait';
+
+/** 名前の頭の同じ部分（「茜_怒り」と「茜_通常」なら「茜_」）の長さ */
+const commonPrefix = (a: string, b: string) => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+};
+
+/**
+ * 感情ごとに分けて作ったキャラクターを、ほかのキャラクターの声のプリセットにまとめる。
+ * まとめた後は、セリフ入力欄のプリセット（Alt+数字）やセリフの「音声」タブで切り替えられる
+ */
+function MergeAsPreset({character}: {character: Character}) {
+  const all = useStore(s => s.project!.characters);
+  const others = all.filter(c => c.id !== character.id && c.voice.engine === character.voice.engine);
+  const guess = [...others].sort((a, b) => commonPrefix(b.name, character.name) - commonPrefix(a.name, character.name))[0];
+  const [target, setTarget] = useState(guess?.id ?? '');
+  const to = others.find(c => c.id === target) ?? guess;
+  const defaultName = to ? character.name.slice(commonPrefix(to.name, character.name)).replace(/^[\s_・\-（(]+|[)）\s]+$/g, '') || character.name : character.name;
+  const [name, setName] = useState('');
+  if (!others.length) return null;
+  return (
+    <VStack gap={2} className="vx-preset">
+      <Heading level={4}>ほかのキャラクターのプリセットにまとめる</Heading>
+      <Hint>「茜_怒り」のように感情ごとにキャラクターを分けているなら、「茜_通常」の声のプリセットにまとめられます。セリフもまとめた先のキャラクターに移ります（元に戻すで戻せます）。</Hint>
+      <HStack gap={2}>
+        <Selector label="まとめる先" value={to?.id ?? ''} options={others.map(c => ({value: c.id, label: c.name}))} onChange={setTarget} width="100%" />
+        <TextInput label="プリセットの名前" value={name || defaultName} onChange={setName} />
+      </HStack>
+      <div>
+        <Button
+          label={to ? `「${to.name}」の「${name || defaultName}」にする` : 'まとめる'}
+          size="sm"
+          isDisabled={!to}
+          onClick={() => to && mergeCharacterAsPreset(character.id, to.id, name || defaultName)}
+        />
+      </div>
+    </VStack>
+  );
+}
 
 export function CharacterDialog() {
   const isOpen = useStore(s => s.characterDialogOpen);
@@ -89,7 +130,14 @@ export function CharacterDialog() {
                     />
                   </VStack>
                 )}
-                {tab === 'voice' && <CharacterVoiceTab character={ch} />}
+                {tab === 'voice' && (
+                  <>
+                    <CharacterVoiceTab character={ch} />
+                    <div style={{padding: '0 16px 16px'}}>
+                      <MergeAsPreset character={ch} />
+                    </div>
+                  </>
+                )}
                 {tab === 'subtitle' && <CharacterSubtitleTab character={ch} />}
                 {tab === 'portrait' && <PortraitSection character={ch} />}
               </div>
