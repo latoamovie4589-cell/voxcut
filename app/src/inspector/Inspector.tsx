@@ -19,6 +19,7 @@ import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Trash2, Unlink, UserPen, FileImage, X} from 'lucide-react';
 import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
+import {Tab, TabList} from '@astryxdesign/core/TabList';
 import type {AudioFilter, LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
 import {
   BASE_EXPRESSION,
@@ -134,7 +135,67 @@ function Section({title, children}: {title: string; children: React.ReactNode}) 
   );
 }
 
+/** セリフのプロパティのタブ（選ぶセリフを変えても、開いていたタブのまま） */
+type LineTab = 'line' | 'voice' | 'subtitle' | 'portrait';
+let lastLineTab: LineTab = 'line';
+
 function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
+  const project = useStore(s => s.project)!;
+  const [tab, setTabState] = useState<LineTab>(lastLineTab);
+  const setTab = (t: LineTab) => {
+    lastLineTab = t;
+    setTabState(t);
+  };
+  return (
+    <>
+      {/* YMM4 のセリフアイテムと同じく、音声・字幕・立ち絵の設定をセリフに持たせる。設定ごとにタブで分ける */}
+      <div className="vx-linetabs">
+        <TabList value={tab} onChange={v => setTab(v as LineTab)} layout="fill" size="sm" hasDivider>
+          <Tab value="line" label="セリフ" panelId="vx-line-panel" />
+          <Tab value="voice" label="音声" panelId="vx-line-panel" />
+          <Tab value="subtitle" label="字幕" panelId="vx-line-panel" />
+          <Tab value="portrait" label="立ち絵" panelId="vx-line-panel" />
+        </TabList>
+      </div>
+      <div id="vx-line-panel" role="tabpanel">
+        {tab === 'line' && <LineBasics clip={clip} notify={notify} />}
+        {tab === 'voice' && (
+          <>
+            <TabSummary text={voiceSummary(project, clip)} />
+            <LineTuning clip={clip} />
+            <Divider />
+            <LineAudioFields clip={clip} />
+            <Divider />
+            <GapFields clip={clip} />
+            <Divider />
+            <GeneralFields clip={clip} />
+          </>
+        )}
+        {tab === 'subtitle' && <LineSubtitleSettings voice={clip} />}
+        {tab === 'portrait' && (
+          <>
+            <TabSummary text={portraitSummary(project, clip)} />
+            <LinePortraitSettings clip={clip} />
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** タブの頭に、今の設定のあらまし */
+function TabSummary({text}: {text: string}) {
+  return (
+    <div className="vx-tabsummary">
+      <Text type="supporting" maxLines={1}>
+        {text}
+      </Text>
+    </div>
+  );
+}
+
+/** セリフタブ：キャラクター・文・合成・削除・分離 */
+function LineBasics({clip, notify}: {clip: VoiceClip; notify: Notify}) {
   const project = useStore(s => s.project)!;
   const busy = useStore(s => s.busy);
   const error = useStore(s => s.synthErrors[clip.id]);
@@ -186,25 +247,6 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
           </HStack>
         ) : null}
       </Section>
-      <Divider />
-      {/* YMM4 のセリフアイテムと同じく、音声・字幕・立ち絵の設定をセリフに持たせる */}
-      <PropGroup id="voice" title="音声設定" summary={voiceSummary(project, clip)}>
-        <LineTuning clip={clip} />
-        <Divider />
-        <LineAudioFields clip={clip} />
-        <Divider />
-        <GapFields clip={clip} />
-        <Divider />
-        <GeneralFields clip={clip} />
-      </PropGroup>
-      <Divider />
-      <PropGroup id="subtitle" title="字幕設定" summary={clip.subtitleCustom ? '個別に設定' : 'キャラクター設定'}>
-        <LineSubtitleSettings voice={clip} />
-      </PropGroup>
-      <Divider />
-      <PropGroup id="portrait" title="立ち絵設定" summary={portraitSummary(project, clip)}>
-        <LinePortraitSettings clip={clip} />
-      </PropGroup>
     </>
   );
 }
