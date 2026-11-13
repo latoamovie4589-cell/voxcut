@@ -1,8 +1,8 @@
 // Rust（src-tauri/src/commands.rs）との窓口。
 // ブラウザで開いたとき（Tauri 外）は、デザイン確認用の模擬実装に切り替わる。
 
-import type {Character, EngineId, EngineStatus, Project, VoiceClip, VoiceInfo} from './model';
-import {defaultParams, reflowVoiceTrack} from './model';
+import type {AccentPhrase, Character, EngineId, EngineStatus, Project, VoiceClip, VoiceInfo} from './model';
+import {defaultParams, newLayer, reflowAll} from './model';
 
 export interface SynthProgress {
   done: number;
@@ -21,6 +21,10 @@ export interface ExportRequest {
   height: number | null;
   /** 動画のエンコーダー（グラフィックボードを使うと速い） */
   encoder?: Encoder;
+  /** PSD 立ち絵の、状態ごとの画像（キャラクター id → 状態の番号 → PNG のパス） */
+  portraitFrames?: Record<string, Record<number, string>>;
+  /** テキスト・図形アイテムの画像（クリップ id → PNG のパス） */
+  itemImages?: Record<string, string>;
 }
 
 /** x264 は CPU、nvenc は NVIDIA、qsv は Intel、amf は AMD */
@@ -108,6 +112,20 @@ export interface Api {
   pickCharacterPath(mode: 'save' | 'open', suggested?: string): Promise<string | null>;
   exportCharacter(path: string, character: Character, projectPath: string | null): Promise<void>;
   importCharacter(path: string): Promise<Character>;
+  /** VOICEVOX：文のアクセント句（text は辞書を当てた文） */
+  voicevoxAccent(text: string, speaker: string): Promise<{text: string; phrases: AccentPhrase[]}>;
+  /** VOICEVOX：アクセントの位置・区切りを変えたあとの音の高さと長さ */
+  voicevoxMoraData(phrases: AccentPhrase[], speaker: string): Promise<AccentPhrase[]>;
+  /** PSD 立ち絵のファイルを選ぶ */
+  pickPsd(): Promise<string | null>;
+  /** PSD の中身（相対パスはプロジェクトのフォルダから） */
+  readPsd(path: string, projectPath: string | null): Promise<ArrayBuffer>;
+  /** ファイルが変わったかを見分ける印（無ければ null） */
+  fileStamp(path: string, projectPath: string | null): Promise<string | null>;
+  /** 合成した PSD 立ち絵の画像をキャッシュに保存して、パスを返す */
+  writePortraitPng(name: string, png: Uint8Array): Promise<string>;
+  /** キャッシュにある PSD 立ち絵の画像のパス（無ければ null） */
+  portraitPngPath(name: string): Promise<string | null>;
 }
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'avif'];
@@ -192,11 +210,20 @@ async function tauriApi(): Promise<Api> {
       const r = await dialog.open({title, defaultPath: defaultPath ?? undefined, filters: [{name: '実行ファイル', extensions: ['exe']}]});
       return typeof r === 'string' ? r : null;
     },
+    voicevoxAccent: (text, speaker) => invoke('voicevox_accent', {text, speaker}),
+    voicevoxMoraData: (phrases, speaker) => invoke('voicevox_mora_data', {phrases, speaker}),
+    pickPsd: async () => {
+      const r = await dialog.open({title: 'PSD 立ち絵を選ぶ', filters: [{name: 'PSD', extensions: ['psd', 'psb']}]});
+      return typeof r === 'string' ? r : null;
+    },
+    readPsd: (path, projectPath) => invoke<ArrayBuffer>('read_psd', {path: resolvePath(path, projectPath)}),
+    fileStamp: (path, projectPath) => invoke<string | null>('file_stamp', {path: resolvePath(path, projectPath)}),
+    writePortraitPng: (name, png) => invoke<string>('write_portrait_png', png, {headers: {'x-name': name}}),
+    portraitPngPath: name => invoke<string | null>('portrait_png_path', {name}),
     probeMedia: (path, projectPath) => invoke('probe_media', {path: resolvePath(path, projectPath ?? null)}),
     mediaUrl: (path, projectPath) => convertFileSrc(resolvePath(path, projectPath)),
     allowPaths: paths => invoke('allow_paths', {paths}),
-    makeProxy: async (src, projectPath, durationMs) =>
-      convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs})),
+    makeProxy: async (src, projectPath, durationMs) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs})),
     onProxyProgress: cb => listen<{src: string; ratio: number}>('proxy-progress', e => cb(e.payload)),
     videoEncoders: () => invoke('video_encoders'),
     addRecent: path => invoke('add_recent', {path}),
@@ -256,7 +283,7 @@ function mockProject(): Project {
     ['ch_a', '声は A.I.VOICE、VOICEPEAK、VoiSona Talk から選べます。'],
   ];
   return {
-    version: 1,
+    version: 4,
     name: 'サンプル',
     video: {width: 1920, height: 1080, fps: 30, sampleRate: 48000, background: '#000000'},
     characters: [
@@ -266,38 +293,54 @@ function mockProject(): Project {
         color: '#0A84FF',
         voice: {engine: 'voicepeak', speaker: 'Japanese Female 1', params: defaultParams()},
         subtitle: sub,
-        // 同梱のサンプル立ち絵（public/sample）
+        // 同梱のサンプル立ち絵（public/sample/sample.psd。体・目・口のレイヤー）
         portrait: {
-          base: '/sample/body.png',
-          eyes: ['/sample/eye0.png', '/sample/eye1.png', '/sample/eye2.png'],
-          mouth: ['/sample/mouth0.png', '/sample/mouth1.png', '/sample/mouth2.png'],
+          base: '',
+          eyes: [null, null, null],
+          mouth: [null, null, null],
           transform: {x: 600, y: 240, scale: 1.1, opacity: 1},
           expressions: [],
           visible: true,
+          psd: {src: '/sample/sample.psd', visibility: {}, eyes: ['1/0', '1/1', '1/2'], mouth: ['0/0', '0/1', '0/2']},
         },
+        layer: 2,
+        audioLayer: null,
       },
-      {id: 'ch_b', name: 'アシスタント', color: '#FF9F0A', voice: {engine: 'aivoice', speaker: '琴葉 茜', params: defaultParams()}, subtitle: {...sub, color: '#FFE08A', animation: 'typewriter' as const}, portrait: null},
+      {
+        id: 'ch_b',
+        name: 'アシスタント',
+        color: '#FF9F0A',
+        voice: {engine: 'aivoice', speaker: '琴葉 茜', params: defaultParams()},
+        subtitle: {...sub, color: '#FFE08A', animation: 'typewriter' as const},
+        portrait: null,
+        layer: 3,
+        audioLayer: null,
+      },
     ],
-    tracks: [
-      {id: 't_voice', kind: 'voice', name: 'セリフ', muted: false, locked: false, duck: false, duckLevel: 0.3},
-      {id: 't_media', kind: 'media', name: '素材', muted: false, locked: false, duck: false, duckLevel: 0.3},
+    // Rust の Project::new と同じ V1〜V3・A1〜A3
+    tracks: [newLayer('V1'), newLayer('V2'), newLayer('V3'), newLayer('V4'), newLayer('V5'), newLayer('V6')],
+    clips: [
+      // 立ち絵アイテム（ナレーター、全体）
+      {id: 'pt1', type: 'portrait' as const, trackId: 'V1', start: 0, duration: 270, characterId: 'ch_a', transform: {x: 600, y: 240, scale: 1.1, opacity: 1}},
+      ...lines.map(([ch, text], i) => ({
+        id: `c${i + 1}`,
+        trackId: ch === 'ch_a' ? 'V2' : 'V3',
+        start: i * 90,
+        duration: 90,
+        type: 'voice' as const,
+        characterId: ch,
+        text,
+        subtitle: null,
+        paramsOverride: null,
+        audio: null,
+        gapAfter: 6,
+        lockDuration: false,
+      })),
     ],
-    clips: lines.map(([ch, text], i) => ({
-      id: `c${i + 1}`,
-      trackId: 't_voice',
-      start: i * 90,
-      duration: 84,
-      type: 'voice',
-      characterId: ch,
-      text,
-      subtitle: null,
-      paramsOverride: null,
-      audio: null,
-      gapAfter: 6,
-      lockDuration: false,
-    })),
   };
 }
+
+const mockPngs = new Map<string, Uint8Array>();
 
 function mockApi(): Api {
   const synthListeners = new Set<(p: SynthProgress) => void>();
@@ -307,7 +350,13 @@ function mockApi(): Api {
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   const durations = new Map<string, number>();
   let config: AppConfig = {
-    engines: {voicepeakPath: null, aivoiceBridgePath: null, aivoiceDir: null, voisona: {host: '127.0.0.1', port: 32766, user: '', password: '', timeoutSecs: 60}, voicevox: {host: '127.0.0.1', port: 50021}},
+    engines: {
+      voicepeakPath: null,
+      aivoiceBridgePath: null,
+      aivoiceDir: null,
+      voisona: {host: '127.0.0.1', port: 32766, user: '', password: '', timeoutSecs: 60},
+      voicevox: {host: '127.0.0.1', port: 50021},
+    },
     ffmpegPath: null,
     dictionary: [],
     recent: [],
@@ -315,9 +364,7 @@ function mockApi(): Api {
   let autosave: Autosave | null = null;
   const savedChars = new Map<string, Character>();
   const synth = async (project: Project, clipIds?: string[]) => {
-    const targets = project.clips.filter(
-      (c): c is VoiceClip => c.type === 'voice' && (!clipIds || clipIds.includes(c.id)) && c.text.trim() !== '',
-    );
+    const targets = project.clips.filter((c): c is VoiceClip => c.type === 'voice' && (!clipIds || clipIds.includes(c.id)) && c.text.trim() !== '');
     let done = 0;
     const audio = new Map<string, {cacheKey: string; durationMs: number}>();
     for (const c of targets) {
@@ -330,7 +377,7 @@ function mockApi(): Api {
       synthListeners.forEach(cb => cb({done, total: targets.length, clipIds: [c.id], error: null}));
     }
     let p: Project = {...project, clips: project.clips.map(c => (audio.has(c.id) ? {...c, audio: audio.get(c.id)!} : c))};
-    for (const t of p.tracks.filter(t => t.kind === 'voice')) p = reflowVoiceTrack(p, t.id);
+    p = reflowAll(p);
     return {project: p, failed: [] as [string, string][]};
   };
   return {
@@ -397,10 +444,30 @@ function mockApi(): Api {
     pickSavePath: async (_k, s) => s,
     pickExe: async title => (title.includes('A.I.VOICE') ? 'D:\\develop\\A.I.VOICE\\AIVoiceEditor\\AIVoiceEditor.exe' : 'D:\\develop\\VOICEPEAK\\voicepeak.exe'),
     pickMedia: async kind => (kind === 'image' ? ['/sample/body.png'] : ['/sample/clip.mp4']),
+    // ブラウザで確かめるとき：読点で句に分け、1 文字を 1 音にした仮のアクセント句
+    voicevoxAccent: async text => ({
+      text,
+      phrases: text
+        .split(/[、。！？]/)
+        .filter(Boolean)
+        .map(part => ({
+          moras: [...part].map((ch, i) => ({text: ch, vowel: 'a', vowel_length: 0.1, pitch: i === 0 ? 5.4 : 5.8 - i * 0.05})),
+          accent: 1,
+          pause_mora: {text: '、', vowel: 'pau', vowel_length: 0.3, pitch: 0},
+        })),
+    }),
+    voicevoxMoraData: async phrases => phrases.map(ph => ({...ph, moras: ph.moras.map((m, i) => ({...m, pitch: m.pitch === 0 ? 0 : i < ph.accent ? 5.8 : 5.2 - (i - ph.accent) * 0.05}))})),
+    // ブラウザで確かめるとき：window.__mockPsd に置いた PSD を使う
+    pickPsd: async () => (window as unknown as {__mockPsd?: string}).__mockPsd ?? null,
+    readPsd: async path => (await fetch(path)).arrayBuffer(),
+    fileStamp: async () => 'mock',
+    writePortraitPng: async (name, png) => {
+      mockPngs.set(name, png);
+      return `/mock-cache/${name}.png`;
+    },
+    portraitPngPath: async name => (mockPngs.has(name) ? `/mock-cache/${name}.png` : null),
     probeMedia: async path =>
-      path.endsWith('.mp4')
-        ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360}
-        : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
+      path.endsWith('.mp4') ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360} : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
     mediaUrl: path => path,
     allowPaths: async () => {},
     makeProxy: async src => {
@@ -427,7 +494,7 @@ function mockApi(): Api {
     autosaveClear: async () => {
       autosave = null;
     },
-    pickCharacterPath: async (mode, suggested) => (mode === 'save' ? `${suggested ?? 'キャラクター'}.voxchar` : [...savedChars.keys()].at(-1) ?? null),
+    pickCharacterPath: async (mode, suggested) => (mode === 'save' ? `${suggested ?? 'キャラクター'}.voxchar` : ([...savedChars.keys()].at(-1) ?? null)),
     exportCharacter: async (path, character) => {
       savedChars.set(path, structuredClone(character));
     },

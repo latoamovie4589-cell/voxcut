@@ -102,6 +102,13 @@ pub fn global_parameters(p: &VoiceParams) -> Value {
         "pitch": p.pitch * 100.0,
         "intonation": p.intonation,
     });
+    // 細かい調声：alp（声の若さ・大人っぽさ -1〜1）、huskiness（かすれ -20〜20）
+    if let Some(v) = p.extra.get("alp") {
+        g["alp"] = json!(v.clamp(-1.0, 1.0));
+    }
+    if let Some(v) = p.extra.get("huskiness") {
+        g["huskiness"] = json!(v.clamp(-20.0, 20.0));
+    }
     if !p.emotions.is_empty() {
         // スタイル名の並び順はボイスごとに決まっているので、名前付きで渡しておき、
         // 実際の並びは list_voices で得た順に合わせて送る（TODO: API Reference で形式確認）
@@ -282,7 +289,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let out = d.path().join("v.wav");
         let p = VoiceParams::default();
-        eng.synthesize(&SynthRequest { speaker: "tanaka-san_ja_JP", text: "テスト", params: &p }, &out).unwrap();
+        eng.synthesize(&SynthRequest { speaker: "tanaka-san_ja_JP", text: "テスト", params: &p, accent: None }, &out).unwrap();
         assert_eq!(crate::wav::duration_ms(&out).unwrap(), 200);
         let calls = log.lock().unwrap().clone();
         assert!(calls.iter().any(|c| c.starts_with("DELETE /api/talk/v1/speech-syntheses/abc")));
@@ -311,5 +318,16 @@ mod tests {
         assert_eq!(b["global_parameters"]["pitch"], 200.0);
         assert_eq!(b["global_parameters"]["speed"], 1.2);
         assert_eq!(b["language"], "ja_JP");
+    }
+
+    #[test]
+    fn extra_alp_and_huskiness() {
+        let mut p = VoiceParams::default();
+        assert!(global_parameters(&p).get("alp").is_none());
+        p.extra.insert("alp".into(), 2.0);
+        p.extra.insert("huskiness".into(), -5.0);
+        let g = global_parameters(&p);
+        assert_eq!(g["alp"], 1.0);
+        assert_eq!(g["huskiness"], -5.0);
     }
 }

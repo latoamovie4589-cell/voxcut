@@ -6,8 +6,7 @@ import {defineTheme} from '@astryxdesign/core/theme';
 import {neutralTheme} from '@astryxdesign/theme-neutral';
 
 // HIG §4：Web ではフォントを配布せずシステムフォントスタックを使う。Windows では Yu Gothic UI / Segoe UI になる
-const SYSTEM_STACK =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", system-ui, sans-serif';
+const SYSTEM_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", system-ui, sans-serif';
 
 export const voxcutTheme = defineTheme({
   name: 'voxcut',
@@ -22,7 +21,9 @@ export const voxcutTheme = defineTheme({
     heading: {family: '-apple-system', fallbacks: SYSTEM_STACK},
     code: {family: 'ui-monospace', fallbacks: '"SF Mono", Menlo, Consolas, monospace'},
   },
-  radius: {base: 8, multiplier: 1},
+  // 角の丸みは控えめに（編集ソフトとして詰めて並べるので、丸めすぎると押せる範囲と表示の幅が減る）
+  // inner 3 / ボタン・入力 6 / カード・メニュー 9px
+  radius: {base: 3, multiplier: 1},
   // HIG §7：応答 0.3〜0.5 秒、控えめ
   motion: {fast: 150, medium: 320, ratio: 0.75},
   tokens: {
@@ -38,8 +39,5 @@ export const voxcutTheme = defineTheme({
     '--color-success': ['#34C759', '#30D158'],
     '--color-warning': ['#FF9500', '#FF9F0A'],
   },
-  components: {
-    // HIG §6：ボタンはカプセル形状
-    button: {base: {borderRadius: '9999px'}},
-  },
+  components: {},
 });

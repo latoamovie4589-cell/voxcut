@@ -1,19 +1,15 @@
-// 左パネル：キャラクター一覧と、音声合成ソフトの接続状態。
+// キャラクター一覧と、音声合成ソフトの接続状態。どちらも配置を変えられるパネル（dock/）として出す。
 
-import {Heading, Text} from '@astryxdesign/core/Text';
+import {Text} from '@astryxdesign/core/Text';
 import {Button} from '@astryxdesign/core/Button';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {Item} from '@astryxdesign/core/Item';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {List} from '@astryxdesign/core/List';
-import {StatusDot} from '@astryxdesign/core/StatusDot';
-import {Tab, TabList} from '@astryxdesign/core/TabList';
-import {ScriptList} from './ScriptList';
-import {ChevronDown, ChevronUp, Plus, RefreshCw} from 'lucide-react';
-import {useState} from 'react';
+import {CircleAlert, CircleCheck, CirclePause, Loader, Plus, RefreshCw} from 'lucide-react';
 import {ENGINE_LABEL, isSpeakerMissing, speakerLabel} from '../model';
-import {addCharacter, removeCharacter, setState, useStore} from '../store';
+import {addCharacter, getState, removeCharacter, setState, useStore} from '../store';
 import {exportCharacterFile, getNotify, importCharacterFile, refreshEngines} from '../actions';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 
@@ -21,133 +17,131 @@ function Swatch({color}: {color: string}) {
   return <span className="vx-swatch" style={{background: color}} aria-hidden />;
 }
 
-export function Sidebar() {
+/** 使っているキャラクターのソフトのうち、今使えないもの */
+export function useEngineProblems() {
   const project = useStore(s => s.project);
-  const selectedCharacterId = useStore(s => s.selectedCharacterId);
-  const selectedClipId = useStore(s => s.selectedClipId);
   const engines = useStore(s => s.engines);
   const checking = useStore(s => s.checkingEngines);
-  const voices = useStore(s => s.voices);
-  const tab = useStore(s => s.sidebarTab);
-  // 一覧は、使っているソフトに問題があるときだけ開いておく（問題がなければ要約 1 行にたたむ）
-  const [enginesOpen, setEnginesOpen] = useState<boolean | null>(null);
-  if (!project) return null;
+  if (!project || checking) return [];
   const used = new Set(project.characters.map(c => c.voice.engine));
-  const problems = checking ? [] : engines.filter(e => used.has(e.engine) && e.status.state !== 'ready').map(e => e.engine);
-  const readyCount = engines.filter(e => e.status.state === 'ready').length;
-  const showEngines = enginesOpen ?? (problems.length > 0 || readyCount === 0);
+  return engines.filter(e => used.has(e.engine) && e.status.state !== 'ready').map(e => e.engine);
+}
+
+/**
+ * キャラクターの一覧。inDialog のとき（キャラクターの編集ウィンドウ）は、ウィンドウの中だけの選択を使う
+ * （設定を見ただけで、セリフ入力欄の話し手が変わらないように）
+ */
+export function CharactersPanel({inDialog = false}: {inDialog?: boolean}) {
+  const project = useStore(s => s.project);
+  const panelSel = useStore(s => s.selectedCharacterId);
+  const dialogSel = useStore(s => s.dialogCharacterId);
+  const selectedCharacterId = inDialog ? (dialogSel ?? panelSel) : panelSel;
+  const clipSel = useStore(s => s.selectedClipId);
+  const selectedClipId = inDialog ? null : clipSel;
+  const add = () => {
+    if (!inDialog) return void addCharacter();
+    const keep = getState().selectedCharacterId;
+    const id = addCharacter();
+    setState({selectedCharacterId: keep, dialogCharacterId: id});
+  };
+  const voices = useStore(s => s.voices);
+  const problems = useEngineProblems();
+  if (!project) return null;
   return (
-    <VStack gap={3} padding={3}>
-      <TabList value={tab} onChange={v => setState({sidebarTab: v as 'characters' | 'script'})} layout="fill" size="sm" role="tablist">
-        <Tab value="characters" label="キャラクター" panelId="vx-side-characters" />
-        <Tab value="script" label="台本" panelId="vx-side-script" />
-      </TabList>
-      {tab === 'script' ? (
-        <div id="vx-side-script" role="tabpanel">
-          <ScriptList />
-        </div>
-      ) : (
-      <div id="vx-side-characters" role="tabpanel">
-      <VStack gap={4}>
-      <VStack gap={1}>
-        <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
-          <Heading level={3}>キャラクター</Heading>
-          <HStack gap={0}>
-            <IconButton label="キャラクターを追加" tooltip="キャラクターを追加" variant="ghost" size="sm" icon={<Icon icon={Plus} />} onClick={addCharacter} />
-            <MoreMenu
-              label="キャラクターのメニュー"
-              size="sm"
-              items={[
-                {label: 'ファイルから読み込む…', onClick: () => void importCharacterFile(getNotify())},
-                ...(selectedCharacterId
-                  ? [
-                      {label: '選んだキャラクターをファイルに保存…', onClick: () => void exportCharacterFile(selectedCharacterId, getNotify())},
-                      {type: 'divider' as const},
-                      {
-                        label: '選んだキャラクターを消す',
-                        variant: 'destructive' as const,
-                        onClick: () => {
-                          if (!removeCharacter(selectedCharacterId)) getNotify()('最後の 1 人は消せません');
-                        },
+    <VStack gap={1} padding={2}>
+      <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
+        <Text type="supporting">{project.characters.length} 人</Text>
+        <HStack gap={0}>
+          <IconButton label="キャラクターを追加" tooltip="キャラクターを追加" variant="ghost" size="sm" icon={<Icon icon={Plus} />} onClick={add} />
+          <MoreMenu
+            label="キャラクターのメニュー"
+            size="sm"
+            items={[
+              {
+                label: 'ファイルから読み込む…',
+                onClick: () => void importCharacterFile(getNotify()),
+              },
+              ...(selectedCharacterId
+                ? [
+                    {
+                      label: '選んだキャラクターをファイルに保存…',
+                      onClick: () => void exportCharacterFile(selectedCharacterId, getNotify()),
+                    },
+                    {type: 'divider' as const},
+                    {
+                      label: '選んだキャラクターを消す',
+                      variant: 'destructive' as const,
+                      onClick: () => {
+                        if (!removeCharacter(selectedCharacterId)) getNotify()('最後の 1 人は消せません');
                       },
-                    ]
-                  : []),
-              ]}
-            />
-          </HStack>
+                    },
+                  ]
+                : []),
+            ]}
+          />
         </HStack>
-        <List density="compact">
-          {project.characters.map(c => (
+      </HStack>
+      <List density="compact">
+        {project.characters.map(c => (
+          <Item
+            key={c.id}
+            as="li"
+            density="compact"
+            label={c.name}
+            description={`${ENGINE_LABEL[c.voice.engine]} · ${speakerLabel(c.voice, voices)}${problems.includes(c.voice.engine) ? '（今は使えません）' : isSpeakerMissing(c.voice, voices) ? '（話者が入っていません）' : ''}`}
+            startContent={<Swatch color={c.color} />}
+            isSelected={!selectedClipId && c.id === selectedCharacterId}
+            onClick={() => setState(inDialog ? {dialogCharacterId: c.id} : {selectedCharacterId: c.id, selectedClipId: null})}
+          />
+        ))}
+      </List>
+    </VStack>
+  );
+}
+
+export function EnginesPanel() {
+  const engines = useStore(s => s.engines);
+  const checking = useStore(s => s.checkingEngines);
+  const problems = useEngineProblems();
+  const readyCount = engines.filter(e => e.status.state === 'ready').length;
+  return (
+    <VStack gap={1} padding={2}>
+      <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
+        <Text type="supporting" maxLines={2}>
+          {checking || !engines.length ? '確認しています…' : problems.length ? `${problems.map(e => ENGINE_LABEL[e]).join('・')} が使えません` : `${readyCount} つ使えます`}
+        </Text>
+        <IconButton label="接続を確認し直す" tooltip="接続を確認し直す" variant="ghost" size="sm" icon={<Icon icon={RefreshCw} />} clickAction={refreshEngines} />
+      </HStack>
+      <List density="compact">
+        {engines.map(({engine, status}) => {
+          const ok = !checking && status.state === 'ready';
+          const text = checking ? '確認しています…' : ok ? '使えます' : status.state === 'notRunning' ? '起動していません' : '見つかりません';
+          return (
             <Item
-              key={c.id}
+              key={engine}
               as="li"
               density="compact"
-              label={c.name}
-              description={`${ENGINE_LABEL[c.voice.engine]} · ${speakerLabel(c.voice, voices)}${problems.includes(c.voice.engine) ? '（今は使えません）' : isSpeakerMissing(c.voice, voices) ? '（話者が入っていません）' : ''}`}
-              startContent={<Swatch color={c.color} />}
-              isSelected={!selectedClipId && c.id === selectedCharacterId}
-              onClick={() => setState({selectedCharacterId: c.id, selectedClipId: null})}
+              label={ENGINE_LABEL[engine]}
+              description={ok || checking || status.state === 'ready' ? text : `${text}：${status.detail}`}
+              descriptionLines={4}
+              endContent={
+                checking ? undefined : !ok && (engine === 'aivoice' || engine === 'voicepeak') ? (
+                  <Button label="場所を選ぶ" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
+                ) : !ok ? (
+                  <Button label="設定" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
+                ) : undefined
+              }
+              startContent={
+                <Icon
+                  icon={checking ? Loader : ok ? CircleCheck : status.state === 'notRunning' ? CirclePause : CircleAlert}
+                  color={checking ? 'secondary' : ok ? 'success' : status.state === 'notRunning' ? 'warning' : 'error'}
+                  label={text}
+                />
+              }
             />
-          ))}
-        </List>
-      </VStack>
-
-      <VStack gap={1}>
-        <HStack hAlign="between" vAlign="center" paddingInlineStart={1}>
-          <VStack gap={0}>
-            <Heading level={3}>音声合成ソフト</Heading>
-            <Text type="supporting" maxLines={1}>
-              {checking || !engines.length ? '確認しています…' : problems.length ? `${problems.map(e => ENGINE_LABEL[e]).join('・')} が使えません` : `${readyCount} つ使えます`}
-            </Text>
-          </VStack>
-          <HStack gap={0}>
-            <IconButton label="接続を確認し直す" tooltip="接続を確認し直す" variant="ghost" size="sm" icon={<Icon icon={RefreshCw} />} clickAction={refreshEngines} />
-            <IconButton
-              label={showEngines ? '音声合成ソフトの一覧をたたむ' : '音声合成ソフトの一覧を出す'}
-              tooltip={showEngines ? 'たたむ' : '一覧を出す'}
-              variant="ghost"
-              size="sm"
-              aria-expanded={showEngines}
-              icon={<Icon icon={showEngines ? ChevronUp : ChevronDown} />}
-              onClick={() => setEnginesOpen(!showEngines)}
-            />
-          </HStack>
-        </HStack>
-        {showEngines && (
-        <List density="compact">
-          {engines.map(({engine, status}) => {
-            const ok = !checking && status.state === 'ready';
-            const text = checking ? '確認しています…' : ok ? '使えます' : status.state === 'notRunning' ? '起動していません' : '見つかりません';
-            return (
-              <Item
-                key={engine}
-                as="li"
-                density="compact"
-                label={ENGINE_LABEL[engine]}
-                description={ok || checking || status.state === 'ready' ? text : `${text}：${status.detail}`}
-                descriptionLines={2}
-                endContent={
-                  checking ? undefined : !ok && (engine === 'aivoice' || engine === 'voicepeak') ? (
-                    <Button label="場所を選ぶ" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
-                  ) : !ok ? (
-                    <Button label="設定" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
-                  ) : undefined
-                }
-                startContent={
-                  <StatusDot
-                    variant={checking ? 'neutral' : ok ? 'success' : status.state === 'notRunning' ? 'warning' : 'neutral'}
-                    label={text}
-                  />
-                }
-              />
-            );
-          })}
-        </List>
-        )}
-      </VStack>
-      </VStack>
-      </div>
-      )}
+          );
+        })}
+      </List>
     </VStack>
   );
 }

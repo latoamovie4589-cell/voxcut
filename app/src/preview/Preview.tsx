@@ -1,11 +1,14 @@
-// プレビュー。Canvas 2D に 背景 → 素材 → 立ち絵 → 字幕 の順で描く。最終画質は書き出し時に FFmpeg が作る。
+// プレビュー。Canvas 2D に 背景 → レイヤー（1 から順に：素材 → そのレイヤーの立ち絵 → 字幕）の順で描く。最終画質は書き出し時に FFmpeg が作る。
 // 立ち絵の口パク・目パチは lipsync.ts（Rust と同じ計算）で決める。
 
+import {getDock, showPanel} from '../dock/layout';
 import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
-import type {Character, MediaClip, Project, Transform, VoiceClip} from '../model';
-import {expressionIndex, projectDuration, portraitLayers} from '../model';
+import type {Character, Effect, MediaClip, PortraitClip, Project, Transform} from '../model';
+import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks} from '../model';
+import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
+import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
 import {getPeaks, onPeaks} from '../peaks';
@@ -66,19 +69,33 @@ function place(
 function placeRect(t: Transform, size: [number, number], w: number, h: number, scale: number) {
   const iw = size[0] * t.scale * scale;
   const ih = size[1] * t.scale * scale;
-  return {x: (w - iw) / 2 + t.x * scale, y: (h - ih) / 2 + t.y * scale, w: iw, h: ih};
+  return {
+    x: (w - iw) / 2 + t.x * scale,
+    y: (h - ih) / 2 + t.y * scale,
+    w: iw,
+    h: ih,
+  };
 }
 
 type Rect = {x: number; y: number; w: number; h: number};
 /** プレビュー上で掴めるもの（素材か立ち絵） */
 interface Target {
   key: string;
-  kind: 'media' | 'portrait';
-  id: string; // クリップ ID かキャラクター ID
+  kind: 'media' | 'portrait' | 'subtitle';
+  id: string; // クリップ ID かキャラクター ID（字幕はセリフの ID）
+  /** 選ぶクリップ（分離した字幕なら字幕のクリップ） */
+  selectId?: string;
   rect: Rect;
   transform: Transform;
 }
-type Gesture = {target: Target; mode: 'move' | 'scale'; x: number; y: number; dist: number; moved: boolean};
+type Gesture = {
+  target: Target;
+  mode: 'move' | 'scale';
+  x: number;
+  y: number;
+  dist: number;
+  moved: boolean;
+};
 const HANDLE = 10;
 
 const corners = (r: Rect): [number, number][] => [
@@ -91,16 +108,40 @@ const inside = (r: Rect, p: {x: number; y: number}) => p.x >= r.x && p.x <= r.x 
 const distToCenter = (r: Rect, p: {x: number; y: number}) => Math.hypot(p.x - (r.x + r.w / 2), p.y - (r.y + r.h / 2));
 
 function selectTarget(t: Target) {
-  if (t.kind === 'media') setState(s => ({selectedClipId: t.id, revealSeq: s.revealSeq + 1}));
-  else setState({selectedClipId: null, selectedCharacterId: t.id, inspectorTab: 'portrait', sidebarTab: 'characters'});
+  if (t.kind === 'media' || t.kind === 'subtitle') setState(s => ({selectedClipId: t.selectId ?? t.id, revealSeq: s.revealSeq + 1}));
+  else {
+    setState({
+      selectedClipId: null,
+      selectedCharacterId: t.id,
+      inspectorTab: 'portrait',
+    });
+    if (!getDock().maximized) showPanel('inspector');
+  }
 }
 
 function commitTransform(t: Target, transform: Transform, mergeKey?: string) {
-  if (t.kind === 'media') {
-    commit(p => ({...p, clips: p.clips.map(c => (c.id === t.id && c.type === 'media' ? {...c, transform} : c))}), mergeKey);
+  if (t.kind === 'subtitle') {
+    commit(
+      p => ({
+        ...p,
+        clips: p.clips.map(c => (c.id === t.id && c.type === 'voice' && c.subtitleCustom ? {...c, subtitleCustom: {...c.subtitleCustom, transform}} : c)),
+      }),
+      mergeKey,
+    );
+  } else if (t.kind === 'media') {
+    commit(
+      p => ({
+        ...p,
+        clips: p.clips.map(c => (c.id === t.id && (isVisual(c) || c.type === 'portrait') ? {...c, transform} : c)),
+      }),
+      mergeKey,
+    );
   } else {
     commit(
-      p => ({...p, characters: p.characters.map(c => (c.id === t.id && c.portrait ? {...c, portrait: {...c.portrait, transform}} : c))}),
+      p => ({
+        ...p,
+        characters: p.characters.map(c => (c.id === t.id && c.portrait ? {...c, portrait: {...c.portrait, transform}} : c)),
+      }),
       mergeKey,
     );
   }
@@ -191,7 +232,10 @@ export function Preview() {
   const inspectorTab = useStore(s => s.inspectorTab);
   // プレビューで選んでいるもの：素材クリップ、なければ（クリップ未選択時の）キャラクターの立ち絵
   const selectedKey = selectedClipId
-    ? project?.clips.find(c => c.id === selectedClipId)?.type === 'media'
+    ? (() => {
+        const c = project?.clips.find(x => x.id === selectedClipId);
+        return !!c && (isVisual(c) || c.type === 'portrait');
+      })()
       ? `m:${selectedClipId}`
       : null
     : selectedCharacterId && inspectorTab === 'portrait'
@@ -244,41 +288,117 @@ export function Preview() {
     ctx.fillRect(0, 0, w, h);
 
     const at = (c: {start: number; duration: number}) => playhead >= c.start && playhead < c.start + c.duration;
+    const targets: Target[] = [];
     let ivCache: [number, number][] | null = null;
     const duckIv = () => (ivCache ??= voiceIntervals(p));
-    const targets: Target[] = [];
     const ov = overrideRef.current;
     const tf = (key: string, t: Transform) => (ov?.key === key ? ov.transform : t);
     const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
-    const visible = new Set(p.tracks.filter(t => !t.muted).map(t => t.id));
+    const audible = audibleTracks(p);
     const activeVideos = new Set<HTMLVideoElement>();
+    const total = projectDuration(p);
+    const vt = videoTracks(p);
 
-    // 素材（配列の後ろのトラックから描く＝先頭が手前）
-    for (const t of [...p.tracks].reverse()) {
-      if (!visible.has(t.id)) continue;
+    // 立ち絵（口パク・目パチ）
+    // 立ち絵アイテム（PSD 立ち絵だけ。口パク・目パチ・表情）
+    const drawPortrait = (item: PortraitClip) => {
+      const ch = p.characters.find(x => x.id === item.characterId);
+      const pt = ch?.portrait;
+      if (!ch || !pt?.visible || !pt.psd) return;
+      let eyes = eyesAt(playhead, blinkFor(ch.id, fps, total));
+      let mouth = 0;
+      // 表情：既定は立ち絵アイテムの「既定の表情」。セリフで選んでいればその表情（core/src/lipsync.rs と同じく、後ろのクリップが勝つ）
+      const itemDefault = expressionIndex(pt, item.expression);
+      let expr = itemDefault;
+      let speaking = false;
+      const effects: Effect[] = [];
+      const variants = lineVariants(p, ch);
       for (const c of p.clips) {
-        if (c.trackId !== t.id || c.type !== 'media' || !at(c)) continue;
+        if (c.type !== 'voice' || c.characterId !== ch.id || !audible.has(c.trackId) || !at(c)) continue;
+        speaking = true;
+        // セリフで立ち絵のレイヤーを変えていれば、その組み合わせ
+        expr = variants.find(v => v.id === c.id)?.index ?? lineExpression(pt, c.expression, itemDefault);
+        // セリフの立ち絵設定：目パチしない・口パクしない・エフェクト
+        if (c.portrait?.noBlink) eyes = 0;
+        effects.push(...(c.portrait?.effects ?? []));
+        if (!c.audio || c.portrait?.noMouth) continue;
+        const pk = getPeaks(c.audio.cacheKey);
+        if (pk) mouth = Math.max(mouth, mouthAt(pk.data, pk.max, playhead - c.start + startOffsetOf(c), fps));
+      }
+      // 喋っているときだけ表示する立ち絵（書き出しと同じく、そのキャラクターのセリフの間だけ）
+      if ((item.onlyWhileSpeaking ?? pt.onlyWhileSpeaking) && !speaking) return;
+      const key = `m:${item.id}`;
+      // PSD のレイヤーの表示を切り替えて合成した画像（psd/portrait.ts）
+      const psdFrame = psdPreviewFrame(pt, expressionFor(p, ch, expr), eyes, mouth, projectPath, bump);
+      if (!psdFrame) return;
+      const tr = tf(key, item.transform);
+      // エフェクトがあれば書き出しと同じ計算で（preview/visual.ts）
+      const rect = effects.length
+        ? drawVisual(
+            ctx,
+            // 波・渦巻き（書き出しと同じく画面の px。時刻は動画の頭から）
+            distort(psdFrame.image, [psdFrame.image.width, psdFrame.image.height], effects, playhead / fps, psdFrame.image.width / psdFrame.size[0] / Math.max(0.01, tr.scale)),
+            psdFrame.size,
+            visualAt(tr, {...plainLook(), effects}, 0, 1, fps, playhead / fps),
+            w,
+            h,
+            scale,
+          )
+        : place(ctx, psdFrame.image, tr, w, h, scale, psdFrame.size);
+      if (!locked.has(item.trackId)) targets.push({key, kind: 'media', id: item.id, rect, transform: tf(key, item.transform)});
+    };
+
+    // レイヤー（YMM4 と同じくレイヤー 1 から描く＝番号の大きいレイヤーが手前）
+    for (const t of vt) {
+      if (t.hidden) continue;
+      for (const c of p.clips) {
+        if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
+        // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
+        const look = (key: string, tr: Transform) => visualAt(tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps);
+        // 波・渦巻き（元の大きさで掛ける。時刻はアイテムの頭から）
+        const warp = (img: CanvasImageSource, size: [number, number]) => distort(img, size, c.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, c.transform.scale));
+        if (c.type === 'text' || c.type === 'shape') {
+          const img = itemImage(c)!;
+          const key = `m:${c.id}`;
+          const rect = drawVisual(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale);
+          if (!locked.has(c.trackId)) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
+          continue;
+        }
         const m = c as MediaClip;
         if (m.mediaKind === 'image') {
           const img = image(m.src, projectPath, bump);
           const key = `m:${m.id}`;
           if (img) {
-            const rect = place(ctx, img, tf(key, m.transform), w, h, scale);
-            if (!locked.has(m.trackId)) targets.push({key, kind: 'media', id: m.id, rect, transform: tf(key, m.transform)});
+            const rect = drawVisual(ctx, warp(img, [img.naturalWidth, img.naturalHeight]), [img.naturalWidth, img.naturalHeight], look(key, m.transform), w, h, scale);
+            if (!locked.has(m.trackId))
+              targets.push({
+                key,
+                kind: 'media',
+                id: m.id,
+                rect,
+                transform: tf(key, m.transform),
+              });
           }
         } else if (m.mediaKind === 'video') {
           const px = proxies[m.src];
           const info = media[m.src];
           if (px?.url && info?.width && info.height) {
             const v = videoFor(px.url, bump);
-            const tr = p.tracks.find(t => t.id === m.trackId);
-            // 「セリフ中は下げる」トラックの動画の音（書き出しと同じ動き）
-            const duck = tr?.duck ? duckGain(duckIv(), tr.duckLevel, playhead / fps) : 1;
-            const vol = m.hasAudio ? m.volume * duck : 0;
+            // 映像と音が 1 つの動画は、ここで音も鳴らす（分離した動画の音は音声トラックのクリップで鳴らす）。
+            // 「セリフ中は下げる」トラックは書き出しと同じ動きで下げる
+            const duck = t.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
+            const vol = m.hasAudio && audible.has(t.id) ? m.volume * duck : 0;
             if (syncVideo(v, (m.inPoint + playhead - m.start) / fps, isPlaying, vol, playRate)) {
               const key = `m:${m.id}`;
-              const rect = place(ctx, v, tf(key, m.transform), w, h, scale, [info.width, info.height]);
-              if (!locked.has(m.trackId)) targets.push({key, kind: 'media', id: m.id, rect, transform: tf(key, m.transform)});
+              const rect = drawVisual(ctx, warp(v, [info.width, info.height]), [info.width, info.height], look(key, m.transform), w, h, scale);
+              if (!locked.has(m.trackId))
+                targets.push({
+                  key,
+                  kind: 'media',
+                  id: m.id,
+                  rect,
+                  transform: tf(key, m.transform),
+                });
             }
             activeVideos.add(v);
           } else {
@@ -294,41 +414,34 @@ export function Preview() {
           }
         }
       }
+      // このトラックの立ち絵と字幕（字幕は立ち絵より手前）
+      for (const c of p.clips) if (c.type === 'portrait' && c.trackId === t.id && at(c)) drawPortrait(c);
+      for (const c of p.clips) {
+        if (c.trackId !== t.id || !at(c) || (c.type !== 'caption' && c.type !== 'voice')) continue;
+        // 分離した字幕はそのセリフの文、字幕と声が 1 つのセリフはそれ自身の文（分離した声は字幕を出さない）
+        const v = lineOfSubtitle(p, c);
+        if (!v) continue;
+        // 「個別に設定」した字幕は、テキストアイテムと同じように画像にして置く（書き出しも同じ画像）
+        const sc = v.subtitleCustom;
+        if (sc) {
+          const text = v.subtitle ?? v.text;
+          if (!text.trim()) continue;
+          // 1 文字ずつ出す字幕は、その時点の文字数の画像（書き出しも同じ画像を順に出す）
+          const img = subtitleImage(v, sc, visibleChars(sc, text, playhead - c.start));
+          const key = `s:${v.id}`;
+          const tr = tf(key, sc.transform);
+          const warped = distort(img, [img.width, img.height], sc.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
+          const rect = drawVisual(ctx, warped, [img.width, img.height], visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps), w, h, scale);
+          if (!locked.has(c.trackId)) targets.push({key, kind: 'subtitle', id: v.id, selectId: c.id, rect, transform: tr});
+          continue;
+        }
+        // 分離した字幕で見た目を上書きしていれば、それを当てる（書き出しと同じ）
+        const chr = p.characters.find(ch => ch.id === v.characterId);
+        const ov = c.type === 'caption' ? c.style : null;
+        drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
+      }
     }
     pauseExcept(activeVideos);
-
-    // 立ち絵（口パク・目パチ）
-    const total = projectDuration(p);
-    for (const ch of p.characters) {
-      const pt = ch.portrait;
-      if (!pt?.visible || !pt.base) continue;
-      const eyes = eyesAt(playhead, blinkFor(ch.id, fps, total));
-      let mouth = 0;
-      // 表情：セリフで選んだ表情（core/src/lipsync.rs の expression_track と同じく、後ろのクリップが勝つ）
-      let expr = 0;
-      for (const c of p.clips) {
-        if (c.type !== 'voice' || c.characterId !== ch.id || !visible.has(c.trackId) || !at(c)) continue;
-        const e = expressionIndex(pt, c.expression);
-        if (e > 0) expr = e;
-        if (!c.audio) continue;
-        const pk = getPeaks(c.audio.cacheKey);
-        if (pk) mouth = Math.max(mouth, mouthAt(pk.data, pk.max, playhead - c.start, fps));
-      }
-      const layers = portraitLayers(pt, eyes, mouth, expr).map(src => image(src, projectPath, bump));
-      const key = `p:${ch.id}`;
-      if (layers.every(Boolean)) {
-        let rect: Rect | null = null;
-        for (const img of layers) rect = place(ctx, img!, tf(key, pt.transform), w, h, scale);
-        if (rect) targets.push({key, kind: 'portrait', id: ch.id, rect, transform: tf(key, pt.transform)});
-      }
-    }
-
-    // 字幕
-    for (const c of p.clips) {
-      if (c.type !== 'voice' || !visible.has(c.trackId) || !at(c)) continue;
-      const v = c as VoiceClip;
-      drawSubtitle(ctx, v.subtitle ?? v.text, p.characters.find(ch => ch.id === v.characterId), p, scale, playhead - v.start, v.duration);
-    }
 
     // セーフエリア（外側＝アクション 93%、内側＝タイトル 90%）。書き出しには入らない
     if (showSafeArea) {
@@ -379,7 +492,14 @@ export function Preview() {
     const sel = targets.find(t => t.key === selectedKey);
     // 選んでいるもののつまみ → 大きさを変える
     if (sel && corners(sel.rect).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE)) {
-      gestureRef.current = {target: sel, mode: 'scale', x: pt.x, y: pt.y, dist: distToCenter(sel.rect, pt), moved: false};
+      gestureRef.current = {
+        target: sel,
+        mode: 'scale',
+        x: pt.x,
+        y: pt.y,
+        dist: distToCenter(sel.rect, pt),
+        moved: false,
+      };
       (e.target as Element).setPointerCapture(e.pointerId);
       return;
     }
@@ -387,7 +507,14 @@ export function Preview() {
     const t = [...targets].reverse().find(t => inside(t.rect, pt));
     if (!t) return;
     selectTarget(t);
-    gestureRef.current = {target: t, mode: 'move', x: pt.x, y: pt.y, dist: 0, moved: false};
+    gestureRef.current = {
+      target: t,
+      mode: 'move',
+      x: pt.x,
+      y: pt.y,
+      dist: 0,
+      moved: false,
+    };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
@@ -406,8 +533,15 @@ export function Preview() {
     const t0 = g.target.transform;
     const next =
       g.mode === 'move'
-        ? {...t0, x: Math.round(t0.x + (pt.x - g.x) / sc), y: Math.round(t0.y + (pt.y - g.y) / sc)}
-        : {...t0, scale: Math.max(0.05, Math.round(t0.scale * (distToCenter(g.target.rect, pt) / Math.max(1, g.dist)) * 1000) / 1000)};
+        ? {
+            ...t0,
+            x: Math.round(t0.x + (pt.x - g.x) / sc),
+            y: Math.round(t0.y + (pt.y - g.y) / sc),
+          }
+        : {
+            ...t0,
+            scale: Math.max(0.05, Math.round(t0.scale * (distToCenter(g.target.rect, pt) / Math.max(1, g.dist)) * 1000) / 1000),
+          };
     overrideRef.current = {key: g.target.key, transform: next};
     setTick(x => x + 1);
   };
@@ -425,38 +559,61 @@ export function Preview() {
     const sel = targetsRef.current.find(t => t.key === selectedKey);
     if (!sel) return;
     const step = e.shiftKey ? 10 : 1;
-    const d = {ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step]}[e.key];
+    const d = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    }[e.key];
     if (!d) return;
     e.preventDefault();
     e.stopPropagation();
-    commitTransform(sel, {...sel.transform, x: sel.transform.x + d[0], y: sel.transform.y + d[1]}, `nudge:${sel.key}`);
+    commitTransform(
+      sel,
+      {
+        ...sel.transform,
+        x: sel.transform.x + d[0],
+        y: sel.transform.y + d[1],
+      },
+      `nudge:${sel.key}`,
+    );
   };
 
   return (
     <div ref={rootRef} className="vx-preview-root" data-full={previewFull || undefined}>
-    <div ref={wrapRef} className="vx-preview" data-zoomed={previewZoom !== 'fit' || undefined} onDoubleClick={e => {
-      // 何もないところをダブルクリックで全画面（一般的な編集ソフトと同じ）
-      if (!targetsRef.current.some(t => inside(t.rect, {x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY}))) void toggleFullscreen(rootRef.current);
-    }}>
-      <canvas
-        ref={canvasRef}
-        className="vx-preview-canvas"
-        tabIndex={0}
-        role="application"
-        aria-roledescription="プレビュー"
-        aria-label={
-          selectedKey
-            ? 'プレビュー。選んでいる素材や立ち絵を、ドラッグか矢印キーで動かせます（Shift で 10 ずつ）。四隅のつまみで大きさを変えられます'
-            : 'プレビュー。素材や立ち絵を押すと選べます'
-        }
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onKeyDown={onKeyDown}
-      />
-    </div>
-    <PreviewControls fullscreenTarget={rootRef} />
+      <div
+        ref={wrapRef}
+        className="vx-preview"
+        data-zoomed={previewZoom !== 'fit' || undefined}
+        onDoubleClick={e => {
+          // 何もないところをダブルクリックで全画面（一般的な編集ソフトと同じ）
+          if (
+            !targetsRef.current.some(t =>
+              inside(t.rect, {
+                x: e.nativeEvent.offsetX,
+                y: e.nativeEvent.offsetY,
+              }),
+            )
+          )
+            void toggleFullscreen(rootRef.current);
+        }}>
+        <canvas
+          ref={canvasRef}
+          className="vx-preview-canvas"
+          tabIndex={0}
+          role="application"
+          aria-roledescription="プレビュー"
+          aria-label={
+            selectedKey ? 'プレビュー。選んでいる素材や立ち絵を、ドラッグか矢印キーで動かせます（Shift で 10 ずつ）。四隅のつまみで大きさを変えられます' : 'プレビュー。素材や立ち絵を押すと選べます'
+          }
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onKeyDown={onKeyDown}
+        />
+      </div>
+      <PreviewControls fullscreenTarget={rootRef} />
     </div>
   );
 }

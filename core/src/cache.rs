@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 const CACHE_FORMAT: &str = "v1";
 
 pub fn cache_key(voice: &Voice, text: &str) -> String {
-    // VoiceParams.emotions は BTreeMap なので、serde_json の出力順は常に同じ
-    let params = serde_json::to_string(&voice.params).expect("VoiceParams は必ず JSON にできる");
+    // VoiceParams.emotions は BTreeMap なので、serde_json の出力順は常に同じ。
+    // 音量は書き出し・再生のときに掛けるので、キーに含めない（音量だけ変えても合成し直さない）
+    let params = serde_json::to_string(&crate::model::VoiceParams { volume: 1.0, ..voice.params.clone() }).expect("VoiceParams は必ず JSON にできる");
     let mut h = Sha256::new();
     for part in [CACHE_FORMAT, voice.engine.as_str(), &voice.speaker, &params, text] {
         h.update((part.len() as u64).to_le_bytes()); // 区切りの曖昧さを防ぐ
@@ -122,5 +123,20 @@ mod tests {
         assert_eq!(c.prune(&[key.clone()].into_iter().collect()).unwrap(), 0);
         assert_eq!(c.prune(&Default::default()).unwrap(), 1);
         assert!(c.get(&key).is_none());
+    }
+
+    #[test]
+    fn volume_and_empty_extra_do_not_change_key() {
+        use crate::model::{EngineId, VoiceParams};
+        let v = Voice { engine: EngineId::Voicevox, speaker: "1".into(), params: VoiceParams::default() };
+        let k = cache_key(&v, "こんにちは");
+        let mut louder = v.clone();
+        louder.params.volume = 0.3;
+        assert_eq!(cache_key(&louder, "こんにちは"), k, "音量だけなら合成し直さない");
+        // extra が空のとき JSON に出ない＝前の版のキャッシュがそのまま使える
+        assert!(!serde_json::to_string(&v.params).unwrap().contains("extra"));
+        let mut tuned = v.clone();
+        tuned.params.extra.insert("pauseLengthScale".into(), 0.5);
+        assert_ne!(cache_key(&tuned, "こんにちは"), k);
     }
 }

@@ -1,0 +1,205 @@
+/* パネルの配置。枠と枠の間はすき間（背景色）で区切り、角は丸めない */
+.vx-dock {
+  position: relative;
+  box-sizing: border-box;
+  height: 100%;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  padding: 3px;
+  background: var(--color-background-body);
+}
+.vx-dock[data-dragging] {
+  cursor: grabbing;
+}
+.vx-dock-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.vx-dock-split[data-dir='column'] {
+  flex-direction: column;
+}
+.vx-dock-cell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 境目：見た目は 3px のすき間、つかめる幅は 9px */
+.vx-dock-splitter {
+  position: relative;
+  flex: none;
+  outline: none;
+  z-index: 1;
+}
+.vx-dock-splitter[data-dir='row'] {
+  width: 3px;
+  cursor: col-resize;
+}
+.vx-dock-splitter[data-dir='column'] {
+  height: 3px;
+  cursor: row-resize;
+}
+.vx-dock-splitter::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+}
+.vx-dock-splitter:hover,
+.vx-dock-splitter:focus-visible,
+.vx-dock-splitter:active {
+  background: var(--color-accent);
+}
+
+.vx-dock-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-background-surface);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+/* 最後に触った枠（Premiere と同じく青い枠で示す） */
+.vx-dock-group[data-focused] {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.vx-dock-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 2px 0 4px;
+  border-bottom: 1px solid var(--color-border);
+}
+.vx-dock-tabs {
+  flex: 1;
+  display: flex;
+  align-self: stretch;
+  min-width: 0;
+  /* 入りきらないタブは横にスクロール（ホイールでも） */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.vx-dock-tab {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--font-size-sm, 13px);
+  color: var(--color-text-secondary);
+  cursor: default;
+  touch-action: none;
+  white-space: nowrap;
+  outline: none;
+}
+.vx-dock-tab:hover {
+  color: var(--color-text-primary);
+}
+.vx-dock-tab[aria-selected='true'] {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.vx-dock-tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  background: var(--color-accent);
+}
+.vx-dock-tab:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+.vx-dock-tab[data-dragging] {
+  opacity: 0.45;
+}
+.vx-dock-alert {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-warning);
+}
+.vx-dock-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.vx-dock-content[data-scroll] {
+  display: block;
+  overflow: auto;
+}
+
+/* ドラッグ中：置いたあとに占める場所と、つかんでいるパネル名 */
+.vx-dock-drop {
+  pointer-events: none;
+  z-index: 50;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+  transition:
+    left 80ms,
+    top 80ms,
+    width 80ms,
+    height 80ms;
+}
+.vx-dock-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 51;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #fff;
+  background: var(--color-accent);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* ドラッグ中：画面全体の端に置ける場所（上から下まで・左から右まで通し） */
+.vx-dock-edge {
+  position: absolute;
+  z-index: 49;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  opacity: 0.6;
+}
+.vx-dock-edge[data-active] {
+  opacity: 0;
+}
+.vx-dock-edge[data-edge='left'] {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+.vx-dock-edge[data-edge='right'] {
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+.vx-dock-edge[data-edge='top'] {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 4px;
+}
+.vx-dock-edge[data-edge='bottom'] {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+}

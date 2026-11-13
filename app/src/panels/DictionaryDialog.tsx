@@ -54,9 +54,7 @@ export function DictionaryDialog({notify}: {notify: Notify}) {
       <DialogHeader title="読み方の辞書" onOpenChange={o => !o && close()} />
       <div style={{maxHeight: 'calc(92dvh - 132px)', overflowY: 'auto'}}>
         <VStack gap={3} padding={4}>
-          <Text type="supporting">
-            読み間違える語と、正しい読みを登録します。合成するときだけ置き換えるので、字幕は書いたままです。すべての音声合成ソフトに効きます。
-          </Text>
+          <Text type="supporting">読み間違える語と、正しい読みを登録します。合成するときだけ置き換えるので、字幕は書いたままです。すべての音声合成ソフトに効きます。</Text>
           {rows.map((r, i) => (
             <HStack key={i} gap={2} vAlign="end">
               <div style={{flex: 1}}>

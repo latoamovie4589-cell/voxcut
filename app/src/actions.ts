@@ -2,12 +2,17 @@
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project} from './model';
-import {ENGINE_LABEL, isSpeakerMissing, newPortrait} from './model';
-import {addCharacterFrom, addMediaClips, getState, replaceProject, setPortrait, setState} from './store';
+import {ENGINE_LABEL, isSpeakerMissing} from './model';
+import {addCharacterFrom, addMediaClips, getState, replaceProject, setState} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
-export type Notify = (body: string, type?: 'info' | 'error', key?: string) => void;
+export type Notify = (body: string, type?: 'info' | 'error', key?: string, action?: NoticeAction) => void;
+/** 通知に付けるボタン（「元に戻す」など） */
+export interface NoticeAction {
+  label: string;
+  onClick: () => void;
+}
 
 // 引数で受け取れない場所（ボタンの clickAction など）から使う通知先
 let notifyRef: Notify = () => {};
@@ -15,7 +20,7 @@ export const setNotify = (n: Notify) => {
   notifyRef = n;
 };
 /** 通知先（引数で渡せない部品から使う） */
-export const getNotify = (): Notify => (body, type, key) => notifyRef(body, type, key);
+export const getNotify = (): Notify => (body, type, key, action) => notifyRef(body, type, key, action);
 let clearRef: (key: string) => void = () => {};
 export const setClearNotice = (c: (key: string) => void) => {
   clearRef = c;
@@ -50,9 +55,7 @@ export async function ensureProxy(src: string) {
   const a = await api;
   if (!proxyListening) {
     proxyListening = true;
-    await a.onProxyProgress(p =>
-      setState(st => (st.proxies[p.src] && !st.proxies[p.src].url ? {proxies: {...st.proxies, [p.src]: {...st.proxies[p.src], ratio: p.ratio}}} : {})),
-    );
+    await a.onProxyProgress(p => setState(st => (st.proxies[p.src] && !st.proxies[p.src].url ? {proxies: {...st.proxies, [p.src]: {...st.proxies[p.src], ratio: p.ratio}}} : {})));
   }
   setState(st => ({proxies: {...st.proxies, [src]: {ratio: 0, url: null}}}));
   try {
@@ -110,29 +113,11 @@ export async function pickImagePath(): Promise<string | null> {
   return path ?? null;
 }
 
-/** 立ち絵のパーツを選ぶ。part='base' のときは新しく立ち絵を作る */
-export async function pickPortraitPart(characterId: string, part: 'base' | 'eyes' | 'mouth', index = 0) {
-  const a = await api;
-  const [path] = await a.pickMedia('image', false);
-  if (!path) return;
-  const ch = getState().project?.characters.find(c => c.id === characterId);
-  if (!ch) return;
-  if (part === 'base') {
-    setPortrait(characterId, ch.portrait ? {...ch.portrait, base: path} : newPortrait(path));
-    return;
-  }
-  if (!ch.portrait) return;
-  const list = [...ch.portrait[part]] as Portrait['eyes'];
-  list[index] = path;
-  setPortrait(characterId, {...ch.portrait, [part]: list});
-}
-
 /** Rust から来たエラー文を、利用者向けに短く整える */
 export function friendlyError(e: unknown): string {
   const msg = String(e).replace(/^Error:\s*/, '');
   if (/接続できません|NotRunning|起動/.test(msg)) return msg;
-  if (/VOICEPEAK/.test(msg) && /Internal BUG|BUG REPORT/i.test(msg))
-    return 'VOICEPEAK の中でエラーが起きました。話者がこのPCの VOICEPEAK に入っているか、VOICEPEAK の画面を閉じてから試してください';
+  if (/VOICEPEAK/.test(msg) && /Internal BUG|BUG REPORT/i.test(msg)) return 'VOICEPEAK の中でエラーが起きました。話者がこのPCの VOICEPEAK に入っているか、VOICEPEAK の画面を閉じてから試してください';
   if (/HostNotFound/.test(msg)) return 'A.I.VOICE が見つかりません。インストールされているか確かめてください';
   if (/os error 2|No such file|見つかりません/.test(msg)) return `ファイルが見つかりません（${msg}）`;
   return msg.length > 160 ? `${msg.slice(0, 160)}…` : msg;
@@ -238,12 +223,14 @@ export async function synthesize(notify: Notify, clipIds?: string[]) {
       for (const [id, msg] of failed) errors[id] = friendlyError(msg);
       return {synthErrors: errors};
     });
-    if (failed.length) notify(`${failed.length} 件のセリフを合成できませんでした：${friendlyError(failed[0][1])}`, 'error', 'synth');
+    if (failed.length) notify(`${failed.length} 行のセリフを合成できませんでした：${friendlyError(failed[0][1])}`, 'error', 'synth');
   } catch (e) {
     notify(friendlyError(e), 'error');
   } finally {
     off();
-    setState({busy: null});
+    // 長さが変わって選んでいた行が画面の外へ出ないよう、選択を見せ直す（スクロールだけ）。
+    // 再生位置は動かさない（追記モードでは、次のセリフが入る末尾にいるので。動かすと行が逆順に入ってしまう）
+    setState(st => ({busy: null, revealSeq: st.revealSeq + 1}));
   }
 }
 
@@ -253,15 +240,25 @@ export async function runExport(out: string, options: ExportRequest, onProgress:
   if (!s.project || s.busy) return;
   stop();
   const a = await api;
-  const label = (p: ExportProgress) =>
-    p.stage === 'synth' ? '音声を合成しています' : p.stage === 'portrait' ? '立ち絵を準備しています' : '書き出しています';
+  const label = (p: ExportProgress) => (p.stage === 'synth' ? '音声を合成しています' : p.stage === 'portrait' ? '立ち絵を準備しています' : '書き出しています');
   setState({busy: {label: '書き出しています', ratio: 0}});
   const off = await a.onExportProgress(p => {
     onProgress(p);
     setState({busy: {label: label(p), ratio: p.stage === 'portrait' ? null : p.ratio}});
   });
   try {
-    const project = await a.exportVideo(s.project, s.projectPath, out, options);
+    // PSD 立ち絵は画面側で合成して、状態ごとの画像を渡す
+    let portraitFrames = options.portraitFrames;
+    if (s.project.characters.some(c => c.portrait?.visible && c.portrait.psd)) {
+      const {bakePsdFrames} = await import('./psd/portrait');
+      onProgress({stage: 'portrait', ratio: 0});
+      setState({busy: {label: 'PSD 立ち絵を合成しています', ratio: 0}});
+      portraitFrames = await bakePsdFrames(s.project, s.projectPath, r => setState({busy: {label: 'PSD 立ち絵を合成しています', ratio: r}}));
+    }
+    // テキスト・図形も画面側で描いた画像を渡す（画面と同じ見た目にするため）
+    const {bakeItemImages} = await import('./preview/visual');
+    const itemImages = await bakeItemImages(s.project);
+    const project = await a.exportVideo(s.project, s.projectPath, out, {...options, portraitFrames, itemImages});
     if (getState().project === s.project) replaceProject(project);
   } catch (e) {
     if (/取り消しました|Cancelled/.test(String(e))) throw new Error('cancelled');
@@ -279,7 +276,7 @@ export async function cancelExport() {
 export async function pickExportPath(): Promise<string | null> {
   const s = getState();
   const a = await api;
-  const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : s.project?.name ?? 'video';
+  const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : (s.project?.name ?? 'video');
   return a.pickSavePath('video', `${base}.mp4`);
 }
 
@@ -295,10 +292,9 @@ async function confirmDiscard(): Promise<boolean> {
 
 /** プロジェクトの中で使っている画像・素材のパス（絶対パスだけ） */
 function absolutePaths(project: Project): string[] {
-  return [
-    ...project.clips.flatMap(c => (c.type === 'media' ? [c.src] : [])),
-    ...project.characters.flatMap(c => (c.portrait ? portraitFiles(c.portrait) : [])),
-  ].filter((x): x is string => !!x && /^([a-zA-Z]:[\\/]|[\\/])/.test(x));
+  return [...project.clips.flatMap(c => (c.type === 'media' ? [c.src] : [])), ...project.characters.flatMap(c => (c.portrait ? portraitFiles(c.portrait) : []))].filter(
+    (x): x is string => !!x && /^([a-zA-Z]:[\\/]|[\\/])/.test(x),
+  );
 }
 
 function portraitFiles(pt: Portrait): (string | null)[] {

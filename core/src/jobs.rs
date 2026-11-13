@@ -2,7 +2,7 @@
 //! A.I.VOICE と VOICEPEAK は直列、エンジン同士は並列に動く。
 
 use crate::cache::{cache_key, AudioCache};
-use crate::model::{AudioRef, EngineId, Project, TrackKind, Voice};
+use crate::model::{AudioRef, EngineId, Project, Voice};
 use crate::text::Dictionary;
 use crate::tts::{SynthRequest, TtsEngine};
 use crate::{Error, Result};
@@ -17,6 +17,8 @@ pub struct SynthJob {
     pub voice: Voice,
     pub text: String,
     pub key: String,
+    /// VOICEVOX のアクセントの手直し
+    pub accent: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,7 +51,16 @@ pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>, dict: &Dic
         }
         let Some(voice) = p.effective_voice(v) else { continue };
         let text = dict.apply(&v.text);
-        let key = cache_key(&voice, &text);
+        // アクセントの手直しは、作ったときと文・話者が同じ VOICEVOX の行でだけ使う。キャッシュの鍵にも入れる
+        let accent = v
+            .accent
+            .as_ref()
+            .filter(|a| voice.engine == crate::model::EngineId::Voicevox && a.text == text && a.speaker == voice.speaker)
+            .map(|a| a.phrases.clone());
+        let key = match &accent {
+            Some(a) => cache_key(&voice, &format!("{text}\u{1}accent:{a}")),
+            None => cache_key(&voice, &text),
+        };
         if let Some(path) = cache.get(&key) {
             ready.push(JobResult {
                 clip_ids: vec![c.id.clone()],
@@ -60,14 +71,14 @@ pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>, dict: &Dic
         by_key
             .entry(key.clone())
             .and_modify(|j| j.clip_ids.push(c.id.clone()))
-            .or_insert(SynthJob { clip_ids: vec![c.id.clone()], voice, text, key });
+            .or_insert(SynthJob { clip_ids: vec![c.id.clone()], voice, text, key, accent });
     }
     (by_key.into_values().collect(), ready)
 }
 
 fn synth_one(engine: &dyn TtsEngine, cache: &AudioCache, job: &SynthJob) -> Result<AudioRef> {
     let (tmp, fin) = cache.prepare(&job.key)?;
-    let req = SynthRequest { speaker: &job.voice.speaker, text: &job.text, params: &job.voice.params };
+    let req = SynthRequest { speaker: &job.voice.speaker, text: &job.text, params: &job.voice.params, accent: job.accent.as_ref() };
     let r = engine.synthesize(&req, &tmp).and_then(|_| {
         let ms = crate::wav::duration_ms(&tmp)?;
         cache.commit(&tmp, &fin)?;
@@ -140,10 +151,7 @@ pub fn apply(p: &mut Project, results: Vec<JobResult>) -> Vec<(String, String)> 
             Err(e) => failed.extend(r.clip_ids.into_iter().map(|id| (id, e.to_string()))),
         }
     }
-    let voice_tracks: Vec<String> = p.tracks.iter().filter(|t| t.kind == TrackKind::Voice).map(|t| t.id.clone()).collect();
-    for t in voice_tracks {
-        p.reflow_voice_track(&t);
-    }
+    p.reflow_all();
     failed
 }
 
@@ -210,9 +218,11 @@ mod tests {
         assert!(failed.is_empty());
         assert_eq!(vp.calls.load(Ordering::SeqCst), 1);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 1);
-        // 音声長に合わせて詰め直されている（"こんにちは。VoxCut のサンプルです。" = 21 文字 → 2.1 秒 = 63 フレーム）
-        assert_eq!(p.clips[0].duration, 63);
-        assert_eq!(p.clips[1].start, 63 + 6);
+        // 長さ = 音声（"こんにちは。VoxCut のサンプルです。" = 21 文字 → 2.1 秒 = 63 フレーム）+ 余韻 6
+        assert_eq!(p.clips[0].duration, 63 + 6);
+        // 会話の並び（別のレイヤーでも、すぐ後ろのセリフ）は付いていく
+        assert_eq!(p.clips[1].start, 69);
+        assert_eq!(p.clips[2].start, p.clips[1].start + p.clips[1].duration);
 
         // 2回目は全部キャッシュから
         let (jobs, ready) = plan(&p, &cache, None, &Dictionary::default());
@@ -225,8 +235,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let cache = AudioCache::new(d.path());
         let mut p = Project::sample();
-        for c in &mut p.clips {
-            c.as_voice_mut().unwrap().character_id = "ch_a".into(); // 全部 VOICEPEAK
+        for c in p.clips.iter_mut().filter_map(|c| c.as_voice_mut()) {
+            c.character_id = "ch_a".into(); // 全部 VOICEPEAK
         }
         let vp = FakeEngine::new(EngineId::Voicepeak);
         let engines: Vec<Arc<dyn TtsEngine>> = vec![vp.clone()];
@@ -260,5 +270,29 @@ mod tests {
         p.clips[0].as_voice_mut().unwrap().speaker_override = Some("Japanese Male 1".into());
         let (jobs, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
         assert_eq!(jobs[0].voice.speaker, "Japanese Male 1");
+    }
+
+    #[test]
+    fn accent_edit_used_only_when_text_and_speaker_match() {
+        use crate::model::{AccentEdit, ClipBody, EngineId};
+        let mut p = Project::sample();
+        p.characters[0].voice.engine = EngineId::Voicevox;
+        p.characters[0].voice.speaker = "3".into();
+        let d = tempfile::tempdir().unwrap();
+        let cache = AudioCache::new(d.path());
+        let (jobs0, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
+        let phrases = serde_json::json!([{"accent": 2}]);
+        if let ClipBody::Voice(v) = &mut p.clips[0].body {
+            v.accent = Some(AccentEdit { text: v.text.clone(), speaker: "3".into(), phrases: phrases.clone() });
+        }
+        let (jobs1, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
+        assert_eq!(jobs1[0].accent.as_ref(), Some(&phrases));
+        assert_ne!(jobs0[0].key, jobs1[0].key, "アクセントを変えたら合成し直す");
+        // 文が変わったら使わない
+        if let ClipBody::Voice(v) = &mut p.clips[0].body {
+            v.text.push('！');
+        }
+        let (jobs2, _) = plan(&p, &cache, Some(&["c1".to_string()]), &Dictionary::default());
+        assert!(jobs2[0].accent.is_none());
     }
 }

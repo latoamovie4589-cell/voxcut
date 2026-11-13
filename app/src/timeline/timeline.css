@@ -14,6 +14,11 @@
   padding-inline: 8px;
   border-bottom: 0.5px solid var(--color-border);
   flex: none;
+  overflow: hidden;
+}
+/* ボタンは縮めない（文字を「…」で切らない）。入りきらなければアイコンだけにする（Timeline.tsx の compact） */
+.vx-timeline-toolbar > * {
+  flex-shrink: 0;
 }
 .vx-timeline-body {
   display: flex;
@@ -42,12 +47,75 @@
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding-inline: 12px 4px;
+  padding-inline: 6px 2px;
   border-bottom: 0.5px solid var(--color-border);
   box-sizing: border-box;
 }
-.vx-track-header[data-muted] {
+.vx-track-header[data-muted] > :not(:last-child) {
   opacity: 0.55;
+}
+.vx-track-name {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vx-track-duck {
+  display: inline-flex;
+  flex: none;
+}
+/* V1・A1 などの番号（Premiere Pro と同じく、映像と音声で色を分ける） */
+.vx-track-code {
+  flex: none;
+  min-width: 26px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font:
+    600 11px/1.2 system-ui,
+    sans-serif;
+  text-align: center;
+  color: #fff;
+  background: #5e5ce6;
+}
+.vx-track-header[data-kind='audio'] .vx-track-code {
+  background: #2f9e6e;
+}
+/* M・S のボタン */
+.vx-track-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-inline: 1px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font:
+    600 11px/1 system-ui,
+    sans-serif;
+  cursor: pointer;
+}
+.vx-track-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.vx-track-toggle[aria-pressed='true'] {
+  border-color: transparent;
+  background: #30b0c7;
+  color: #fff;
+}
+.vx-track-toggle[data-solo][aria-pressed='true'] {
+  background: #ffcc00;
+  color: #000;
+}
+/* 映像トラックと音声トラックの境目 */
+.vx-track-divider {
+  background: var(--color-background-muted);
+  border-bottom: 0.5px solid var(--color-border);
+  box-sizing: border-box;
 }
 .vx-timeline-scroll {
   position: relative;
@@ -73,4 +141,20 @@
   top: 0;
   left: 0;
   pointer-events: none;
+}
+/* 右クリックメニューの受け口（ContextMenu の包み）をスクロール領域いっぱいに広げる */
+.vx-timeline-body > div:has(> .vx-timeline-scroll) {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* トラックを使うキャラクターの色 */
+.vx-track-owner {
+  flex: none;
+  width: 4px;
+  align-self: stretch;
+  margin-block: 6px;
+  border-radius: 2px;
 }

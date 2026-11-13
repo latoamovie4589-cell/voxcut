@@ -24,7 +24,6 @@
 }
 .vx-preview-canvas {
   display: block;
-  border-radius: 8px;
   box-shadow: 0 0 0 0.5px var(--color-border);
   outline: none;
 }
@@ -57,7 +56,7 @@
 .vx-pc-rate {
   font-size: 12px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 3px;
   color: var(--color-accent);
   box-shadow: inset 0 0 0 1px var(--color-accent);
 }

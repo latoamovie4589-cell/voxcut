@@ -109,12 +109,20 @@ fn default_bridge_path() -> Option<PathBuf> {
 
 /// モデルのパラメータ → A.I.VOICE の MasterControl
 /// Speed 0.5–4.0、Pitch 0.5–2.0（倍率）、PitchRange 0–2.0（抑揚）
+/// 細かい調声：MiddlePause（短いポーズ 80–500 ミリ秒）、LongPause（長いポーズ 80–2000 ミリ秒）。指定したものだけ送る
 pub fn master_control(p: &VoiceParams) -> Value {
-    json!({
+    let mut m = json!({
         "Speed": p.speed.clamp(0.5, 4.0),
         "Pitch": semitones_to_ratio(p.pitch).clamp(0.5, 2.0),
         "PitchRange": p.intonation.clamp(0.0, 2.0),
-    })
+    });
+    if let Some(v) = p.extra.get("MiddlePause") {
+        m["MiddlePause"] = json!(v.round().clamp(80.0, 500.0) as i64);
+    }
+    if let Some(v) = p.extra.get("LongPause") {
+        m["LongPause"] = json!(v.round().clamp(80.0, 2000.0) as i64);
+    }
+    m
 }
 
 impl TtsEngine for AivoiceEngine {
@@ -208,7 +216,19 @@ for line in sys.stdin:
         assert!(eng.request(json!({"cmd": "crash"})).is_err());
         let out = d.path().join("a.wav");
         let p = VoiceParams::default();
-        eng.synthesize(&SynthRequest { speaker: "琴葉 茜", text: "テスト", params: &p }, &out).unwrap();
+        eng.synthesize(&SynthRequest { speaker: "琴葉 茜", text: "テスト", params: &p, accent: None }, &out).unwrap();
         assert_eq!(crate::wav::duration_ms(&out).unwrap(), 100);
+    }
+
+    #[test]
+    fn master_control_pauses_only_when_set() {
+        let mut p = VoiceParams::default();
+        let m = master_control(&p);
+        assert!(m.get("MiddlePause").is_none() && m.get("LongPause").is_none());
+        p.extra.insert("MiddlePause".into(), 40.0);
+        p.extra.insert("LongPause".into(), 600.4);
+        let m = master_control(&p);
+        assert_eq!(m["MiddlePause"], 80);
+        assert_eq!(m["LongPause"], 600);
     }
 }

@@ -7,8 +7,8 @@
 import {api} from '../ipc';
 import type {MediaClip, VoiceClip} from '../model';
 import {scheduleDuck, voiceIntervals} from '../ducking';
-import {projectDuration} from '../model';
-import {getState, setState} from '../store';
+import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf} from '../model';
+import {callRemote, getState, setState} from '../store';
 import {pauseAll} from './video';
 
 let ctx: AudioContext | null = null;
@@ -58,8 +58,62 @@ function stopSources() {
   sources = [];
 }
 
+/**
+ * セリフの声のつなぎ（書き出しの voice_audio_filters と同じ順）：音声エフェクト → エコー → 音量とフェード → 左右。
+ * into は再生を始めるときのクリップの頭からの秒、at はそれが鳴る時刻
+ */
+function voiceChain(ac: AudioContext, src: AudioNode, c: VoiceClip, vol: number, fps: number, into: number, at: number, rate: number): AudioNode {
+  const fx = c.audioFx;
+  let node: AudioNode = src;
+  for (const f of fx?.filters ?? []) {
+    const bq = ac.createBiquadFilter();
+    bq.type = f.kind;
+    bq.frequency.value = Math.max(1, f.hz);
+    bq.Q.value = Math.SQRT1_2;
+    node = node.connect(bq);
+  }
+  if (fx?.echo && fx.echo.delayMs > 0 && fx.echo.decay > 0) {
+    const mix = ac.createGain();
+    const delay = ac.createDelay(5);
+    delay.delayTime.value = Math.min(5000, fx.echo.delayMs) / 1000 / rate;
+    const decay = ac.createGain();
+    decay.gain.value = Math.min(1, fx.echo.decay);
+    node.connect(mix);
+    node.connect(delay).connect(decay).connect(mix);
+    node = mix;
+  }
+  // 音量とフェード（クリップの頭・終わりから。直線）
+  const gain = ac.createGain();
+  const dur = c.duration / fps;
+  const fi = (fx?.fadeIn ?? 0) / fps;
+  const fo = (fx?.fadeOut ?? 0) / fps;
+  const g = (tau: number) => vol * (fi > 0 ? Math.min(1, tau / fi) : 1) * (fo > 0 ? Math.min(1, Math.max(0, (dur - tau) / fo)) : 1);
+  gain.gain.setValueAtTime(g(into), at);
+  for (const tau of [fi, dur - fo, dur].filter(x => x > into).sort((a, b) => a - b)) gain.gain.linearRampToValueAtTime(g(tau), at + (tau - into) / rate);
+  node = node.connect(gain);
+  if (fx?.pan) {
+    // モノラルにしてから、寄せた側はそのまま・反対側だけ小さく
+    const [l, r] = panGains(fx.pan);
+    const mono = ac.createGain();
+    mono.channelCount = 1;
+    mono.channelCountMode = 'explicit';
+    const gl = ac.createGain();
+    const gr = ac.createGain();
+    gl.gain.value = l;
+    gr.gain.value = r;
+    const merger = ac.createChannelMerger(2);
+    node.connect(mono);
+    mono.connect(gl).connect(merger, 0, 0);
+    mono.connect(gr).connect(merger, 0, 1);
+    node = merger;
+  }
+  return node;
+}
+
 /** 再生する。rate は 1・2・4（順方向）か -1・-2・-4（逆方向、音なし） */
 export async function play(rate = 1) {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('play', [rate])) return;
   const s = getState();
   const p = s.project;
   if (!p) return;
@@ -77,33 +131,31 @@ export async function play(rate = 1) {
   const t0 = ac.currentTime + 0.05; // 予約に少し余裕を持たせる
 
   if (rate > 0) {
-    const mutedTracks = new Set(p.tracks.filter(t => t.muted).map(t => t.id));
-    const voice = p.clips.filter(
-      (c): c is VoiceClip => c.type === 'voice' && !!c.audio && !mutedTracks.has(c.trackId) && c.start + c.duration > startFrame,
-    );
+    const audible = audibleTracks(p);
+    const voice = p.clips.filter((c): c is VoiceClip => c.type === 'voice' && !!c.audio && audible.has(c.trackId) && c.start + c.duration > startFrame);
     for (const c of voice) {
       void load(c.audio!.cacheKey).then(buf => {
         const st = getState();
         if (!buf || !st.isPlaying || st.playRate !== rate) return;
-        const vol = p.characters.find(ch => ch.id === c.characterId)?.voice.params.volume ?? 1;
+        const chr = p.characters.find(ch => ch.id === c.characterId);
+        const vol = chr ? effectiveVoice(chr, c).params.volume : 1;
         const src = ac.createBufferSource();
         src.buffer = buf;
         src.playbackRate.value = rate;
-        const gain = ac.createGain();
-        gain.gain.value = vol;
-        src.connect(gain).connect(ac.destination);
-        const offset = Math.max(0, (startFrame - c.start) / fps);
+        const into = Math.max(0, (startFrame - c.start) / fps);
         const when = t0 + Math.max(0, (c.start - startFrame) / fps / rate);
-        src.start(Math.max(when, ac.currentTime), offset);
+        const at = Math.max(when, ac.currentTime);
+        voiceChain(ac, src, c, vol, fps, into, at, rate).connect(ac.destination);
+        // 再生開始位置で頭を飛ばす。書き出しと同じくクリップの終わりで切る
+        src.start(at, startOffsetOf(c) / fps + into);
+        src.stop(at + Math.max(0, c.duration / fps - into) / rate);
         sources.push(src);
       });
     }
     // 素材の音声（BGM など）。「セリフ中は下げる」トラックは書き出しと同じ動きで音量を下げる
     const intervals = voiceIntervals(p);
     const a = await api;
-    const audioClips = p.clips.filter(
-      (c): c is MediaClip => c.type === 'media' && c.mediaKind === 'audio' && !mutedTracks.has(c.trackId) && c.start + c.duration > startFrame,
-    );
+    const audioClips = p.clips.filter((c): c is MediaClip => c.type === 'media' && c.mediaKind === 'audio' && audible.has(c.trackId) && c.start + c.duration > startFrame);
     for (const c of audioClips) {
       const track = p.tracks.find(t => t.id === c.trackId);
       void loadUrl(a.mediaUrl(c.src, s.projectPath)).then(buf => {
@@ -148,6 +200,8 @@ export async function play(rate = 1) {
 }
 
 export function stop() {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('stop', [])) return;
   cancelAnimationFrame(raf);
   stopSources();
   pauseAll();
@@ -155,12 +209,16 @@ export function stop() {
 }
 
 export function toggle() {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('toggle', [])) return;
   if (getState().isPlaying) stop();
   else void play(1);
 }
 
 /** L：順方向に再生。再生中なら速くする（1→2→4 倍） */
 export function shuttleForward() {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('shuttleForward', [])) return;
   const s = getState();
   const next = s.isPlaying && s.playRate > 0 ? Math.min(4, s.playRate * 2) : 1;
   void play(next);
@@ -168,6 +226,8 @@ export function shuttleForward() {
 
 /** J：逆方向に再生。押すたびに速くする */
 export function shuttleBackward() {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('shuttleBackward', [])) return;
   const s = getState();
   const next = s.isPlaying && s.playRate < 0 ? Math.max(-4, s.playRate * 2) : -1;
   void play(next);
@@ -175,6 +235,8 @@ export function shuttleBackward() {
 
 /** 1 コマ（Shift なら 1 秒）動かす。再生中なら止める */
 export function step(frames: number) {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('step', [frames])) return;
   const s = getState();
   if (!s.project) return;
   if (s.isPlaying) stop();
@@ -183,6 +245,8 @@ export function step(frames: number) {
 
 /** 前後の編集点（クリップの始まり・終わり）へ */
 export function jumpToEdit(dir: 1 | -1) {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('jumpToEdit', [dir])) return;
   const s = getState();
   const p = s.project;
   if (!p) return;
@@ -193,6 +257,8 @@ export function jumpToEdit(dir: 1 | -1) {
 }
 
 export function jumpTo(where: 'start' | 'end') {
+  // 切り離したウィンドウでは、再生はメインウィンドウで行う
+  if (callRemote('jumpTo', [where])) return;
   const s = getState();
   if (!s.project) return;
   if (s.isPlaying) stop();

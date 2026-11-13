@@ -59,6 +59,24 @@ impl VoicevoxEngine {
     }
 }
 
+impl VoicevoxEngine {
+    fn speaker_id(speaker: &str) -> Result<i64> {
+        speaker.parse().map_err(|_| Error::Engine { engine: ENGINE, detail: format!("話者の番号が正しくありません: {speaker}") })
+    }
+
+    /// 文のアクセント句（アクセントの位置・音ごとの高さと長さ）。アクセントの調整画面で使う
+    pub fn accent_phrases(&self, text: &str, speaker: &str) -> Result<Value> {
+        let id = Self::speaker_id(speaker)?;
+        Ok(self.agent.post(&self.url("/accent_phrases")).query("text", text).query("speaker", &id.to_string()).call().map_err(|e| self.map_err(e))?.into_json()?)
+    }
+
+    /// アクセントの位置や区切りを変えたアクセント句から、音の高さと長さを計算し直す
+    pub fn mora_data(&self, phrases: &Value, speaker: &str) -> Result<Value> {
+        let id = Self::speaker_id(speaker)?;
+        Ok(self.agent.post(&self.url("/mora_data")).query("speaker", &id.to_string()).send_json(phrases.clone()).map_err(|e| self.map_err(e))?.into_json()?)
+    }
+}
+
 /// モデルのパラメータを、VOICEVOX のクエリに書き込む。
 /// 音量はクエリに入れない（書き出し時のミックスで掛け、全エンジンで同じ効き方にする）
 pub fn apply_params(query: &mut Value, p: &VoiceParams) {
@@ -66,7 +84,16 @@ pub fn apply_params(query: &mut Value, p: &VoiceParams) {
     // pitchScale は対数の音高に足す値。半音 = ln(2)/12 ≒ 0.0578。VOICEVOX の範囲は ±0.15
     query["pitchScale"] = serde_json::json!((p.pitch * std::f64::consts::LN_2 / 12.0).clamp(-0.15, 0.15));
     query["intonationScale"] = serde_json::json!(p.intonation.clamp(0.0, 2.0));
+    // 細かい調声（指定したものだけ）。間の長さは倍率、前後の無音は秒
+    for (k, lo, hi) in VOICEVOX_EXTRA {
+        if let Some(v) = p.extra.get(*k) {
+            query[*k] = serde_json::json!(v.clamp(*lo, *hi));
+        }
+    }
 }
+
+/// VOICEVOX のクエリで調整できる項目（名前・下限・上限）
+pub const VOICEVOX_EXTRA: &[(&str, f64, f64)] = &[("pauseLengthScale", 0.0, 2.0), ("prePhonemeLength", 0.0, 1.5), ("postPhonemeLength", 0.0, 1.5)];
 
 /// /speakers の応答 → 話者一覧（スタイルごとに 1 件）
 pub fn parse_speakers(v: &Value) -> Vec<VoiceInfo> {
@@ -129,6 +156,10 @@ impl TtsEngine for VoicevoxEngine {
             .call()
             .map_err(|e| self.map_err(e))?
             .into_json()?;
+        // アクセント・音の高さを手で直した行は、そのアクセント句を使う（速さ・抑揚などはいつもどおり）
+        if let Some(a) = req.accent {
+            query["accent_phrases"] = a.clone();
+        }
         apply_params(&mut query, req.params);
         let res = self
             .agent
@@ -223,7 +254,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let out = d.path().join("v.wav");
         let p = VoiceParams { speed: 1.2, pitch: 1.0, intonation: 1.5, ..Default::default() };
-        eng.synthesize(&SynthRequest { speaker: "3", text: "こんにちは", params: &p }, &out).unwrap();
+        eng.synthesize(&SynthRequest { speaker: "3", text: "こんにちは", params: &p, accent: None }, &out).unwrap();
         assert_eq!(crate::wav::duration_ms(&out).unwrap(), 300);
 
         let log = seen.lock().unwrap().clone();
@@ -235,6 +266,13 @@ mod tests {
         assert!((sent["pitchScale"].as_f64().unwrap() - 0.05776).abs() < 1e-4);
         // 音量はクエリで変えない（ミックスで掛ける）
         assert_eq!(sent["volumeScale"], 1.0);
+
+        // アクセントを手で直した行は、そのアクセント句で合成する
+        let phrases = serde_json::json!([{"moras":[{"text":"コ","pitch":5.5}],"accent":1}]);
+        eng.synthesize(&SynthRequest { speaker: "3", text: "こ", params: &VoiceParams::default(), accent: Some(&phrases) }, &out).unwrap();
+        let log = seen.lock().unwrap().clone();
+        let sent: Value = serde_json::from_str(log.iter().rfind(|l| l.starts_with('{')).unwrap()).unwrap();
+        assert_eq!(sent["accent_phrases"], phrases);
     }
 
     #[test]
@@ -245,13 +283,27 @@ mod tests {
             EngineStatus::NotRunning { detail } => assert!(detail.contains("VOICEVOX を起動")),
             s => panic!("{s:?}"),
         }
-        assert!(eng.synthesize(&SynthRequest { speaker: "3", text: "x", params: &VoiceParams::default() }, Path::new("/tmp/x.wav")).is_err());
+        assert!(eng.synthesize(&SynthRequest { speaker: "3", text: "x", params: &VoiceParams::default(), accent: None }, Path::new("/tmp/x.wav")).is_err());
     }
 
     #[test]
     fn bad_speaker_id_is_an_error() {
         let eng = VoicevoxEngine::new(VoicevoxConfig::default());
-        let e = eng.synthesize(&SynthRequest { speaker: "ずんだもん", text: "x", params: &VoiceParams::default() }, Path::new("/tmp/x.wav"));
+        let e = eng.synthesize(&SynthRequest { speaker: "ずんだもん", text: "x", params: &VoiceParams::default(), accent: None }, Path::new("/tmp/x.wav"));
         assert!(e.unwrap_err().to_string().contains("話者の番号"));
+    }
+
+    #[test]
+    fn extra_params_are_written_and_clamped() {
+        let mut q = serde_json::json!({"speedScale": 1.0, "pauseLengthScale": 1.0});
+        let mut p = VoiceParams::default();
+        apply_params(&mut q, &p);
+        assert_eq!(q["pauseLengthScale"], 1.0, "指定しなければ元の値のまま");
+        assert!(q.get("prePhonemeLength").is_none());
+        p.extra.insert("pauseLengthScale".into(), 0.5);
+        p.extra.insert("postPhonemeLength".into(), 9.0);
+        apply_params(&mut q, &p);
+        assert_eq!(q["pauseLengthScale"], 0.5);
+        assert_eq!(q["postPhonemeLength"], 1.5);
     }
 }

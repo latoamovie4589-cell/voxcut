@@ -9,7 +9,9 @@ const MERGE_GAP = 0.6;
 /** 下げる区間（秒） */
 export function voiceIntervals(p: Project): [number, number][] {
   const fps = p.video.fps;
-  const tracks = new Set(p.tracks.filter(t => t.kind === 'voice' && !t.muted).map(t => t.id));
+  // model.ts の audibleTracks と同じ（このファイルは node の確認スクリプトからも読むので、型だけを読み込む）
+  const solo = p.tracks.some(t => t.solo && !t.hidden);
+  const tracks = new Set(p.tracks.filter(t => !t.hidden && !t.muted && (!solo || t.solo)).map(t => t.id));
   const iv = p.clips
     .filter(c => c.type === 'voice' && tracks.has(c.trackId))
     .map(c => [c.start / fps, (c.start + c.duration) / fps] as [number, number])

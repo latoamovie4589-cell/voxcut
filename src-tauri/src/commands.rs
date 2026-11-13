@@ -360,6 +360,80 @@ pub fn audio_path(state: State<'_, AppState>, cache_key: String) -> CmdResult<Pa
     state.cache.get(&cache_key).ok_or_else(|| "音声がキャッシュにありません".into())
 }
 
+// ───────────── VOICEVOX のアクセント調整 ─────────────
+
+fn voicevox(state: &AppState) -> voxcut_core::tts::voicevox::VoicevoxEngine {
+    voxcut_core::tts::voicevox::VoicevoxEngine::new(state.config.read().unwrap().engines.voicevox.clone())
+}
+
+/// 文のアクセント句（辞書を当てた文で）。返す text は実際に使った文
+#[tauri::command]
+pub async fn voicevox_accent(state: State<'_, AppState>, text: String, speaker: String) -> CmdResult<serde_json::Value> {
+    let eng = voicevox(&state);
+    let text = state.dictionary().apply(&text);
+    blocking(move || {
+        let phrases = eng.accent_phrases(&text, &speaker).map_err(err)?;
+        Ok(serde_json::json!({"text": text, "phrases": phrases}))
+    })
+    .await
+}
+
+/// アクセントの位置・区切りを変えたあとの、音の高さと長さ
+#[tauri::command]
+pub async fn voicevox_mora_data(state: State<'_, AppState>, phrases: serde_json::Value, speaker: String) -> CmdResult<serde_json::Value> {
+    let eng = voicevox(&state);
+    blocking(move || eng.mora_data(&phrases, &speaker).map_err(err)).await
+}
+
+// ───────────── PSD 立ち絵 ─────────────
+
+/// PSD を読む（画面側で合成するため、ファイルの中身をそのまま渡す）。PSD・PSB 以外は読まない
+#[tauri::command]
+pub async fn read_psd(path: PathBuf) -> CmdResult<tauri::ipc::Response> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext != "psd" && ext != "psb" {
+        return Err("PSD ファイルではありません".into());
+    }
+    let bytes = blocking(move || std::fs::read(&path).map_err(|e| format!("PSD を読めません: {e}"))).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// ファイルが変わったかを見分けるための印（更新日時と大きさ）。無ければ None
+#[tauri::command]
+pub fn file_stamp(path: PathBuf) -> Option<String> {
+    let m = std::fs::metadata(&path).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+    Some(format!("{t}-{}", m.len()))
+}
+
+/// 画面側で合成した PSD 立ち絵の画像を、キャッシュに保存してパスを返す。
+/// 本文は PNG のバイト列そのもの、名前は x-name ヘッダー（英数字と - _ だけ）
+#[tauri::command]
+pub fn write_portrait_png(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<PathBuf> {
+    let name = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if name.is_empty() || name.len() > 100 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("名前が正しくありません".into());
+    }
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("画像が届いていません".into());
+    };
+    let dir = app.path().app_cache_dir().map_err(err)?.join("psd");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let path = dir.join(format!("{name}.png"));
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(path)
+}
+
+/// キャッシュにある PSD 立ち絵の画像のパス（無ければ None）
+#[tauri::command]
+pub fn portrait_png_path(app: AppHandle, name: String) -> Option<PathBuf> {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let p = app.path().app_cache_dir().ok()?.join("psd").join(format!("{name}.png"));
+    p.is_file().then_some(p)
+}
+
 // ───────────── 書き出し ─────────────
 
 #[derive(Clone, Serialize)]
@@ -403,13 +477,21 @@ pub async fn export_video(
         }
 
         let work = tempdir_in(cache.root())?;
-        let ass = work.join("subtitles.ass");
-        std::fs::write(&ass, subtitle::build_ass(&project)).map_err(err)?;
+        // 字幕は映像トラックごとに分けて、そのトラックの順番で焼き込む
+        let mut captions: Vec<(String, std::path::PathBuf)> = vec![];
+        for (i, t) in subtitle::caption_tracks(&project).into_iter().enumerate() {
+            let ass = work.join(format!("subtitles{i}.ass"));
+            std::fs::write(&ass, subtitle::build_ass_for(&project, Some(&t))).map_err(err)?;
+            captions.push((t, ass));
+        }
         let project_dir = project_path.as_deref().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
         emit("portrait", 0.0);
         let peaks = |key: &str| cache.get(key).and_then(|p| waveform::peaks(&p, lipsync::PEAKS_PER_SEC).ok());
-        let portraits = render::prepare_portraits(&project, &project_dir, &ffmpeg, &work, &peaks).map_err(err)?;
+        let portraits = render::prepare_portraits(&project, &project_dir, &ffmpeg, &work, &peaks, &options.portrait_frames).map_err(err)?;
         let mut opt = ExportOptions::new(&ffmpeg, &out, project_dir);
+        opt.item_images = options.item_images.clone();
+        // 1 文字ずつ出す字幕は、文字数ごとの画像を順に出す
+        opt.item_sequences = render::prepare_sequences(&project, &opt.item_images, &work).map_err(err)?;
         if let Some(crf) = options.crf {
             opt.crf = crf.clamp(10, 40);
         }
@@ -421,7 +503,7 @@ pub async fn export_video(
         let total = project.video.frames_to_secs(project.duration());
         let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
         let run = |opt: &ExportOptions| -> CmdResult<()> {
-            let mut args = render::build_args(&project, &lookup, &portraits, Some(&ass), opt).map_err(err)?;
+            let mut args = render::build_args(&project, &lookup, &portraits, &captions, opt).map_err(err)?;
             render::externalize_filter(&mut args, &work.join("graph.txt"), new_syntax, 6000).map_err(err)?;
             render::run_cancellable(&args, &ffmpeg, total, &mut |x| emit("encode", x), Some(&cancel)).map_err(err)
         };
@@ -446,6 +528,12 @@ pub struct ExportRequest {
     crf: Option<u8>,
     height: Option<u32>,
     encoder: Option<Encoder>,
+    /// テキスト・図形アイテムの画像（クリップ id → PNG のパス）
+    #[serde(default)]
+    item_images: std::collections::HashMap<String, PathBuf>,
+    /// PSD 立ち絵の、状態ごとの画像（キャラクター id → 状態の番号 → PNG のパス）
+    #[serde(default)]
+    portrait_frames: std::collections::HashMap<String, std::collections::HashMap<usize, PathBuf>>,
 }
 
 /// この PC で使える書き出しの方法（CPU は常に使える）

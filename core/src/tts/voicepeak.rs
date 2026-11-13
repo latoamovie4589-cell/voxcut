@@ -186,7 +186,7 @@ w.close()
         assert!(matches!(eng.status(), EngineStatus::Ready { .. }));
         let text = format!("{}。{}。", "あ".repeat(100), "い".repeat(100));
         let out = d.path().join("out.wav");
-        eng.synthesize(&SynthRequest { speaker: "Japanese Female 1", text: &text, params: &VoiceParams::default() }, &out)
+        eng.synthesize(&SynthRequest { speaker: "Japanese Female 1", text: &text, params: &VoiceParams::default(), accent: None }, &out)
             .unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
         // 100ms ×2 ＋つなぎ 120ms

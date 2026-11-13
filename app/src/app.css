@@ -80,7 +80,7 @@ textarea {
   flex: none;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: 4px;
   box-shadow: inset 0 0 0 1px var(--color-border);
   cursor: pointer;
 }
@@ -100,7 +100,7 @@ textarea {
   min-width: 0;
   white-space: pre-wrap;
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--color-background-muted);
   font-family: var(--font-family-code, ui-monospace, monospace);
   font-size: 13px;
@@ -111,10 +111,15 @@ textarea {
 .vx-kbd {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: 3px;
   border: 1px solid var(--color-border, rgba(127, 127, 127, 0.35));
   background: var(--color-background-muted, rgba(127, 127, 127, 0.08));
-  font: 500 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font:
+    500 12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
   white-space: nowrap;
 }
 
@@ -135,8 +140,376 @@ textarea {
   gap: 4px;
   max-width: 420px;
   padding: 16px 20px;
-  border-radius: 14px;
+  border-radius: 6px;
   background: var(--color-background-popover);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
   text-align: center;
+}
+
+/* 台本の一覧 */
+.vx-script {
+  list-style: none;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.vx-script-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 8px 8px 2px;
+  border-radius: 4px;
+  cursor: default;
+  outline: none;
+}
+.vx-script-row:hover {
+  background: var(--color-background-muted, rgba(127, 127, 127, 0.08));
+}
+.vx-script-row.is-selected {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.vx-script-row:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+.vx-script-row.is-dragging {
+  opacity: 0.5;
+}
+.vx-script-row.drop-before::before,
+.vx-script-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-accent);
+}
+.vx-script-row.drop-before::before {
+  top: -2px;
+}
+.vx-script-row.drop-after::after {
+  bottom: -2px;
+}
+.vx-script-row .vx-swatch {
+  margin-top: 5px;
+}
+.vx-script-grip {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  min-height: 24px;
+  cursor: grab;
+  touch-action: none;
+  border-radius: 3px;
+}
+.vx-script-grip:active {
+  cursor: grabbing;
+}
+.vx-script-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.vx-script-edit {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 4px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-background-popover);
+  color: inherit;
+  resize: vertical;
+}
+
+.vx-script-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 2px;
+}
+.vx-script-meta > * {
+  flex: none;
+}
+
+/* 角の丸みは控えめに（テーマの値より page / chat を小さく） */
+[data-astryx-theme='voxcut'] {
+  --radius-page: 10px;
+  --radius-chat: 10px;
+}
+
+/* 声のプリセット 1 件（キャラクターの「声」タブ） */
+.vx-preset {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+/* タイムラインのパネル：上がタイムライン、一番下がセリフ入力欄（YMM4 と同じ） */
+.vx-timeline-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.vx-timeline-panel > .vx-timeline {
+  flex: 1;
+  height: auto;
+}
+.vx-scriptbar {
+  flex: none;
+  border-top: 1px solid var(--color-border);
+}
+.vx-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--color-border);
+}
+
+/* キャラクター設定ウィンドウ：左に一覧、右に設定（右だけスクロール） */
+.vx-chardlg {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  height: min(680px, calc(92dvh - 132px));
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+.vx-chardlg-list {
+  overflow: auto;
+  border-right: 1px solid var(--color-border);
+}
+.vx-chardlg-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.vx-chardlg-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 別ウィンドウに切り離したパネル */
+.vx-float {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background-surface);
+}
+.vx-float-header {
+  justify-content: space-between;
+  padding-inline: 10px 4px;
+}
+
+/* PSD 立ち絵の設定 */
+.vx-psd-thumb {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  max-height: 360px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  background: repeating-conic-gradient(#0000000d 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.vx-psd-thumb-canvas {
+  max-width: 100%;
+  max-height: 340px;
+  object-fit: contain;
+}
+.vx-psd-tree {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+}
+.vx-psd-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding-inline-end: 6px;
+  font-size: 13px;
+}
+.vx-psd-row:hover {
+  background: var(--color-background-muted, rgba(127, 127, 127, 0.08));
+}
+.vx-psd-row[data-changed] .vx-psd-name {
+  font-weight: 600;
+}
+.vx-psd-fold {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  flex: none;
+}
+.vx-psd-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* VOICEVOX のアクセント調整：句ごとに 1 音ずつ、縦のつまみ（高さ）と音の名前（押すとアクセント） */
+.vx-accent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 2px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.vx-accent-phrase {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.vx-accent-moras {
+  display: flex;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 4px;
+  background: var(--color-background-muted, rgba(127, 127, 127, 0.08));
+}
+.vx-accent-mora {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 26px;
+}
+.vx-accent-pitch {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 18px;
+  height: 72px;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+.vx-accent-kana {
+  width: 26px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.vx-accent-mora[data-accent] .vx-accent-kana {
+  background: var(--color-accent);
+  color: #fff;
+}
+.vx-accent-pause {
+  width: 18px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+}
+.vx-accent-pause[aria-pressed='true'] {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+/* 入力項目の説明（hints.ts）。ふだんは隠し、その項目にフォーカスしているときだけ出す */
+html[data-hints='off'] .astryx-field > div:first-child > :nth-child(2) {
+  display: none;
+}
+html[data-hints='off'] .astryx-field:focus-within > div:first-child > :nth-child(2) {
+  display: block;
+}
+
+/* プロパティのキャラクター要約 */
+.vx-charsum {
+  display: flex;
+  flex-direction: column;
+  border: 0.5px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.vx-charsum-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 0.5px solid var(--color-border);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.vx-charsum-row:last-child {
+  border-bottom: 0;
+}
+.vx-charsum-row:hover {
+  background: var(--color-background-muted);
+}
+.vx-charsum-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.vx-charsum-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* 主ボタン（動画を書き出す）。ダークでも色の濃い地に白い文字で、主な操作だと分かるように */
+.vx-primary-cta {
+  display: inline-flex;
+}
+.vx-primary-cta .astryx-button:not(:disabled) {
+  background-color: light-dark(var(--color-accent), #0a84ff);
+  color: light-dark(var(--color-on-accent), #ffffff);
+}
+.vx-primary-cta .astryx-button:not(:disabled):hover {
+  background-color: light-dark(color-mix(in srgb, var(--color-accent) 88%, black), #3399ff);
+}
+
+/* 右クリックメニュー：部品の高さの上限（300px）では「削除」が隠れるので、画面に入るだけ使う */
+.astryx-context-menu {
+  max-height: min(80dvh, 640px) !important;
+}
+
+.vx-override-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+}
+
+/* 説明だけの文（Hint.tsx）。「項目の説明を表示」がオフなら隠す */
+html[data-hints='off'] .vx-hint {
+  display: none;
+}
+
+/* セリフのプロパティ：音声設定・字幕設定・立ち絵設定（YMM4 と同じ並び） */
+.vx-propgroup {
+  padding: 12px 16px;
+}
+.vx-propgroup-body {
+  margin-inline: -16px;
+  margin-block-end: -12px;
 }

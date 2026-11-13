@@ -1,21 +1,37 @@
-// 画面全体：上＝ヘッダー、左＝キャラクター・エンジン、中央＝プレビュー＋タイムライン、右＝インスペクタ、下＝セリフ入力。
-// Astryx の canvas-editor テンプレートの構成を下敷きにしている。
+// 画面全体：上＝ヘッダー、中＝パネル（Premiere Pro と同じく、タブをドラッグして自由に組み替えられる）、下＝セリフ入力。
 
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
-import {DropdownMenu, DropdownMenuDivider, DropdownMenuItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
+import {setHintsShown, useHintsShown} from './hints';
+import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
-import {HStack, Layout, LayoutContent, LayoutFooter, LayoutHeader, LayoutPanel, VStack} from '@astryxdesign/core/Layout';
+import {HStack, Layout, LayoutContent, LayoutHeader} from '@astryxdesign/core/Layout';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
-import {ResizeHandle, useResizable} from '@astryxdesign/core/Resizable';
 import {Section} from '@astryxdesign/core/Section';
 import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
-import {AudioLines, Menu, Redo2, Save, TriangleAlert, Undo2, Upload} from 'lucide-react';
+import {AudioLines, Redo2, Save, Settings, TriangleAlert, Undo2, Upload, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
-import {framesToTimecode, projectDuration} from './model';
-import {copySelection, cutSelection, deleteClips, duplicateSelection, editableSelection, getState, hasClipboard, pasteClipboard, redo, selectAllClips, setState, splitClip, undo, useStore} from './store';
-import {boot, newProjectAction, openProject, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {
+  copySelection,
+  cutSelection,
+  deleteClips,
+  duplicateSelection,
+  editableSelection,
+  getState,
+  hasClipboard,
+  pasteClipboard,
+  redo,
+  selectAllClips,
+  setOnDeleted,
+  setState,
+  splitClip,
+  undo,
+  useStore,
+} from './store';
+import {boot, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {CharacterDialog} from './panels/CharacterDialog';
+import {closeFloating, startHost} from './sync';
 import {ExportDialog} from './panels/ExportDialog';
 import {PasteScriptDialog} from './panels/PasteScriptDialog';
 import {DictionaryDialog} from './panels/DictionaryDialog';
@@ -26,86 +42,193 @@ import {Timeline} from './timeline/Timeline';
 import {Preview} from './preview/Preview';
 import {jumpTo, jumpToEdit, shuttleBackward, shuttleForward, step, stop, toggle} from './preview/playback';
 import {Inspector} from './inspector/Inspector';
-import {Sidebar} from './panels/Sidebar';
+import {CharactersPanel, EnginesPanel, useEngineProblems} from './panels/Sidebar';
+import {ScriptList} from './panels/ScriptList';
+import {WorkspaceDialog} from './panels/WorkspaceDialog';
+import {Dock, type Registry} from './dock/Dock';
+import {PANEL_IDS, PANEL_TITLE, PRESETS, applyWorkspace, closePanel, deleteWorkspace, panelsIn, resetWorkspace, showPanel, useDock, workspaceName} from './dock/layout';
+import type {PanelId} from './dock/layout';
 import {ScriptBar} from './panels/ScriptBar';
 import {SettingsDialog} from './panels/SettingsDialog';
-import {SplitHandle} from './panels/SplitHandle';
 import {toggleFullscreen} from './preview/PreviewControls';
 import './app.css';
 
 const isMac = navigator.platform.toLowerCase().includes('mac');
 const mod = isMac ? '⌘' : 'Ctrl+';
 
-/** ヘッダー中央：全体の長さ（再生の操作はプレビューの下にある） */
-function ProjectLength() {
-  const project = useStore(s => s.project);
-  if (!project) return null;
-  return (
-    <Text type="supporting" hasTabularNumbers>
-      長さ {framesToTimecode(projectDuration(project), project.video.fps)}
-    </Text>
-  );
-}
-
-const SPLIT_KEY = 'voxcut.timelineHeight';
-
-/** 中央：プレビューとタイムライン。境目を動かせる（初期はタイムラインに縦 40%） */
-function CenterSplit() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [h, setH] = useState<number | null>(() => {
-    try {
-      const v = Number(localStorage.getItem(SPLIT_KEY));
-      return v > 0 ? v : null;
-    } catch {
-      return null;
-    }
-  });
-  const [total, setTotal] = useState(0);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setTotal(el.clientHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const min = 180;
-  const max = Math.max(min, total - 200);
-  const height = Math.min(max, Math.max(min, h ?? Math.round(total * 0.4)));
-  const set = (v: number) => {
-    setH(v);
-    try {
-      localStorage.setItem(SPLIT_KEY, String(Math.round(v)));
-    } catch {
-      // 保存できなくても動作には困らない
-    }
-  };
-  return (
-    <div ref={ref} className="vx-center">
-      <Preview />
-      <SplitHandle value={height} min={min} max={max} onChange={set} />
-      <div style={{height, flex: 'none', minHeight: 0}}>
-        <Timeline />
-      </div>
-    </div>
-  );
-}
-
-/** 未合成・失敗の件数。押すと全部合成 */
-function SynthStatus({notify}: {notify: Notify}) {
+/**
+ * 未合成・失敗の件数。未合成は表示だけ（合成は隣の「すべて合成」）。
+ * 失敗した行があるときは、押すとその行を選んで理由を右に出す
+ */
+function SynthStatus() {
   const pending = useStore(s => s.project?.clips.filter(c => c.type === 'voice' && !c.audio && c.text.trim()).length ?? 0);
-  const failed = useStore(s => Object.keys(s.synthErrors).length);
+  const errors = useStore(s => s.synthErrors);
+  const failed = Object.keys(errors);
   const busy = useStore(s => s.busy);
-  if (busy || (!pending && !failed)) return null;
-  const label = failed ? `合成できなかった行 ${failed} 件` : `未合成 ${pending} 件`;
+  if (busy || (!pending && !failed.length)) return null;
+  if (failed.length) {
+    const first = () => {
+      const p = getState().project;
+      const c = p?.clips.filter(x => failed.includes(x.id)).sort((a, b) => a.start - b.start)[0];
+      if (c)
+        setState(st => ({
+          selectedClipId: c.id,
+          playhead: c.start,
+          revealSeq: st.revealSeq + 1,
+        }));
+    };
+    return (
+      <Button
+        label={`合成に失敗 ${failed.length} 行`}
+        size="sm"
+        variant="ghost"
+        icon={<Icon icon={TriangleAlert} color="error" />}
+        tooltip="押すと、その行を選んで理由を右に出します"
+        onClick={first}
+      />
+    );
+  }
   return (
-    <Button
-      label={label}
-      size="sm"
-      variant="ghost"
-      icon={<Icon icon={failed ? TriangleAlert : AudioLines} color={failed ? 'error' : 'secondary'} />}
-      tooltip="押すと、まだの行をまとめて合成します"
-      onClick={() => void synthesize(notify)}
-    />
+    <HStack gap={1} vAlign="center">
+      <Icon icon={AudioLines} color="secondary" />
+      <Text type="supporting" hasTabularNumbers>
+        未合成 {pending} 行
+      </Text>
+    </HStack>
+  );
+}
+
+/** メニューの「ウィンドウ」：パネルを出す・閉じる（閉じたパネルはここから戻す） */
+function WindowMenu() {
+  const open = useDock(s => [...panelsIn(s.root), ...s.floating].join(','));
+  const floating = useDock(s => s.floating.join(','));
+  const list = open.split(',');
+  return (
+    <DropdownMenuSubMenu label="ウィンドウ">
+      {PANEL_IDS.map(pid => (
+        <DropdownMenuCheckboxItem
+          key={pid}
+          label={PANEL_TITLE[pid]}
+          value={list.includes(pid)}
+          isDisabled={list.length <= 1 && list.includes(pid)}
+          description={floating.split(',').includes(pid) ? '別ウィンドウで開いています' : undefined}
+          onChange={on => (on ? showPanel(pid) : floating.split(',').includes(pid) ? closeFloating(pid) : closePanel(pid))}
+        />
+      ))}
+    </DropdownMenuSubMenu>
+  );
+}
+
+/** パネルへ移るショートカット（Premiere Pro と同じく Shift+3 がタイムライン、Shift+4 がプレビュー） */
+const PANEL_KEYS: Record<string, PanelId> = {Digit1: 'script', Digit2: 'characters', Digit3: 'timeline', Digit4: 'preview', Digit5: 'inspector'};
+const PANEL_FOCUS: Partial<Record<PanelId, string>> = {timeline: '.vx-timeline-scroll', preview: '.vx-preview-canvas'};
+
+/** パネルを出して、その中の最初に操作するところへフォーカスを移す */
+function focusPanel(pid: PanelId) {
+  showPanel(pid);
+  requestAnimationFrame(() => {
+    const own = PANEL_FOCUS[pid];
+    const el = own
+      ? document.querySelector<HTMLElement>(own)
+      : (() => {
+          // パネルの中身（タブやパネルのメニューではなく）の、一覧があればそれ、なければ最初の入力・ボタン
+          const body = [...document.querySelectorAll<HTMLElement>('[data-dock-group]')].find(g => g.getAttribute('aria-label') === PANEL_TITLE[pid])?.querySelector<HTMLElement>('.vx-dock-content');
+          return (
+            body?.querySelector<HTMLElement>('[role="listbox"], [role="grid"], [role="list"] [tabindex="0"], [tabindex="0"]:not(button)') ??
+            body?.querySelector<HTMLElement>('input, textarea, select, button, [tabindex="0"]')
+          );
+        })();
+    el?.focus();
+  });
+}
+
+/** ワークスペースのショートカット（Alt+Shift+1〜9） */
+const wsKey = (i: number) => (i < 9 ? `${isMac ? '⌥⇧' : 'Alt+Shift+'}${i + 1}` : '');
+
+/** メニューの「ワークスペース」：配置のひな形を選ぶ・今の配置を保存する・元に戻す */
+function WorkspaceMenu() {
+  const current = useDock(s => s.workspace);
+  const saved = useDock(s => s.saved);
+  const isSaved = saved.some(x => x.name === current);
+  return (
+    <DropdownMenuSubMenu label="ワークスペース">
+      <DropdownMenuRadioGroup label="ワークスペース" value={current} onChange={applyWorkspace}>
+        {PRESETS.map((p, i) => (
+          <DropdownMenuRadioItem key={p.id} value={p.id} label={p.name} endContent={<Text type="supporting">{wsKey(i)}</Text>} />
+        ))}
+        {saved.map((x, i) => (
+          <DropdownMenuRadioItem key={x.name} value={x.name} label={x.name} endContent={<Text type="supporting">{wsKey(PRESETS.length + i)}</Text>} />
+        ))}
+      </DropdownMenuRadioGroup>
+      <DropdownMenuDivider />
+      <DropdownMenuItem label={`「${workspaceName(current)}」をリセット`} description="保存したときの配置に戻す" onClick={resetWorkspace} />
+      <DropdownMenuItem label="今の配置を保存…" onClick={() => setState({workspaceDialogOpen: true})} />
+      {isSaved && <DropdownMenuItem label={`「${current}」を削除`} variant="destructive" onClick={() => deleteWorkspace(current)} />}
+    </DropdownMenuSubMenu>
+  );
+}
+
+/** メニューバー（YMM4 と同じ並び：ファイル・編集・表示・ツール・ヘルプ） */
+function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettings: () => void; openExport: () => void}) {
+  const canUndo = useStore(s => s.past.length > 0);
+  const canRedo = useStore(s => s.future.length > 0);
+  const recent = useStore(s => s.recent);
+  const hasSel = useStore(s => s.selectedClipIds.length > 0 || !!s.selectedClipId);
+  const busy = useStore(s => !!s.busy);
+  const hints = useHintsShown();
+  const canPaste = useStore(s => s.clipboardCount > 0);
+  const maxH = Math.max(320, (typeof window === 'undefined' ? 800 : window.innerHeight) - 80);
+  const key = (k: string) => <Text type="supporting">{k}</Text>;
+  const menu = (label: string) => ({label, variant: 'ghost' as const, size: 'sm' as const});
+  return (
+    <HStack gap={0} vAlign="center" role="menubar" aria-label="メニュー">
+      <DropdownMenu button={menu('ファイル')} hasChevron={false} menuWidth={260} menuMaxHeight={maxH}>
+        <DropdownMenuItem label="新規" endContent={key(`${mod}N`)} onClick={() => void newProjectAction(notify)} />
+        <DropdownMenuItem label="開く…" endContent={key(`${mod}O`)} onClick={() => void openProject(notify)} />
+        <DropdownMenuSubMenu label="最近使ったファイル" isDisabled={!recent.length}>
+          {recent.map(path => (
+            <DropdownMenuItem key={path} label={path.split(/[\\/]/).pop() ?? path} description={path} onClick={() => void openProject(notify, path)} />
+          ))}
+        </DropdownMenuSubMenu>
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="保存" endContent={key(`${mod}S`)} onClick={() => void saveProject(notify)} />
+        <DropdownMenuItem label="名前を付けて保存…" endContent={key(isMac ? '⇧⌘S' : 'Ctrl+Shift+S')} onClick={() => void saveProject(notify, true)} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="設定…" onClick={openSettings} />
+      </DropdownMenu>
+      <DropdownMenu button={menu('編集')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
+        <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={key(`${mod}Z`)} onClick={undo} />
+        <DropdownMenuItem label="やり直す" isDisabled={!canRedo} endContent={key(isMac ? '⇧⌘Z' : 'Ctrl+Y')} onClick={redo} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="切り取り" isDisabled={!hasSel} endContent={key(`${mod}X`)} onClick={() => cutSelection()} />
+        <DropdownMenuItem label="コピー" isDisabled={!hasSel} endContent={key(`${mod}C`)} onClick={() => copySelection()} />
+        <DropdownMenuItem label="貼り付け" isDisabled={!canPaste} endContent={key(`${mod}V`)} onClick={() => pasteClipboard()} />
+        <DropdownMenuItem label="複製" isDisabled={!hasSel} endContent={key(`${mod}D`)} onClick={() => duplicateSelection()} />
+        <DropdownMenuItem label="削除" isDisabled={!hasSel} endContent={key('Delete')} onClick={() => deleteClips(editableSelection().map(c => c.id))} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="すべて選択" endContent={key(`${mod}A`)} onClick={() => selectAllClips()} />
+      </DropdownMenu>
+      <DropdownMenu button={menu('表示')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
+        <WindowMenu />
+        <WorkspaceMenu />
+        <DropdownMenuDivider />
+        <DropdownMenuCheckboxItem label="項目の説明を表示" description="入力欄の下の説明文。オフでも、入力中の項目とラベルのツールチップで見られます" value={hints} onChange={v => setHintsShown(v)} />
+      </DropdownMenu>
+      <DropdownMenu button={menu('ツール')} hasChevron={false} menuWidth={260} menuMaxHeight={maxH}>
+        <DropdownMenuItem label="キャラクターの編集…" onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="台本読み込み…" description="txt・csv・tsv の台本からセリフを追加" onClick={() => setState({pasteOpen: true})} />
+        <DropdownMenuItem label="単語の読み（辞書）…" onClick={() => setState({dictionaryOpen: true})} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="未合成のセリフをすべて合成" isDisabled={busy} onClick={() => void synthesize(notify)} />
+        <DropdownMenuItem label="音声合成ソフトの接続を確認" onClick={() => void refreshEngines()} />
+      </DropdownMenu>
+      <DropdownMenu button={menu('ヘルプ')} hasChevron={false} menuWidth={240}>
+        <DropdownMenuItem label="キーボードショートカット" endContent={key('?')} onClick={() => setState({shortcutsOpen: true})} />
+      </DropdownMenu>
+    </HStack>
   );
 }
 
@@ -115,44 +238,31 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
   const busy = useStore(s => s.busy);
   const canUndo = useStore(s => s.past.length > 0);
   const canRedo = useStore(s => s.future.length > 0);
-  const recent = useStore(s => s.recent);
   return (
-    <LayoutHeader hasDivider padding={1}>
-      <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1}>
+    <LayoutHeader hasDivider padding={0}>
+      <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1} paddingBlock={1}>
         <HStack gap={1} vAlign="center">
-          <DropdownMenu
-            button={{label: 'メニュー', tooltip: 'メニュー', variant: 'ghost', size: 'sm', isIconOnly: true, icon: <Icon icon={Menu} />}}
-            hasChevron={false}
-            menuWidth={240}>
-            <DropdownMenuItem label="新規" endContent={<Text type="supporting">{mod}N</Text>} onClick={() => void newProjectAction(notify)} />
-            <DropdownMenuItem label="開く…" endContent={<Text type="supporting">{mod}O</Text>} onClick={() => void openProject(notify)} />
-            <DropdownMenuSubMenu label="最近使ったファイル" isDisabled={!recent.length}>
-              {recent.map(path => (
-                <DropdownMenuItem key={path} label={path.split(/[\\/]/).pop() ?? path} description={path} onClick={() => void openProject(notify, path)} />
-              ))}
-            </DropdownMenuSubMenu>
-            <DropdownMenuItem label="保存" endContent={<Text type="supporting">{mod}S</Text>} onClick={() => void saveProject(notify)} />
-            <DropdownMenuItem label="名前を付けて保存…" onClick={() => void saveProject(notify, true)} />
-            <DropdownMenuDivider />
-            <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={<Text type="supporting">{mod}Z</Text>} onClick={undo} />
-            <DropdownMenuItem label="やり直す" isDisabled={!canRedo} endContent={<Text type="supporting">{isMac ? '⇧⌘Z' : 'Ctrl+Y'}</Text>} onClick={redo} />
-            <DropdownMenuDivider />
-            <DropdownMenuItem label="台本を貼り付け…" onClick={() => setState({pasteOpen: true})} />
-            <DropdownMenuItem label="読み方の辞書…" onClick={() => setState({dictionaryOpen: true})} />
-            <DropdownMenuItem label="設定…" onClick={openSettings} />
-            <DropdownMenuItem label="キーボードショートカット" endContent={<Text type="supporting">?</Text>} onClick={() => setState({shortcutsOpen: true})} />
-          </DropdownMenu>
-          {/* よく使う操作は、メニューを開かなくても押せるように */}
+          <MenuBar notify={notify} openSettings={openSettings} openExport={openExport} />
+          <div className="vx-toolbar-sep" aria-hidden />
+          {/* よく使う操作は、メニューを開かなくても押せるように（ツールバー） */}
           <IconButton label="保存" tooltip={`保存（${mod}S）`} variant="ghost" size="sm" icon={<Icon icon={Save} />} clickAction={() => saveProject(notify)} />
           <IconButton label="元に戻す" tooltip={`元に戻す（${mod}Z）`} variant="ghost" size="sm" icon={<Icon icon={Undo2} />} isDisabled={!canUndo} onClick={undo} />
           <IconButton label="やり直す" tooltip={`やり直す（${isMac ? '⇧⌘Z' : 'Ctrl+Y'}）`} variant="ghost" size="sm" icon={<Icon icon={Redo2} />} isDisabled={!canRedo} onClick={redo} />
+          <Button
+            label="キャラクター"
+            tooltip="キャラクターの編集（声・字幕・立ち絵）"
+            variant="ghost"
+            size="sm"
+            icon={<Icon icon={UserPen} />}
+            onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
+          />
+          <IconButton label="設定" tooltip="設定（音声合成ソフトの場所など）" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
+          <div className="vx-toolbar-sep" aria-hidden />
           <Text type="label" maxLines={1}>
             {project?.name ?? 'VoxCut'}
           </Text>
           {dirty && <Text type="supporting">未保存</Text>}
         </HStack>
-
-        <ProjectLength />
 
         <HStack gap={2} vAlign="center">
           {busy && (
@@ -165,42 +275,83 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
               </div>
             </HStack>
           )}
-          <SynthStatus notify={notify} />
-          <Button
-            label="すべて合成"
-            size="sm"
-            icon={<Icon icon={AudioLines} />}
-            isDisabled={!!busy}
-            onClick={() => void synthesize(notify)}
-          />
+          <SynthStatus />
+          <Button label="すべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
           {/* 画面で唯一の主要ボタン（HIG：filled は 1 つ） */}
-          <Button label="書き出し…" variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy} onClick={openExport} />
+          <span className="vx-primary-cta">
+            <Button label="動画を書き出す…" variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy} onClick={openExport} />
+          </span>
         </HStack>
       </HStack>
     </LayoutHeader>
   );
 }
 
-export function App() {
+/** 配置を変えられるパネルの中身 */
+export function usePanels(notify: Notify): Registry {
+  return {
+    characters: {render: () => <CharactersPanel />, scroll: true},
+    script: {render: () => <ScriptList />, scroll: true},
+    engines: {
+      render: () => <EnginesPanel />,
+      scroll: true,
+      useAlert: () => useEngineProblems().length > 0,
+    },
+    preview: {render: () => <Preview />},
+    // セリフ入力欄はタイムラインの一番下（YMM4 と同じ）
+    timeline: {
+      render: () => (
+        <div className="vx-timeline-panel">
+          <Timeline />
+          <ScriptBar notify={notify} />
+        </div>
+      ),
+    },
+    inspector: {render: () => <Inspector notify={notify} />, scroll: true},
+  };
+}
+
+/** 通知（トースト）。エラーも時間がたてば消す。key 付きは同じ種類を置き換える */
+export function useNotify(): {notify: Notify; dismissers: React.MutableRefObject<Map<string, () => void>>} {
   const showToast = useToast();
-  // エラーも時間がたてば消す（詳しい内容は右パネルとタイムラインに残る）。key 付きは同じ種類を置き換える
   const dismissers = useRef(new Map<string, () => void>());
   const notify = useCallback<Notify>(
-    (body, type = 'info', key) => {
+    (body, type = 'info', key, action) => {
       if (key) dismissers.current.get(key)?.();
-      const dismiss = showToast({body, type, isAutoHide: true, autoHideDuration: type === 'error' ? 10000 : 5000});
+      let dismiss: () => void = () => {};
+      const endContent = action ? (
+        <Button
+          label={action.label}
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            action.onClick();
+            dismiss();
+          }}
+        />
+      ) : undefined;
+      dismiss = showToast({
+        body,
+        type,
+        endContent,
+        isAutoHide: true,
+        autoHideDuration: type === 'error' ? 10000 : action ? 7000 : 4000,
+      });
       if (key) dismissers.current.set(key, dismiss);
     },
     [showToast],
   );
+  return {notify, dismissers};
+}
+
+export function App() {
+  const {notify, dismissers} = useNotify();
+  useEffect(() => startHost(), []);
   const settingsOpen = useStore(s => s.settingsOpen);
   const setSettingsOpen = (o: boolean) => setState({settingsOpen: o});
   const [exportOpen, setExportOpen] = useState(false);
-  // 小さい画面では左右のパネルを細めに始める
-  const narrow = window.innerWidth < 1280;
-  const left = useResizable({defaultSize: narrow ? 216 : 248, minSize: 200, maxSize: 360});
-  const right = useResizable({defaultSize: narrow ? 288 : 320, minSize: 272, maxSize: 440});
   const ready = useStore(s => s.project !== null);
+  const panels = usePanels(notify);
 
   // 保存していない変更があるときは、閉じる前に確かめる
   useEffect(() => {
@@ -225,6 +376,12 @@ export function App() {
 
   useEffect(() => {
     setNotify(notify);
+    setOnDeleted(n =>
+      notify(`${n} 個を削除しました`, 'info', 'deleted', {
+        label: '元に戻す',
+        onClick: undo,
+      }),
+    );
     setClearNotice(key => {
       dismissers.current.get(key)?.();
       dismissers.current.delete(key);
@@ -259,6 +416,10 @@ export function App() {
         void toggleFullscreen();
       } else if (typing) {
         return;
+      } else if (e.shiftKey && !m && !e.altKey && PANEL_KEYS[e.code]) {
+        // Shift+1〜5：パネルへ移る（Premiere Pro と同じく Shift+3 がタイムライン）
+        e.preventDefault();
+        focusPanel(PANEL_KEYS[e.code]);
       } else if (e.key === '?' || (m && e.key === '/')) {
         e.preventDefault();
         setState({shortcutsOpen: true});
@@ -327,33 +488,10 @@ export function App() {
           <LayoutContent padding={0} isScrollable={false}>
             <Layout
               height="fill"
-              start={
-                <>
-                  <LayoutPanel resizable={left.props} hasDivider padding={0} label="キャラクターと音声合成ソフト">
-                    <Sidebar />
-                  </LayoutPanel>
-                  <ResizeHandle resizable={left.props} isAlwaysVisible={false} pillPlacement="center" label="左パネルの幅を変える" />
-                </>
-              }
               content={
                 <LayoutContent padding={0} isScrollable={false}>
-                  {ready && <CenterSplit />}
+                  {ready && <Dock panels={panels} />}
                 </LayoutContent>
-              }
-              footer={
-                <LayoutFooter hasDivider padding={0}>
-                  <ScriptBar notify={notify} />
-                </LayoutFooter>
-              }
-              end={
-                <>
-                  <ResizeHandle resizable={right.props} isReversed isAlwaysVisible={false} pillPlacement="center" label="右パネルの幅を変える" />
-                  <LayoutPanel resizable={right.props} hasDivider padding={0} isScrollable label="設定">
-                    <VStack>
-                      <Inspector notify={notify} />
-                    </VStack>
-                  </LayoutPanel>
-                </>
               }
             />
           </LayoutContent>
@@ -372,6 +510,8 @@ export function App() {
         </div>
       )}
       <DictionaryDialog notify={notify} />
+      <WorkspaceDialog />
+      <CharacterDialog />
     </Section>
   );
 }

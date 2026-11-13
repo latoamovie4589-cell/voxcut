@@ -3,14 +3,15 @@
 // 中：現在位置 / 全体の長さ（再生速度が 1 倍以外なら速度も）
 // 右：表示倍率・プレビュー画質・セーフエリア・全画面
 
-import {useEffect, type RefObject} from 'react';
+import {useEffect, useRef, useState, type RefObject} from 'react';
+import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astryxdesign/core/DropdownMenu';
 import {isTauri} from '../ipc';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {ToggleButton} from '@astryxdesign/core/ToggleButton';
-import {Maximize, Minimize, Pause, Play, Repeat, Scan, SkipBack, SkipForward, StepBack, StepForward} from 'lucide-react';
+import {Maximize, Minimize, Pause, Play, Repeat, SquareDashed, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward} from 'lucide-react';
 import {framesToTimecode, projectDuration} from '../model';
 import {getState, setState, useStore} from '../store';
 import {jumpTo, step, toggle} from './playback';
@@ -60,6 +61,18 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
   const quality = useStore(s => s.previewQuality);
   const safe = useStore(s => s.showSafeArea);
   const isFull = useStore(s => s.previewFull);
+  // パネルの幅に合わせて詰める（配置を自由に変えられるので、狭い枠にも置かれる）
+  const barRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(800);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const mid = width < 640;
+  const small = width < 440;
   useEffect(() => {
     // ブラウザの全画面を Esc などでやめたら、こちらも戻す
     const on = () => {
@@ -73,9 +86,9 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
   const rateLabel = isPlaying && playRate !== 1 ? (playRate < 0 ? `◀ ${-playRate}×` : `${playRate}×`) : null;
 
   return (
-    <div className="vx-preview-controls" role="toolbar" aria-label="再生の操作">
+    <div ref={barRef} className="vx-preview-controls" role="toolbar" aria-label="再生の操作">
       <div className="vx-pc-group">
-        <IconButton label="先頭へ" tooltip="先頭へ（Home）" variant="ghost" size="sm" icon={<Icon icon={SkipBack} />} onClick={() => jumpTo('start')} />
+        {!small && <IconButton label="先頭へ" tooltip="先頭へ（Home）" variant="ghost" size="sm" icon={<Icon icon={SkipBack} />} onClick={() => jumpTo('start')} />}
         <IconButton label="1 コマ戻る" tooltip="1 コマ戻る（←）" variant="ghost" size="sm" icon={<Icon icon={StepBack} />} onClick={() => step(-1)} />
         <IconButton
           label={isPlaying ? '停止' : '再生'}
@@ -85,47 +98,88 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
           onClick={toggle}
         />
         <IconButton label="1 コマ進む" tooltip="1 コマ進む（→）" variant="ghost" size="sm" icon={<Icon icon={StepForward} />} onClick={() => step(1)} />
-        <IconButton label="末尾へ" tooltip="末尾へ（End）" variant="ghost" size="sm" icon={<Icon icon={SkipForward} />} onClick={() => jumpTo('end')} />
-        <ToggleButton label="ループ再生" tooltip="ループ再生" size="sm" icon={<Icon icon={Repeat} />} isIconOnly isPressed={loop} onPressedChange={v => setState({loop: v})} />
+        {!small && <IconButton label="末尾へ" tooltip="末尾へ（End）" variant="ghost" size="sm" icon={<Icon icon={SkipForward} />} onClick={() => jumpTo('end')} />}
+        {!small && <ToggleButton label="ループ再生" tooltip="ループ再生" size="sm" icon={<Icon icon={Repeat} />} isIconOnly isPressed={loop} onPressedChange={v => setState({loop: v})} />}
       </div>
 
       <div className="vx-pc-time" aria-live="off">
         <Text type="code" hasTabularNumbers>
           {framesToTimecode(playhead, fps)}
         </Text>
-        <Text type="supporting" hasTabularNumbers>
-          / {framesToTimecode(projectDuration(project), fps)}
-        </Text>
+        {!small && (
+          <Text type="supporting" hasTabularNumbers>
+            / {framesToTimecode(projectDuration(project), fps)}
+          </Text>
+        )}
         {rateLabel && <span className="vx-pc-rate">{rateLabel}</span>}
       </div>
 
       <div className="vx-pc-group">
-        <Selector
-          label="表示倍率"
-          isLabelHidden
-          size="sm"
-          variant="ghost"
-          width={92}
-          value={zoom === 'fit' ? 'fit' : String(zoom)}
-          options={ZOOMS}
-          onChange={v => setState({previewZoom: v === 'fit' ? 'fit' : Number(v)})}
-        />
-        <Selector
-          label="プレビュー画質（書き出しには影響しません）"
-          isLabelHidden
-          size="sm"
-          variant="ghost"
-          width={112}
-          value={String(quality)}
-          options={QUALITIES}
-          onChange={v => setState({previewQuality: Number(v) as 1 | 0.5 | 0.25})}
-        />
-        <ToggleButton label="セーフエリアを表示" tooltip="セーフエリアを表示" size="sm" icon={<Icon icon={Scan} />} isIconOnly isPressed={safe} onPressedChange={v => setState({showSafeArea: v})} />
+        {mid ? (
+          <DropdownMenu
+            button={{
+              label: '表示の設定',
+              tooltip: '表示倍率・画質・セーフエリア',
+              variant: 'ghost',
+              size: 'sm',
+              isIconOnly: true,
+              icon: <Icon icon={SlidersHorizontal} />,
+            }}
+            hasChevron={false}
+            menuWidth={220}>
+            <DropdownMenuRadioGroup label="表示倍率" value={zoom === 'fit' ? 'fit' : String(zoom)} onChange={v => setState({previewZoom: v === 'fit' ? 'fit' : Number(v)})}>
+              {ZOOMS.map(z => (
+                <DropdownMenuRadioItem key={z.value} value={z.value} label={`表示 ${z.label}`} />
+              ))}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuDivider />
+            <DropdownMenuRadioGroup label="プレビュー画質" value={String(quality)} onChange={v => setState({previewQuality: Number(v) as 1 | 0.5 | 0.25})}>
+              {QUALITIES.map(q => (
+                <DropdownMenuRadioItem key={q.value} value={q.value} label={`画質 ${q.label}`} />
+              ))}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuDivider />
+            <DropdownMenuCheckboxItem label="セーフエリアを表示" value={safe} onChange={v => setState({showSafeArea: v})} />
+            {small && <DropdownMenuCheckboxItem label="ループ再生" value={loop} onChange={v => setState({loop: v})} />}
+          </DropdownMenu>
+        ) : (
+          <>
+            <Selector
+              label="表示倍率"
+              isLabelHidden
+              size="md"
+              variant="ghost"
+              width={104}
+              value={zoom === 'fit' ? 'fit' : String(zoom)}
+              options={ZOOMS}
+              onChange={v => setState({previewZoom: v === 'fit' ? 'fit' : Number(v)})}
+            />
+            <Selector
+              label="プレビュー画質（書き出しには影響しません）"
+              isLabelHidden
+              size="md"
+              variant="ghost"
+              width={128}
+              value={String(quality)}
+              options={QUALITIES}
+              onChange={v => setState({previewQuality: Number(v) as 1 | 0.5 | 0.25})}
+            />
+            <ToggleButton
+              label="セーフエリアを表示"
+              tooltip="セーフエリアを表示"
+              size="sm"
+              icon={<Icon icon={SquareDashed} />}
+              isIconOnly
+              isPressed={safe}
+              onPressedChange={v => setState({showSafeArea: v})}
+            />
+          </>
+        )}
         <IconButton
           label={isFull ? '全画面をやめる' : '全画面で見る'}
           tooltip={isFull ? '全画面をやめる（Esc）' : '全画面で見る（プレビューをダブルクリックでも）'}
           variant="ghost"
-          size="sm"
+          size="md"
           icon={<Icon icon={isFull ? Minimize : Maximize} />}
           onClick={() => void toggleFullscreen(fullscreenTarget.current)}
         />

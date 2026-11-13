@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "メインウィンドウに必要な最小限の権限",
+  "description": "メインウィンドウと、切り離したパネルのウィンドウ（float-*）に必要な最小限の権限",
   "windows": [
-    "main"
+    "main",
+    "float-*"
   ],
   "permissions": [
     "core:default",
@@ -12,6 +13,9 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-ask",
-    "opener:allow-reveal-item-in-dir"
+    "opener:allow-reveal-item-in-dir",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
   ]
 }

@@ -40,6 +40,8 @@ pub struct SynthRequest<'a> {
     pub speaker: &'a str,
     pub text: &'a str,
     pub params: &'a VoiceParams,
+    /// VOICEVOX：手で直したアクセント句（ほかのソフトは使わない）
+    pub accent: Option<&'a serde_json::Value>,
 }
 
 pub trait TtsEngine: Send + Sync {
