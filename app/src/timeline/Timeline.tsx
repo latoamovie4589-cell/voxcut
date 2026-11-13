@@ -596,7 +596,12 @@ export function Timeline() {
         const voiceOf = c.type === 'caption' ? p.clips.find(x2 => x2.id === c.voiceId) : undefined;
         const label =
           c.type === 'voice'
-            ? `${p.characters.find(x2 => x2.id === c.characterId)?.name ?? '?'}  ${c.text}`
+            ? (() => {
+                // 声のプリセット（感情など）を使っていれば、名前の後ろに出す
+                const ch = p.characters.find(x2 => x2.id === c.characterId);
+                const pr = c.presetId ? ch?.voicePresets?.find(x2 => x2.id === c.presetId)?.name : null;
+                return `${ch?.name ?? '?'}${pr ? `（${pr}）` : ''}  ${c.text}`;
+              })()
             : c.type === 'caption'
               ? voiceOf?.type === 'voice'
                 ? (voiceOf.subtitle ?? voiceOf.text).replace(/\n/g, ' ')
