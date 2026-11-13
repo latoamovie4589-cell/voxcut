@@ -130,6 +130,10 @@ function clipColor(p: Project, c: Clip): string {
 }
 
 /** 読み上げ・台本で使うクリップの説明 */
+/** タイムラインの何もないところに 3 秒乗せると出す案内 */
+const TIMELINE_HELP =
+  '下の入力欄にセリフを打って Enter で追加。画像・動画・BGM はドラッグ＆ドロップで追加。どのアイテムもどのレイヤーにも置けます（番号の大きいレイヤーほど手前）。セリフや音の入った動画は右クリックで分離。クリップの端をドラッグで長さ調整（Alt でスナップ解除）・Ctrl+クリックで複数選択・? でショートカット一覧';
+
 export function describeClip(p: Project, c: Clip, synthErrors: Record<string, string>): string {
   const fps = p.video.fps;
   const where = `${framesToTimecode(c.start, fps)} から 長さ ${framesToTimecode(c.duration, fps)}`;
@@ -264,7 +268,7 @@ function TrackHeader({track}: {track: Track}) {
         <MoreMenu
           label={`${label}のメニュー`}
           size="sm"
-          items={[
+          items={tidyMenu([
             {label: '素材を追加…', onClick: () => void addMedia()},
             {type: 'divider' as const},
             ...[
@@ -297,7 +301,7 @@ function TrackHeader({track}: {track: Track}) {
               variant: 'destructive',
               onClick: () => removeTrack(track.id),
             },
-          ]}
+          ])}
         />
       </HStack>
     </div>
@@ -308,13 +312,35 @@ function TrackHeader({track}: {track: Track}) {
 function tidyMenu(items: (ContextMenuOption | null)[]): ContextMenuOption[] {
   const isDiv = (x: ContextMenuOption | undefined) => !!x && 'type' in x && (x as {type?: string}).type === 'divider';
   const out: ContextMenuOption[] = [];
-  for (const x of items) {
+  for (let x of items) {
     if (!x) continue;
+    x = hoverDescription(x);
     if (isDiv(x) && (!out.length || isDiv(out[out.length - 1]))) continue;
     out.push(x);
   }
   while (isDiv(out[out.length - 1])) out.pop();
   return out;
+}
+
+/**
+ * メニューの説明は行の下に並べず、マウスを乗せたときに出す（メニューが横に広がらないように）。
+ * 読み上げ用には aria-description に入れる
+ */
+function hoverDescription<T extends ContextMenuOption>(x: T): T {
+  if (!('label' in x)) return x;
+  const it = x as T & {description?: string; label: React.ReactNode; items?: ContextMenuOption[]};
+  const items = it.items?.map(hoverDescription);
+  if (!it.description) return items ? ({...it, items} as T) : x;
+  const {description, ...rest} = it;
+  return {
+    ...rest,
+    ...(items ? {items} : {}),
+    label: (
+      <span title={description} aria-description={description} className="vx-menu-label">
+        {it.label}
+      </span>
+    ),
+  } as unknown as T;
 }
 
 /** キャラクターの編集の「立ち絵」タブを開く（PSD をまだ設定していないとき） */
@@ -635,25 +661,6 @@ export function Timeline() {
         }
       }
 
-      // トラックの下の空いたところに、知られにくい操作の案内を薄く出す
-      {
-        const bottom = RULER_H + trackTops(p).height - sy;
-        if (bottom + 62 < h) {
-          ctx.font = `12px ${FONT}`;
-          ctx.textBaseline = 'top';
-          ctx.fillStyle = pal.text2;
-          ctx.globalAlpha = 0.8;
-          const tips = !p.clips.some(c => c.type === 'voice')
-            ? ['下の入力欄にセリフを打って Enter で追加（音声は A、字幕は V のトラックに入ります）', '画像・動画・BGM はこの画面にドラッグ＆ドロップで追加できます']
-            : [
-                'どのアイテムもどのレイヤーにも置けます（番号の大きいレイヤーほど手前）。セリフや音の入った動画は右クリックで分離できます',
-                'クリップの端をドラッグで長さ調整（Alt でスナップ解除）・Ctrl+クリックで複数選択・? でショートカット一覧',
-              ];
-          tips.forEach((t, i) => ctx.fillText(t, 16, bottom + 18 + i * 20));
-          ctx.globalAlpha = 1;
-        }
-      }
-
       // ルーラー（上に固定）
       ctx.fillStyle = pal.bg;
       ctx.fillRect(0, 0, w, RULER_H);
@@ -955,6 +962,12 @@ export function Timeline() {
       // 名前が切れていても全文を見られるよう、乗せたクリップの説明をツールチップに
       const tip = h.clip ? describeClip(getState().project!, h.clip, getState().synthErrors) : '';
       if (target.title !== tip) target.title = tip;
+      // 何もないところに 3 秒乗せると、知られにくい操作の案内を出す（hints.ts）
+      const help = !h.clip && !h.ruler ? TIMELINE_HELP : '';
+      if ((target.dataset.hint ?? '') !== help) {
+        if (help) target.dataset.hint = help;
+        else delete target.dataset.hint;
+      }
       const nextHover = h.clip ? {clipId: h.clip.id, edge: h.mode} : null;
       if (nextHover?.clipId !== hoverRef.current?.clipId || nextHover?.edge !== hoverRef.current?.edge) {
         hoverRef.current = nextHover;
