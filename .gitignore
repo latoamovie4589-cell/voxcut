@@ -9,3 +9,4 @@ bridges/aivoice-bridge/obj/
 src-tauri/binaries/*
 !src-tauri/binaries/README.md
 bridges/aivoice-bridge/test/out/
+app/psd-fixtures/
