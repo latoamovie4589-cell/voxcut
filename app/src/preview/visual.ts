@@ -190,6 +190,8 @@ export interface TextExtra {
   visible?: number;
 }
 
+/** 縦書きで右上に寄せる句読点 */
+const PUNCT_V = new Set([...'、。，．']);
 /** 縦書きで横に倒して描く文字（伸ばし棒・括弧など） */
 const ROTATE_V = new Set([...'ー－―〜～…‥（）「」『』【】〔〕()[]{}<>＜＞-=＝']);
 
@@ -252,7 +254,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     x.miterLimit = 2;
     // 出す文字の位置（1 文字ずつ出すときも位置は全部出したときと同じ）
     let left = ex.visible ?? Infinity;
-    const glyphs: {s: string; px: number; py: number; rot: boolean}[] = [];
+    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean}[] = [];
     lines.forEach((l, i) => {
       const chars = Array.from(l);
       const n = Math.max(0, Math.min(chars.length, left));
@@ -263,7 +265,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const colX = edge + tw - lineH * i - lineH / 2;
         const colH = chars.length * charStep;
         const y0 = edge + (c.align === 'left' ? 0 : c.align === 'right' ? th - colH : (th - colH) / 2);
-        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k])});
+        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k])});
       } else {
         const lx = edge + (c.align === 'left' ? 0 : c.align === 'right' ? tw - widths[i] : (tw - widths[i]) / 2);
         glyphs.push({s: chars.slice(0, n).join(''), px: lx, py: edge + lineH * i + lineH / 2, rot: false});
@@ -272,7 +274,8 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const paint = (dx: number, dy: number, fill: string, stroke: boolean) => {
       for (const g of glyphs) {
         x.save();
-        x.translate(g.px + dx, g.py + dy);
+        // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
+        x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
         if (g.rot) x.rotate(Math.PI / 2);
         x.textAlign = ex.vertical ? 'center' : 'left';
         if (stroke && c.outlineWidth > 0 && c.outlineColor) {
