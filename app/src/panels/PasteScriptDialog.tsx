@@ -60,7 +60,19 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
   const autoVoice: Record<string, string> = {};
   {
     const free = voiceOptions.map(o => o.value).filter(v => !usedVoices.has(v));
-    newNames.forEach((n, i) => (autoVoice[n] = free[i % Math.max(1, free.length)] ?? voiceOptions[0]?.value ?? ''));
+    // 名前が話者の名前に入っていれば、その声を選ぶ（「ずんだもん」→ VOICEVOX のずんだもん、「茜」→ 琴葉 茜）
+    const norm = (t: string) => t.replace(/[\s・_＿]/g, '').toLowerCase();
+    const byVoiceName = (n: string) => {
+      const k = norm(n.replace(/[（(].*$/, ''));
+      if (!k) return undefined;
+      return voiceOptions.find(o => norm(o.label.split(' · ')[1] ?? '').includes(k))?.value;
+    };
+    let i = 0;
+    for (const n of newNames) {
+      const hit = byVoiceName(n);
+      if (hit) autoVoice[n] = hit;
+      else autoVoice[n] = free[i++ % Math.max(1, free.length)] ?? voiceOptions[0]?.value ?? '';
+    }
   }
   const voiceFor = (n: string) => newVoice[n] ?? autoVoice[n] ?? '';
   /** 台本ファイルを読む。UTF-8 で読めなければ Shift_JIS（古いメモ帳の保存）として読む */
@@ -138,7 +150,7 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
           {names.length > 0 && (
             <VStack gap={2}>
               <Text type="label">名前の割り当て</Text>
-              {newNames.length > 0 && <Text type="supporting">新しく作るキャラクターは、右で声を選べます（今いるキャラクターと違う声を選んであります）</Text>}
+              {newNames.length > 0 && <Text type="supporting">新しく作るキャラクターは、右で声を選べます（名前が同じ話者がいればその声を、いなければ今いるキャラクターと違う声を選んであります）</Text>}
               {names.map(({name, count}) => (
                 <HStack key={name} gap={2} vAlign="center">
                   <div style={{width: 160, minWidth: 0}}>

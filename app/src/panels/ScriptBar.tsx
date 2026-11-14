@@ -83,7 +83,22 @@ export function ScriptBar({notify}: {notify: Notify}) {
       return;
     }
     if (!current) return;
-    const id = addLine(current, t, presetId);
+    // 「名前：セリフ」と打ったら、その名前のキャラクターで入れる（以後もそのキャラクターのまま。台本と同じ書き方）
+    let who = current;
+    let line = t;
+    let pre = presetId;
+    const m2 = /^(.{1,24}?)[：:]\s*(.+)$/s.exec(t);
+    if (m2) {
+      const key = m2[1].replace(/\s/g, '');
+      const hit = project.characters.find(c => c.name === m2[1] || c.name.replace(/\s/g, '') === key);
+      if (hit) {
+        who = hit.id;
+        line = m2[2].trim();
+        pre = hit.id === current ? presetId : (inputPresets[hit.id] ?? null);
+        if (hit.id !== current) setState({selectedCharacterId: hit.id});
+      }
+    }
+    const id = addLine(who, line, pre);
     setText('');
     void synthesize(notify, [id]).then(() => {
       // 合成で長さが決まってから、ほかのキャラクターのセリフと重なっていないか確かめる
@@ -156,13 +171,28 @@ export function ScriptBar({notify}: {notify: Notify}) {
       <div
         style={{flex: 1, minWidth: 140, position: 'relative'}}
         data-script-input
-        data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
+        data-hint={current ? `Enter で${layer}の ${insertAt} に追加します。Ctrl+↑↓ で話す人を切り替え、Alt+1〜9 で声のプリセット。「名前：セリフ」と打つとその人で入ります` : undefined}
         onKeyDownCapture={e => {
+          // 打ちながら話す人を切り替える：Ctrl+↑↓（⌘+↑↓）で前・次のキャラクター
+          if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && project.characters.length > 1) {
+            e.preventDefault();
+            const list = project.characters;
+            const i = Math.max(
+              0,
+              list.findIndex(c => c.id === current),
+            );
+            const next = list[(i + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+            setState({selectedCharacterId: next.id});
+            setFlash(`話す人：${next.name}`);
+            window.clearTimeout(flashTimer.current);
+            flashTimer.current = window.setTimeout(() => setFlash(null), 1400);
+            return;
+          }
           // 打ちながら声のプリセットを切り替える：Alt+1〜9 でプリセット、Alt+0 で通常
           if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || !/^Digit\d$/.test(e.code)) return;
           const n = Number(e.code.slice(5));
           const show = (name: string) => {
-            setFlash(name);
+            setFlash(`声：${name}`);
             window.clearTimeout(flashTimer.current);
             flashTimer.current = window.setTimeout(() => setFlash(null), 1400);
           };
@@ -194,7 +224,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         }}>
         {flash && (
           <span className="vx-preset-flash" role="status">
-            声：{flash}
+            {flash}
           </span>
         )}
         <TextInput
