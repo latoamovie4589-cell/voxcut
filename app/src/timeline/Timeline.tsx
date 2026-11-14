@@ -247,6 +247,8 @@ function TrackHeader({track}: {track: Track}) {
   const header = (
     <div
       ref={headerRef}
+      // 右クリックで開くときも、先にこの行の「…」へフォーカスを置く（閉じたあと、そこへ戻れるように）
+      onContextMenuCapture={() => headerRef.current?.querySelector<HTMLElement>('button[aria-haspopup]')?.focus({preventScroll: true})}
       className="vx-track-header"
       style={{height: LAYER_H}}
       data-muted={track.hidden || undefined}
@@ -739,12 +741,18 @@ export function Timeline() {
               ctx.stroke();
               ctx.restore();
               const di = dest ? rowOf(dest) : -1;
-              const msg =
+              const msg0 =
                 single && !destRaw
                   ? '置ける所がないので元の場所のまま（Ctrl で挿入）'
                   : dest && dest !== drag.trackId
                     ? `重なるので「${trackCode(p, dest)}」へ（Ctrl で挿入）`
                     : '重なるので空いているレイヤーへ（Ctrl で挿入）';
+              // レイヤーは逃がせても、ほかのキャラクターのセリフと時間が重なるなら、それも先に伝える
+              const me = p.clips.find(c => c.id === drag.clipId);
+              const clash =
+                me?.type === 'voice' &&
+                p.clips.some(c => c.type === 'voice' && c.id !== me.id && c.characterId !== me.characterId && c.start < drag.start + drag.duration && drag.start < c.start + c.duration);
+              const msg = clash ? `${msg0}・ほかのセリフと時間が重なります` : msg0;
               tag(di >= 0 ? di : ti, ix + 6, msg, pal.text2);
             }
           }
@@ -1180,11 +1188,16 @@ export function Timeline() {
     if (d?.moved && (d.start !== d.origStart || d.duration !== d.origDuration || d.trackId !== d.origTrack)) {
       const insert = e.ctrlKey || e.metaKey;
       if (d.mode === 'move') {
+        const before = overlappingLines(getState().project!);
         const r = d.group.length ? moveClips([d.clipId, ...d.group], d.start - d.origStart, {insert}) : moveClip(d.clipId, d.start, d.trackId, undefined, {insert, solo: d.solo});
-        // 置いた結果を知らせる（黙って動かさない）
+        // 置いた結果を知らせる（黙って動かさない）。レイヤーを移しても、ほかのキャラクターのセリフと「時間」が重なるなら、それも伝える
         const p2 = getState().project!;
+        const after = overlappingLines(p2);
+        const timeClash = [d.clipId, ...d.group].some(id => after.has(id) && !before.has(id));
+        const clash = '。ほかのキャラクターのセリフと時間が重なっています（声が同時に鳴ります。「⚠ 重なり」の札）';
         if (r.kind === 'blocked') getNotify()('重なるので動かせませんでした。Ctrl を押しながら落とすと、挿入して後ろを押し出します', 'info');
-        else if (r.kind === 'relocated' && r.trackId) getNotify()(`重なるので「${trackCode(p2, r.trackId)}」へ置きました`, 'info');
+        else if (r.kind === 'relocated' && r.trackId) getNotify()(`重なるので「${trackCode(p2, r.trackId)}」へ置きました${timeClash ? clash : ''}`, 'info');
+        else if (timeClash) getNotify()(`置きました${clash}`, 'info');
         else if (r.kind === 'inserted' && r.pushed) getNotify()(`挿入して、${r.pushed} 個を後ろへずらしました（${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}Z で元に戻せます）`, 'info');
         draw();
       } else trimClip(d.clipId, d.start, d.duration);
