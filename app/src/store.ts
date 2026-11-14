@@ -528,7 +528,7 @@ function rippleFrom(p: Project, time: number, d: number): Project {
     if (c.type === 'portrait' && c.start <= time && time < c.start + c.duration) return {...c, duration: c.duration + d};
     return c.start >= time ? {...c, start: c.start + d} : c;
   });
-  if (skipped) void import('./actions').then(m => m.getNotify()('ロックしたトラックのアイテムは動かしていません', 'info'));
+  if (skipped) void import('./actions').then(m => m.getNotify()('ロックしたレイヤーのアイテムは動かしていません', 'info'));
   return {...p, clips};
 }
 

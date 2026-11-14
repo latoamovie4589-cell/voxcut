@@ -89,13 +89,23 @@ function SynthStatus() {
     );
   }
   return (
-    <HStack gap={1} vAlign="center">
-      <Icon icon={AudioLines} color="secondary" />
-      <Text type="supporting" hasTabularNumbers>
-        未合成 {pending} 行
-      </Text>
-    </HStack>
+    <span className="vx-pending-badge" data-hint="まだ音声を作っていないセリフの数です。「すべて合成」で作れます">
+      未合成 {pending} 行
+    </span>
   );
+}
+
+/** ウィンドウ幅が狭いか（上のバーのボタンを絵だけにする） */
+function useNarrow(px = 1200) {
+  const q = `(max-width: ${px}px)`;
+  const [narrow, setNarrow] = useState(() => window.matchMedia(q).matches);
+  useEffect(() => {
+    const m = window.matchMedia(q);
+    const on = () => setNarrow(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [q]);
+  return narrow;
 }
 
 /** メニューの「ウィンドウ」：パネルを出す・閉じる（閉じたパネルはここから戻す） */
@@ -238,6 +248,7 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
   const busy = useStore(s => s.busy);
   const canUndo = useStore(s => s.past.length > 0);
   const canRedo = useStore(s => s.future.length > 0);
+  const narrow = useNarrow();
   return (
     <LayoutHeader hasDivider padding={0}>
       <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1} paddingBlock={1}>
@@ -248,25 +259,38 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
           <IconButton label="保存" tooltip={`保存（${mod}S）`} variant="ghost" size="sm" icon={<Icon icon={Save} />} clickAction={() => saveProject(notify)} />
           <IconButton label="元に戻す" tooltip={`元に戻す（${mod}Z）`} variant="ghost" size="sm" icon={<Icon icon={Undo2} />} isDisabled={!canUndo} onClick={undo} />
           <IconButton label="やり直す" tooltip={`やり直す（${isMac ? '⇧⌘Z' : 'Ctrl+Y'}）`} variant="ghost" size="sm" icon={<Icon icon={Redo2} />} isDisabled={!canRedo} onClick={redo} />
-          <Button
-            label="キャラクター"
-            tooltip="キャラクターの編集（声・字幕・立ち絵）"
-            variant="ghost"
-            size="sm"
-            icon={<Icon icon={UserPen} />}
-            onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
-          />
-          <IconButton label="設定" tooltip="設定（音声合成ソフトの場所など）" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
+          {narrow ? (
+            <IconButton
+              label="キャラクター"
+              tooltip="キャラクターの編集（声・字幕・立ち絵）"
+              variant="ghost"
+              size="sm"
+              icon={<Icon icon={UserPen} />}
+              onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
+            />
+          ) : (
+            <Button
+              label="キャラクター"
+              tooltip="キャラクターの編集（声・字幕・立ち絵）"
+              variant="ghost"
+              size="sm"
+              icon={<Icon icon={UserPen} />}
+              onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
+            />
+          )}
+          <IconButton label="設定" tooltip="音声合成ソフトの設定" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
           <div className="vx-toolbar-sep" aria-hidden />
-          <Text type="label" maxLines={1}>
-            {project?.name ?? 'VoxCut'}
-          </Text>
+          <span className="vx-project-name">
+            <Text type="label" maxLines={1}>
+              {project?.name ?? 'VoxCut'}
+            </Text>
+          </span>
           {dirty && <Text type="supporting">未保存</Text>}
         </HStack>
 
         <HStack gap={2} vAlign="center">
           {busy && (
-            <HStack gap={2} vAlign="center" width={220}>
+            <HStack gap={2} vAlign="center" width={narrow ? 140 : 220}>
               <Text type="supporting" maxLines={1}>
                 {busy.label}
               </Text>
@@ -276,10 +300,14 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
             </HStack>
           )}
           <SynthStatus />
-          <Button label="すべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
+          {narrow ? (
+            <IconButton label="すべて合成" tooltip="未合成のセリフをすべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
+          ) : (
+            <Button label="すべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
+          )}
           {/* 画面で唯一の主要ボタン（HIG：filled は 1 つ） */}
           <span className="vx-primary-cta">
-            <Button label="動画を書き出す…" variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy} onClick={openExport} />
+            <Button label={narrow ? '書き出す…' : '動画を書き出す…'} tooltip="動画を書き出す" variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy} onClick={openExport} />
           </span>
         </HStack>
       </HStack>
@@ -457,7 +485,7 @@ export function App() {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && getState().selectedClipIds.length) {
         const ids = editableSelection().map(c => c.id);
         if (ids.length) deleteClips(ids);
-        else notify('ロックしたトラックのクリップは消せません');
+        else notify('ロックしたレイヤーのアイテムは消せません');
       } else if (m && !e.shiftKey && ['c', 'x', 'v', 'd', 'a'].includes(e.key.toLowerCase())) {
         const k = e.key.toLowerCase();
         e.preventDefault();

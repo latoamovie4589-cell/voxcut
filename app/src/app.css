@@ -427,9 +427,9 @@ textarea {
   font-weight: 700;
 }
 
-/* 入力項目の説明（hints.ts）。ふだんは隠し、その項目にフォーカスしているときだけ出す */
 /* 項目の説明は画面に並べない（マウスを 3 秒乗せると .vx-hint-pop で出る。hints.ts） */
-.astryx-field > div:first-child > :nth-child(2) {
+.astryx-field > div:first-child > :nth-child(2),
+.astryx-switch-field .astryx-field-label + span {
   display: none;
 }
 
@@ -472,16 +472,27 @@ textarea {
   flex: none;
 }
 
-/* 主ボタン（動画を書き出す）。ダークでも色の濃い地に白い文字で、主な操作だと分かるように */
+/* 主ボタン（動画を書き出す）。色はテーマのアクセント色そのまま（ライト・ダークで同じ扱い） */
 .vx-primary-cta {
   display: inline-flex;
+  flex: none;
 }
-.vx-primary-cta .astryx-button:not(:disabled) {
-  background-color: light-dark(var(--color-accent), #0a84ff);
-  color: light-dark(var(--color-on-accent), #ffffff);
+
+/* 上のバー：未合成の件数（狭くても折り返さない） */
+.vx-pending-badge {
+  flex: none;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  background: var(--color-background-muted);
 }
-.vx-primary-cta .astryx-button:not(:disabled):hover {
-  background-color: light-dark(color-mix(in srgb, var(--color-accent) 88%, black), #3399ff);
+.vx-project-name {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
 }
 
 /* 右クリックメニュー：部品の高さの上限（300px）では「削除」が隠れるので、画面に入るだけ使う */
@@ -514,6 +525,18 @@ textarea {
   line-height: 1.5;
   pointer-events: none;
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+  animation: vx-hint-in 120ms ease-out;
+}
+@keyframes vx-hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx-hint-pop {
+    animation: none;
+  }
 }
 
 /* セリフのプロパティ：音声設定・字幕設定・立ち絵設定（YMM4 と同じ並び） */
@@ -550,4 +573,13 @@ textarea {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+}
+
+/* メニューの右端のショートカット */
+.vx-menu-key {
+  margin-inline-start: 16px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }

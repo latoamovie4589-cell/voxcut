@@ -54,6 +54,11 @@ function hintAt(el: Element | null): {anchor: Element; text: string} | null {
       const t = desc?.textContent?.trim();
       if (t) return {anchor: e, text: t};
     }
+    // スイッチの説明（ラベルのすぐ下の文）
+    if (e.classList.contains('astryx-switch-field')) {
+      const t = e.querySelector('.astryx-field-label + span')?.textContent?.trim();
+      if (t) return {anchor: e, text: t};
+    }
     // 説明（.vx-hint）を中に持つ欄
     const own = [...e.children].find(c => c.classList.contains('vx-hint'));
     const t = own?.textContent?.trim();
