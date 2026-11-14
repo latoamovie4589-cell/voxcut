@@ -11,7 +11,7 @@ import {HStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {ClipboardPaste, CornerDownLeft, UserPen} from 'lucide-react';
+import {ClipboardPaste, CornerDownLeft, ListEnd, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {addLine, getState, lineInsertPoint, setInputMode, setState, useStore, type InputMode} from '../store';
 import {synthesize, type Notify} from '../actions';
@@ -35,10 +35,15 @@ export function ScriptBar({notify}: {notify: Notify}) {
   // 欄の幅が狭いときは、選ぶものを細くして、セリフを打つ欄の幅を残す
   const barRef = useRef<HTMLElement>(null);
   const [compact, setCompact] = useState(false);
+  // さらに狭い（800px ほどの窓でプリセットもある）：入れ方は絵だけにする
+  const [tight, setTight] = useState(false);
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setCompact(el.clientWidth < 820));
+    const ro = new ResizeObserver(() => {
+      setCompact(el.clientWidth < 820);
+      setTight(el.clientWidth < 680);
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, [project === null]);
@@ -91,7 +96,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
           isLabelHidden
           variant="secondary"
           size="sm"
-          width={compact ? 128 : 160}
+          width={tight ? 112 : compact ? 128 : 160}
           value={current}
           options={project.characters.map(c => ({value: c.id, label: c.name}))}
           onChange={v => setState({selectedCharacterId: v})}
@@ -111,7 +116,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
             isLabelHidden
             variant="secondary"
             size="sm"
-            width={compact ? 92 : 130}
+            width={tight ? 84 : compact ? 92 : 130}
             value={presetId ?? ''}
             // 選ぶ欄には Alt+数字の番号も出す（打ちながら Alt+1〜9 で切り替えられる）
             options={[{value: '', label: '通常', description: 'Alt+0'}, ...presets.map((x, i) => ({value: x.id, label: x.name, description: i < 9 ? `Alt+${i + 1}` : undefined}))]}
@@ -128,7 +133,13 @@ export function ScriptBar({notify}: {notify: Notify}) {
         onClick={() => setState({characterDialogOpen: true, dialogCharacterId: current})}
       />
       <DropdownMenu
-        button={{label: compact ? m.short : `入れ方：${m.short}`, tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`, variant: 'secondary', size: 'sm'}}
+        button={{
+          label: tight ? `入れ方：${m.short}` : compact ? m.short : `入れ方：${m.short}`,
+          tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`,
+          variant: 'secondary',
+          size: 'sm',
+          ...(tight ? {isIconOnly: true, icon: <Icon icon={ListEnd} />} : {}),
+        }}
         hasChevron
         menuWidth={300}>
         <DropdownMenuRadioGroup label="入れ方" value={mode} onChange={v => setInputMode(v as InputMode)}>
@@ -138,7 +149,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </DropdownMenuRadioGroup>
       </DropdownMenu>
       <div
-        style={{flex: 1, minWidth: 140}}
+        style={{flex: 1, minWidth: tight ? 90 : 140}}
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
