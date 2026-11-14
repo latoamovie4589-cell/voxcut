@@ -6,23 +6,23 @@
 
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
-import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
+import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astryxdesign/core/DropdownMenu';
 import {ContextMenu, type ContextMenuOption} from '@astryxdesign/core/ContextMenu';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack} from '@astryxdesign/core/Layout';
-import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Circle, CircleDot, Square, SquareCheck, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {Ellipsis, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
   getState,
   moveClip,
   moveClips,
+  moveDestination,
   removeTrack,
   selectClip,
   setState,
@@ -210,51 +210,39 @@ function TrackHeader({track}: {track: Track}) {
     if (name !== track.name) updateTrack(track.id, {name: name.trim()});
   };
   const toggleOut = () => updateTrack(track.id, {hidden: !track.hidden});
-  const menu = tidyMenu([
-    {label: '素材を追加…', onClick: () => void addMedia()},
-    {type: 'divider' as const},
-    ...[
-      {
-        // 表示メニューのチェックボックスと同じく、先頭に入・切の印（読み上げにはオン・オフを伝える）
-        label: (
-          <>
-            セリフ中は音を下げる<VisuallyHidden>{track.duck ? '（オン）' : '（オフ）'}</VisuallyHidden>
-          </>
-        ),
-        icon: <Icon icon={track.duck ? SquareCheck : Square} color={track.duck ? 'accent' : 'secondary'} />,
-        description: 'BGM がセリフの邪魔にならないよう、自動で下げます',
-        onClick: () => updateTrack(track.id, {duck: !track.duck}),
-      },
-      ...(track.duck
-        ? (
+  // 「…」と見出しの右クリックで同じメニュー。オン・オフはチェックボックス、下げ幅は丸の選択（読み上げでも状態が伝わる）
+  const hint = (text: string, help: string) => (
+    <span title={help} aria-description={help} className="vx-menu-label">
+      {text}
+    </span>
+  );
+  const menu = (
+    <>
+      <DropdownMenuItem label="素材を追加…" onClick={() => void addMedia()} />
+      <DropdownMenuDivider />
+      <DropdownMenuCheckboxItem label={hint('セリフ中は音を下げる', 'BGM がセリフの邪魔にならないよう、自動で下げます')} value={track.duck} onChange={duck => updateTrack(track.id, {duck})} />
+      {track.duck && (
+        <DropdownMenuRadioGroup label="下げる量" value={String([0.5, 0.3, 0.15].find(v => Math.abs(track.duckLevel - v) < 0.01) ?? '')} onChange={v => updateTrack(track.id, {duckLevel: Number(v)})}>
+          {(
             [
               ['少し下げる', 0.5],
               ['下げる', 0.3],
               ['大きく下げる', 0.15],
             ] as const
-          ).map(([l, v]) => ({
-            label: (
-              <>
-                {l}（{Math.round(v * 100)}%）<VisuallyHidden>{Math.abs(track.duckLevel - v) < 0.01 ? '（選択中）' : ''}</VisuallyHidden>
-              </>
-            ),
-            icon: <Icon icon={Math.abs(track.duckLevel - v) < 0.01 ? CircleDot : Circle} color={Math.abs(track.duckLevel - v) < 0.01 ? 'accent' : 'secondary'} />,
-            onClick: () => updateTrack(track.id, {duckLevel: v}),
-          }))
-        : []),
-      {type: 'divider' as const},
-    ],
-    // 上ほど番号が小さい（上に足す = この番号に入れる）
-    {label: '上にレイヤーを追加', onClick: () => addTrack('video', index)},
-    {label: '下にレイヤーを追加', onClick: () => addTrack('video', index + 1)},
-    {label: '名前を変更', onClick: () => setEditing(true)},
-    {type: 'divider'},
-    {
-      label: 'レイヤーを削除',
-      variant: 'destructive',
-      onClick: () => removeTrack(track.id),
-    },
-  ]);
+          ).map(([l, v]) => (
+            <DropdownMenuRadioItem key={v} value={String(v)} label={`${l}（${Math.round(v * 100)}%）`} />
+          ))}
+        </DropdownMenuRadioGroup>
+      )}
+      <DropdownMenuDivider />
+      {/* 上ほど番号が小さい（上に足す = この番号に入れる） */}
+      <DropdownMenuItem label="上にレイヤーを追加" onClick={() => addTrack('video', index)} />
+      <DropdownMenuItem label="下にレイヤーを追加" onClick={() => addTrack('video', index + 1)} />
+      <DropdownMenuItem label="名前を変更" onClick={() => setEditing(true)} />
+      <DropdownMenuDivider />
+      <DropdownMenuItem label="レイヤーを削除" variant="destructive" onClick={() => removeTrack(track.id)} />
+    </>
+  );
   const header = (
     <div
       className="vx-track-header"
@@ -314,13 +302,18 @@ function TrackHeader({track}: {track: Track}) {
           aria-pressed={track.locked}
           onClick={() => updateTrack(track.id, {locked: !track.locked})}
         />
-        <MoreMenu label={`${label}のメニュー`} size="sm" items={menu} />
+        <DropdownMenu
+          button={{label: `${label}のメニュー`, tooltip: 'レイヤーのメニュー（見出しの右クリックでも）', variant: 'ghost', size: 'sm', isIconOnly: true, icon: <Icon icon={Ellipsis} />}}
+          hasChevron={false}
+          menuWidth={240}>
+          {menu}
+        </DropdownMenu>
       </HStack>
     </div>
   );
   // 見出しの右クリックでも「…」と同じメニューを出す
   return (
-    <ContextMenu items={menu} menuWidth={240} label={`${label}のメニュー`}>
+    <ContextMenu menuContent={menu} menuWidth={240} label={`${label}のメニュー`}>
       {header}
     </ContextMenu>
   );
@@ -419,8 +412,10 @@ export function Timeline() {
   const paletteRef = useRef<Palette | null>(null);
 
   const draw = useCallback(() => {
-    cancelAnimationFrame(frameReq.current);
+    // すでに次のコマで描く予定なら、それを使う（取り消して予約し直すと、毎コマ呼ばれる間ずっと描かれない）
+    if (frameReq.current) return;
     frameReq.current = requestAnimationFrame(() => {
+      frameReq.current = 0;
       const canvas = canvasRef.current;
       const scroller = scrollRef.current;
       const s = getState();
@@ -475,6 +470,10 @@ export function Timeline() {
       const overlap = overlappingLines(p);
       const selLinks = new Set(p.clips.filter(c => selSet.has(c.id) && c.linkId).map(c => c.linkId));
       const groupSet = new Set(drag?.mode === 'move' && drag.moved ? drag.group : []);
+      // 1 つだけ動かしているとき：離したら実際に置かれるレイヤー（重なるなら空いているレイヤー、置けなければ元のまま）。影はそこに描く
+      const single = drag?.mode === 'move' && drag.moved && !drag.insert && !drag.group.length;
+      const destRaw = single ? moveDestination(drag.clipId, drag.start, drag.trackId) : null;
+      const dest = single ? (destRaw ?? drag.origTrack) : null;
       const delta = drag ? drag.start - drag.origStart : 0;
       // リンクしたクリップは、動かした量（端を動かしたなら長さの変わり方）に合わせて見せる
       const linkedSet = new Set(drag?.moved ? drag.linked : []);
@@ -505,7 +504,7 @@ export function Timeline() {
         if (start + dur < f0 || start > f1) continue;
         // 置けない種類のトラックの上にいるときは、そのトラックの上に「置けない」形（赤い破線）で描く
         const forbiddenHere = isDragged && !!drag.forbidden;
-        const ti = rowOf(isDragged ? (drag.forbidden ?? drag.trackId) : c.trackId);
+        const ti = rowOf(isDragged ? (drag.forbidden ?? dest ?? drag.trackId) : c.trackId);
         if (ti < 0) continue;
         const track = rows[ti];
         const th = LAYER_H;
@@ -713,8 +712,26 @@ export function Timeline() {
             if (drag.insert) {
               ctx.fillStyle = pal.accent;
               ctx.fillRect(ix - 1.5, Y(ti) + 1, 3, LAYER_H - 2);
+              tag(ti, ix + 6, '挿入（後ろを押し出す）', pal.accent);
+            } else {
+              // 指しているレイヤーには薄い破線の枠だけ。影は実際に置かれるレイヤーに描いてある
+              ctx.save();
+              ctx.setLineDash([3, 3]);
+              ctx.strokeStyle = pal.text2;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.roundRect(ix + 0.5, Y(ti) + 3.5, Math.max(2, drag.duration * z - 3), LAYER_H - 7, 3);
+              ctx.stroke();
+              ctx.restore();
+              const di = dest ? rowOf(dest) : -1;
+              const msg =
+                single && !destRaw
+                  ? '置ける所がないので元の場所のまま（Ctrl で挿入）'
+                  : dest && dest !== drag.trackId
+                    ? `重なるので${trackCode(p, dest)}へ（Ctrl で挿入）`
+                    : '重なるので空いているレイヤーへ（Ctrl で挿入）';
+              tag(di >= 0 ? di : ti, ix + 6, msg, pal.text2);
             }
-            tag(ti, ix + 6, drag.insert ? '挿入（後ろを押し出す）' : '重なるので空いているレイヤーへ（Ctrl で挿入）', drag.insert ? pal.accent : pal.text2);
           }
         }
       }
@@ -1041,6 +1058,8 @@ export function Timeline() {
       e.preventDefault();
       e.stopPropagation();
       dragRef.current = null;
+      // 端で自動スクロールしていたら、つかんだときの位置に戻す
+      if (scrollRef.current) scrollRef.current.scrollLeft = d.startScroll;
       try {
         d.captureEl.releasePointerCapture(d.pointerId);
       } catch {

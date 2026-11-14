@@ -66,15 +66,15 @@
 .vx-track-toggle {
   flex: none;
   width: 24px;
-  height: 22px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 5px;
   background: transparent;
-  /* 目・ロックの絵と同じ色・重さ */
+  /* 目・ロックの線の絵と同じ色・太さに見えるよう、文字は中くらいの太さ */
   color: var(--color-text-primary);
   font:
-    700 13px/1 system-ui,
+    500 12px/1 system-ui,
     sans-serif;
   cursor: pointer;
 }
@@ -133,11 +133,11 @@
   min-height: 0;
 }
 
-/* 細いレイヤー（26px）に入るよう、見出しの絵のボタン（目・ロック・…）も M・S と同じ 24×22 に */
+/* 細いレイヤー（26px）に入るよう、見出しの絵のボタン（目・ロック・…）も M・S と同じ 24×24 に（押せる大きさの目安 24px を守る） */
 .vx-track-header button:not(.vx-track-toggle) {
   width: 24px;
   min-width: 24px;
-  height: 22px;
-  min-height: 22px;
+  height: 24px;
+  min-height: 24px;
   padding: 0;
 }
