@@ -204,7 +204,7 @@
       --color-background-card: light-dark(#ffffff, #2c2c2e);
       --color-background-popover: light-dark(#fbfcff, #2e3037);
       --color-background-muted: light-dark(#f2f2f7, #2c2c2e);
-      --color-accent: light-dark(#005bca, #b3c5ff);
+      --color-accent: light-dark(#604ac1, #ccbdff);
       --color-accent-muted: light-dark(color-mix(in srgb, var(--color-accent) 20%, transparent), color-mix(in srgb, var(--color-accent) 25%, transparent));
       --color-neutral: light-dark(#1a1b221a, #e0e2ec33);
       --color-overlay: light-dark(#1a1b2266, #1a1b2299);
@@ -216,7 +216,7 @@
       --color-text-accent: var(--color-accent);
       --color-on-dark: #ffffff;
       --color-on-light: #111111;
-      --color-on-accent: light-dark(#ffffff, #003076);
+      --color-on-accent: light-dark(#ffffff, #2b1a73);
       --color-on-success: light-dark(#ffffff, #111111);
       --color-on-error: light-dark(#ffffff, #111111);
       --color-on-warning: #111111;

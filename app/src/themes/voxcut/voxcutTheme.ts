@@ -11,8 +11,9 @@ const SYSTEM_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragin
 export const voxcutTheme = defineTheme({
   name: 'voxcut',
   extends: neutralTheme,
-  // HIG §5：アクセントは1色（systemBlue のライト／ダーク）
-  color: {accent: ['#007AFF', '#0A84FF']},
+  // アクセントは 1 色。VoxCut の色として、声・音を思わせるすみれ色（ライト／ダーク）。
+  // キャラクターの色（青・橙・緑…）や、エラーの赤・警告の黄と見分けやすい
+  color: {accent: ['#6E56CF', '#9E8CFC']},
   typography: {
     // デスクトップアプリなので macOS の本文 13pt を基準にする
     // 本文 14px・補助テキスト 12px 以上（13/1.2 だと補助が 11px を切るため）
