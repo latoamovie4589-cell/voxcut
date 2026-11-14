@@ -15,7 +15,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Ellipsis, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {Ellipsis, Rows3, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
@@ -24,6 +24,7 @@ import {
   moveClip,
   moveClips,
   moveDestination,
+  setLayerSize,
   removeTrack,
   selectClip,
   setState,
@@ -53,8 +54,15 @@ import {addMedia, getNotify, synthesize} from '../actions';
 import './timeline.css';
 
 const RULER_H = 26;
-/** レイヤーの高さ（YMM4 と同じくらいに細め。プレビューを広く取れるように） */
-const LAYER_H = 26;
+/** レイヤーの高さ：小（YMM4 と同じくらい細い）・中（波形と名前が分かれて読める）・大。タイムラインの上の「レイヤーの高さ」で選ぶ */
+export const LAYER_SIZES = {small: 26, medium: 40, large: 56} as const;
+export type LayerSize = keyof typeof LAYER_SIZES;
+/** 今のレイヤーの高さ（Timeline が描くたびに設定から入れる） */
+let LAYER_H: number = LAYER_SIZES.small;
+/** 位置・長さが変わったときに、なめらかに動かす時間（ms） */
+const ANIM_MS = 160;
+const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+type ClipAnim = {t0: number; kind: 'move' | 'add'; fromStart: number; fromDur: number; fromTrack: string};
 const HEADER_W = 224;
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 40;
@@ -434,6 +442,8 @@ const openPortraitSettings = (characterId: string) => setState({dialogCharacterI
 // ───────────── 本体 ─────────────
 
 export function Timeline() {
+  const layerSize = useStore(s => s.layerSize);
+  LAYER_H = LAYER_SIZES[layerSize] ?? LAYER_SIZES.small;
   const project = useStore(s => s.project);
   const selected = useStore(s => s.selectedClipId);
   const playhead = useStore(s => s.playhead);
@@ -476,6 +486,15 @@ export function Timeline() {
   const hoverRef = useRef<{clipId: string; edge: DragMode} | null>(null);
   const frameReq = useRef(0);
   const paletteRef = useRef<Palette | null>(null);
+  // 動きの手がかり：位置・長さが変わったアイテムはなめらかに動かし、足したアイテムは下からふわっと入れる。
+  // 合成できた行は波形を左から描き、失敗した行は一度だけ揺らす（動きを減らす設定なら何もしない）
+  const animRef = useRef(new Map<string, ClipAnim>());
+  const revealRef = useRef(new Map<string, number>());
+  const shakeRef = useRef(new Map<string, number>());
+  const prevClipsRef = useRef<Map<string, {start: number; duration: number; trackId: string; audio: string | null}> | null>(null);
+  /** ドラッグで置いたアイテムは、置いた所にもう見えているので動かさない */
+  const skipAnimRef = useRef(new Set<string>());
+  const drawRef = useRef<() => void>(() => {});
 
   const draw = useCallback(() => {
     // すでに次のコマで描く予定なら、それを使う（取り消して予約し直すと、毎コマ呼ばれる間ずっと描かれない）
@@ -527,6 +546,13 @@ export function Timeline() {
         }
       });
 
+      // 動きの途中のものがあれば、次のコマも描く（終わったものは消す）
+      const now = performance.now();
+      for (const [id, a] of animRef.current) if (now - a.t0 >= ANIM_MS) animRef.current.delete(id);
+      for (const [id, t] of revealRef.current) if (now - t >= 320) revealRef.current.delete(id);
+      for (const [id, t] of shakeRef.current) if (now - t >= 360) shakeRef.current.delete(id);
+      if (animRef.current.size || revealRef.current.size || shakeRef.current.size) requestAnimationFrame(() => drawRef.current());
+
       // クリップ（表示範囲だけ）
       const drag = dragRef.current;
       const hover = hoverRef.current;
@@ -574,9 +600,29 @@ export function Timeline() {
         if (ti < 0) continue;
         const track = rows[ti];
         const th = LAYER_H;
-        const x = X(start);
-        const cw = Math.max(2, dur * z - 2);
-        const y = Y(ti) + 3;
+        // なめらかに動かしている途中なら、前の位置から今の位置へ寄せて描く
+        const an = isDragged ? undefined : animRef.current.get(c.id);
+        let aStart = start;
+        let aDur = dur;
+        let rowY = Y(ti);
+        let fade = 1;
+        if (an) {
+          const e = easeOut(Math.min(1, (now - an.t0) / ANIM_MS));
+          if (an.kind === 'move') {
+            aStart = an.fromStart + (start - an.fromStart) * e;
+            aDur = an.fromDur + (dur - an.fromDur) * e;
+            const fi = rowOf(an.fromTrack);
+            if (fi >= 0) rowY = Y(fi) + (Y(ti) - Y(fi)) * e;
+          } else {
+            fade = e;
+            rowY += (1 - e) * 10;
+          }
+        }
+        const shakeAt = shakeRef.current.get(c.id);
+        const shake = shakeAt !== undefined && now - shakeAt < 360 ? Math.sin(((now - shakeAt) / 360) * Math.PI * 6) * 4 * (1 - (now - shakeAt) / 360) : 0;
+        const x = X(aStart) + shake;
+        const cw = Math.max(2, aDur * z - 2);
+        const y = rowY + 3;
         const ch = th - 6;
         if (y + ch < RULER_H || y > h) continue;
         const color = clipColor(p, c);
@@ -585,7 +631,7 @@ export function Timeline() {
         const failed = !!s.synthErrors[c.id];
         const overlapped = overlap.has(c.id) || (c.type === 'caption' && overlap.has(c.voiceId));
 
-        ctx.globalAlpha = track.hidden ? 0.4 : 1;
+        ctx.globalAlpha = (track.hidden ? 0.4 : 1) * fade;
         // 選択は外側のリング（クリップ色と無関係に見分けられるよう、文字色で描く）
         if (isSel) {
           ctx.beginPath();
@@ -666,13 +712,18 @@ export function Timeline() {
         if (c.type === 'voice' && c.audio) {
           const pk = getPeaks(c.audio.cacheKey)?.data;
           if (pk?.length) {
-            const mid = y + ch * 0.64;
-            const amp = ch * 0.28;
+            // 高い行では名前を上、波形を下に分けて描く（重ならず、波形も大きく見える）
+            const tall = ch >= 30;
+            const mid = tall ? y + ch * 0.68 : y + ch * 0.64;
+            const amp = tall ? ch * 0.26 : ch * 0.28;
+            // 合成できたばかりの行は、波形を左から描いていく
+            const rv = revealRef.current.get(c.id);
+            const upTo = rv === undefined ? cw : cw * easeOut(Math.min(1, (now - rv) / 320));
             const perFrame = 100 / fps; // ピークは 100 個/秒
             ctx.fillStyle = color;
             // 名前の文字と重なっても読めるよう、波形は薄く（文字には縁取りも付ける）
-            ctx.globalAlpha *= 0.35;
-            for (let px = Math.max(0, -x); px < Math.min(cw, w - x); px++) {
+            ctx.globalAlpha *= tall ? 0.55 : 0.35;
+            for (let px = Math.max(0, -x); px < Math.min(upTo, w - x); px++) {
               // 再生開始位置で飛ばした頭は描かない
               const i = Math.floor((px / z + startOffsetOf(c)) * perFrame) * 2;
               if (i + 1 >= pk.length) break;
@@ -680,7 +731,7 @@ export function Timeline() {
               const hi = (pk[i + 1] / 127) * amp;
               ctx.fillRect(x + px, mid - hi, 1, Math.max(1, hi - lo));
             }
-            ctx.globalAlpha = track.hidden ? 0.4 : 1;
+            ctx.globalAlpha = (track.hidden ? 0.4 : 1) * fade;
           }
         }
         // 状態の札（未合成・失敗・プレビュー準備中）
@@ -702,7 +753,7 @@ export function Timeline() {
         }
         ctx.font = `12px ${FONT}`;
         ctx.textBaseline = 'middle';
-        const cy = y + ch / 2;
+        const cy = ch >= 30 ? y + 11 : y + ch / 2;
         let labelX = x + 8;
         // リンクしているクリップには鎖の印（Premiere Pro では名前の下線）
         if (c.linkId && cw > 40) {
@@ -925,7 +976,49 @@ export function Timeline() {
   };
   const linkedSel = useStore(s => s.linkedSelection);
   const canPaste = useStore(s => s.clipboardCount > 0);
-  useEffect(draw, [draw, project, selected, selectedIds, playhead, zoom, proxies, synthErrors, synthStatus]);
+  drawRef.current = draw;
+  // プロジェクトが変わったら、位置・長さが変わったアイテムと、足したアイテム・合成できた行を覚えて動かす
+  useEffect(() => {
+    if (!project) return;
+    const prev = prevClipsRef.current;
+    const next = new Map(project.clips.map(c => [c.id, {start: c.start, duration: c.duration, trackId: c.trackId, audio: c.type === 'voice' ? (c.audio?.cacheKey ?? null) : null}] as const));
+    prevClipsRef.current = next;
+    const skip = skipAnimRef.current;
+    skipAnimRef.current = new Set();
+    if (!prev || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const now = performance.now();
+    const moved: [string, ClipAnim][] = [];
+    const added: string[] = [];
+    for (const [id, n] of next) {
+      const o = prev.get(id);
+      if (!o) added.push(id);
+      else {
+        if (!skip.has(id) && (o.start !== n.start || o.duration !== n.duration || o.trackId !== n.trackId))
+          moved.push([id, {t0: now, kind: 'move', fromStart: o.start, fromDur: o.duration, fromTrack: o.trackId}]);
+        if (n.audio && n.audio !== o.audio) revealRef.current.set(id, now);
+      }
+    }
+    // プロジェクトを開いた・まるごと貼ったなど、たくさん変わったときは動かさない（ちらつくだけなので）
+    if (moved.length <= 80) for (const [id, a] of moved) animRef.current.set(id, a);
+    if (added.length <= 12 && prev.size) for (const id of added) animRef.current.set(id, {t0: now, kind: 'add', fromStart: 0, fromDur: 0, fromTrack: ''});
+    if (moved.length || added.length) draw();
+  }, [project, draw]);
+  // 合成に失敗した行は、一度だけ横に揺らして知らせる
+  const prevErrRef = useRef(synthErrors);
+  useEffect(() => {
+    const before = prevErrRef.current;
+    prevErrRef.current = synthErrors;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const now = performance.now();
+    let any = false;
+    for (const id of Object.keys(synthErrors))
+      if (!before[id]) {
+        shakeRef.current.set(id, now);
+        any = true;
+      }
+    if (any) draw();
+  }, [synthErrors, draw]);
+  useEffect(draw, [draw, project, selected, selectedIds, playhead, zoom, proxies, synthErrors, synthStatus, layerSize]);
   // 合成中の行があるあいだは、斜めのしまを流すために描き続ける（動きを減らす設定なら止まった絵のまま）
   const anyRunning = Object.values(synthStatus).includes('running');
   useEffect(() => {
@@ -1271,6 +1364,8 @@ export function Timeline() {
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
+    // 動かしたアイテムは、離した所にもう見えているので、なめらかに動かさない（押し出されたほかのアイテムは動かす）
+    if (d) skipAnimRef.current = new Set([d.clipId, ...d.group, ...d.linked]);
     if (d?.moved && (d.start !== d.origStart || d.duration !== d.origDuration || d.trackId !== d.origTrack)) {
       const insert = e.ctrlKey || e.metaKey;
       if (d.mode === 'move') {
@@ -1510,8 +1605,18 @@ export function Timeline() {
           <Button label="素材を追加" size="sm" variant="ghost" icon={<Icon icon={ImagePlus} />} tooltip="素材を再生位置に追加" clickAction={addMedia} />
         )}
         <div style={{flex: 1}} />
+        <DropdownMenu
+          button={{label: 'レイヤーの高さ', tooltip: 'レイヤーの高さ（高くすると名前と波形が分かれて読みやすい）', variant: 'ghost', size: 'sm', isIconOnly: true, icon: <Icon icon={Rows3} />}}
+          hasChevron={false}
+          menuWidth={220}>
+          <DropdownMenuRadioGroup label="レイヤーの高さ" value={layerSize} onChange={v => setLayerSize(v as LayerSize)}>
+            <DropdownMenuRadioItem value="small" label="小（たくさん見える）" />
+            <DropdownMenuRadioItem value="medium" label="中（名前と波形を分ける）" />
+            <DropdownMenuRadioItem value="large" label="大（波形が大きい）" />
+          </DropdownMenuRadioGroup>
+        </DropdownMenu>
         <IconButton label="縮小" tooltip="縮小（Ctrl+ホイール）" variant="ghost" size="sm" icon={<Icon icon={ZoomOut} />} onClick={() => zoomAround(1 / 1.5)} />
-        <div style={{width: 140}}>
+        <div style={{width: 100}}>
           <Slider
             label="拡大率"
             isLabelHidden
