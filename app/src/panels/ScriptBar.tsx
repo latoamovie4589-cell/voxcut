@@ -37,6 +37,9 @@ export function ScriptBar({notify}: {notify: Notify}) {
   const [compact, setCompact] = useState(false);
   // さらに狭い（800px ほどの窓でプリセットもある）：入れ方は絵だけにする
   const [tight, setTight] = useState(false);
+  // Alt+数字で声を切り替えたときに、打つ欄の上に少しだけ出す名前（打っている途中は案内文が見えないので）
+  const [flash, setFlash] = useState<string | null>(null);
+  const flashTimer = useRef(0);
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -57,6 +60,8 @@ export function ScriptBar({notify}: {notify: Notify}) {
   // 声のプリセット（感情など）。キャラクターを分けなくても、ここで切り替えて足せる
   const presets = project.characters.find(c => c.id === current)?.voicePresets ?? [];
   const presetId = presets.some(x => x.id === inputPresets[current]) ? (inputPresets[current] ?? null) : null;
+  // 狭くて選ぶ欄の名前が切れても、どの声で入るかが分かるよう、打つ欄の案内にも出す
+  const presetName = presets.find(x => x.id === presetId)?.name ?? null;
   const setPreset = (id: string | null) => setState(s => ({inputPresets: {...s.inputPresets, [current]: id}}));
   const m = MODES.find(x => x.value === mode)!;
 
@@ -149,16 +154,25 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </DropdownMenuRadioGroup>
       </DropdownMenu>
       <div
-        style={{flex: 1, minWidth: 140}}
+        style={{flex: 1, minWidth: 140, position: 'relative'}}
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
           // 打ちながら声のプリセットを切り替える：Alt+1〜9 でプリセット、Alt+0 で通常
           if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || !/^Digit\d$/.test(e.code)) return;
           const n = Number(e.code.slice(5));
-          if (n === 0) setPreset(null);
-          else if (presets[n - 1]) setPreset(presets[n - 1].id);
-          else {
+          const show = (name: string) => {
+            setFlash(name);
+            window.clearTimeout(flashTimer.current);
+            flashTimer.current = window.setTimeout(() => setFlash(null), 1400);
+          };
+          if (n === 0) {
+            setPreset(null);
+            show('通常');
+          } else if (presets[n - 1]) {
+            setPreset(presets[n - 1].id);
+            show(presets[n - 1].name);
+          } else {
             e.preventDefault();
             notify(
               presets.length
@@ -178,11 +192,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
             setState({pasteOpen: true, pasteText: pasted});
           }
         }}>
+        {flash && (
+          <span className="vx-preset-flash" role="status">
+            声：{flash}
+          </span>
+        )}
         <TextInput
           label="新しいセリフ"
           isLabelHidden
           size="sm"
-          placeholder={compact ? 'セリフを入力 → Enter' : `セリフを入力 → Enter で${layer}へ`}
+          placeholder={compact ? (presetName ? `${presetName}：セリフを入力` : 'セリフを入力 → Enter') : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で${layer}へ`}
           value={text}
           onChange={setText}
           onEnter={submit}
