@@ -112,6 +112,8 @@ export interface State {
   inputPresets: Record<string, string | null>;
   /** 設定画面を開いているか（左パネルの「場所を選ぶ」からも開く） */
   settingsOpen: boolean;
+  /** プロジェクトの設定（解像度・fps・背景色） */
+  projectSettingsOpen: boolean;
   /** 最近使ったプロジェクト */
   recent: string[];
   /** 台本の貼り付け画面・辞書の画面を開いているか */
@@ -169,6 +171,7 @@ let state: State = {
   inputMode: loadInputMode(),
   inputPresets: {},
   settingsOpen: false,
+  projectSettingsOpen: false,
   recent: [],
   pasteOpen: false,
   workspaceDialogOpen: false,
@@ -296,6 +299,17 @@ export function revertMerge(mergeKey: string): boolean {
   lastMerge = null;
   setState(s => (s.past.length ? {project: s.past[s.past.length - 1], past: s.past.slice(0, -1), dirty: dirtyBefore} : {}));
   return true;
+}
+
+/**
+ * プロジェクトの映像の設定（解像度・背景色・fps）。fps はアイテムの長さがコマ数で決まっているので、
+ * まだ何も置いていないときだけ変えられる（置いたあとに変えると長さが変わってしまうため）
+ */
+export function updateVideo(patch: Partial<Project['video']>) {
+  commit(p => {
+    if (patch.fps !== undefined && patch.fps !== p.video.fps && p.clips.length) return p;
+    return {...p, video: {...p.video, ...patch}};
+  });
 }
 
 /** 履歴に残さない置き換え（合成結果の反映など） */

@@ -67,7 +67,12 @@ export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in
 type Unlisten = () => void;
 
 export interface Api {
-  newProject(): Promise<Project>;
+  /** 新しいプロジェクト。sample なら見本入り（「サンプルを開く」） */
+  newProject(sample?: boolean): Promise<Project>;
+  /** 字幕を SRT で書き出す */
+  exportSrt(project: Project, out: string): Promise<void>;
+  /** ファイルをいつものアプリで開く（書き出した動画を再生する） */
+  openPath(path: string): Promise<void>;
   openProject(path: string): Promise<Project>;
   saveProject(path: string, project: Project): Promise<void>;
   getConfig(): Promise<AppConfig>;
@@ -87,7 +92,7 @@ export interface Api {
   onSynthProgress(cb: (p: SynthProgress) => void): Promise<Unlisten>;
   onExportProgress(cb: (p: ExportProgress) => void): Promise<Unlisten>;
   pickOpenPath(): Promise<string | null>;
-  pickSavePath(kind: 'project' | 'video', suggested: string): Promise<string | null>;
+  pickSavePath(kind: 'project' | 'video' | 'audio' | 'subtitle', suggested: string): Promise<string | null>;
   /** 素材・立ち絵のファイルを選ぶ */
   pickMedia(kind: 'media' | 'image', multiple: boolean): Promise<string[]>;
   /** 実行ファイル（.exe）を選ぶ */
@@ -146,7 +151,12 @@ async function tauriApi(): Promise<Api> {
   const dialog = await import('@tauri-apps/plugin-dialog');
   const lastSaveDir: Partial<Record<'project' | 'video', string>> = {};
   return {
-    newProject: () => invoke('new_project'),
+    newProject: sample => invoke('new_project', {sample: sample ?? null}),
+    exportSrt: (project, out) => invoke('export_srt', {project, out}),
+    openPath: async path => {
+      const {openPath} = await import('@tauri-apps/plugin-opener');
+      await openPath(path);
+    },
     openProject: path => invoke('open_project', {path}),
     saveProject: (path, project) => invoke('save_project', {path, project}),
     getConfig: () => invoke('get_config'),
@@ -187,14 +197,22 @@ async function tauriApi(): Promise<Api> {
       let defaultPath = suggested;
       if (!/[\\/]/.test(suggested)) {
         const path = await import('@tauri-apps/api/path');
-        const base = kind === 'video' ? (lastSaveDir.video ?? (await path.videoDir())) : (lastSaveDir.project ?? (await path.documentDir()));
+        const base = kind === 'project' ? (lastSaveDir.project ?? (await path.documentDir())) : (lastSaveDir.video ?? (await path.videoDir()));
         defaultPath = await path.join(base, suggested);
       }
       const r = await dialog.save({
         defaultPath,
-        filters: kind === 'project' ? [{name: 'VoxCut', extensions: ['voxcut']}] : [{name: 'MP4', extensions: ['mp4']}],
+        filters: [
+          kind === 'project'
+            ? {name: 'VoxCut', extensions: ['voxcut']}
+            : kind === 'audio'
+              ? {name: 'WAV（音声）', extensions: ['wav']}
+              : kind === 'subtitle'
+                ? {name: 'SRT（字幕）', extensions: ['srt']}
+                : {name: 'MP4', extensions: ['mp4']},
+        ],
       });
-      if (r) lastSaveDir[kind] = r.replace(/[\\/][^\\/]*$/, '');
+      if (r) lastSaveDir[kind === 'project' ? 'project' : 'video'] = r.replace(/[\\/][^\\/]*$/, '');
       return r;
     },
     pickMedia: async (kind, multiple) => {
@@ -265,6 +283,11 @@ const MOCK_VOICES: Record<EngineId, VoiceInfo[]> = {
     ['8', '春日部つむぎ', 'ノーマル'],
   ].map(([id, n, st]) => ({engine: 'voicevox', speaker: id, displayName: `${n}（${st}）`, emotions: [], credit: `VOICEVOX:${n}`})),
 };
+
+/** 空のプロジェクト（Rust の Project::new と同じ：レイヤー 1〜6、キャラクターなし） */
+function emptyMockProject(): Project {
+  return {...mockProject(), name: '新しいプロジェクト', characters: [], clips: []};
+}
 
 function mockProject(): Project {
   const sub = {
@@ -382,7 +405,9 @@ function mockApi(): Api {
     return {project: p, failed: [] as [string, string][]};
   };
   return {
-    newProject: async () => mockProject(),
+    newProject: async sample => (sample ? mockProject() : emptyMockProject()),
+    exportSrt: async () => {},
+    openPath: async () => {},
     openProject: async () => mockProject(),
     saveProject: async () => {},
     getConfig: async () => config,

@@ -125,7 +125,8 @@ export function friendlyError(e: unknown): string {
 
 export async function boot(notify: Notify) {
   const a = await api;
-  const project = await a.newProject();
+  // 起動したら空のプロジェクト（タイムラインに「最初の 3 手順」が出る。見本は「サンプルを開く」で）
+  const project = await a.newProject(false);
   setState({project, dirty: false, past: [], future: [], selectedCharacterId: project.characters[0]?.id ?? null});
   const cfg = await a.getConfig();
   setState({recent: cfg.recent ?? [], dictionary: cfg.dictionary ?? []});
@@ -421,11 +422,25 @@ export async function cancelExport() {
   await (await api).cancelExport();
 }
 
-export async function pickExportPath(): Promise<string | null> {
+export type ExportKind = 'video' | 'audio' | 'subtitle';
+const EXT: Record<ExportKind, string> = {video: 'mp4', audio: 'wav', subtitle: 'srt'};
+
+export async function pickExportPath(kind: ExportKind = 'video'): Promise<string | null> {
   const s = getState();
   const a = await api;
   const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : (s.project?.name ?? 'video');
-  return a.pickSavePath('video', `${base}.mp4`);
+  return a.pickSavePath(kind, `${base}.${EXT[kind]}`);
+}
+
+/** 字幕だけを SRT で書き出す（YouTube などに字幕として上げる用） */
+export async function exportSubtitles(out: string) {
+  const p = getState().project;
+  if (p) await (await api).exportSrt(p, out);
+}
+
+/** 書き出したファイルを、いつものアプリで開く（動画なら再生） */
+export async function openFile(path: string) {
+  await (await api).openPath(path);
 }
 
 export async function revealInFolder(path: string) {
@@ -478,10 +493,11 @@ export async function openProject(notify: Notify, given?: string) {
   }
 }
 
-export async function newProjectAction(notify: Notify) {
+/** 新規（空のプロジェクト）。sample なら見本の入ったプロジェクトを開く（「ファイル → サンプルを開く」） */
+export async function newProjectAction(notify: Notify, sample = false) {
   if (!(await confirmDiscard())) return;
   try {
-    await loadProject(await (await api).newProject(), null, false);
+    await loadProject(await (await api).newProject(sample), null, false);
     await (await api).autosaveClear();
   } catch (e) {
     notify(friendlyError(e), 'error');

@@ -52,6 +52,7 @@ import {PANEL_IDS, PANEL_TITLE, PRESETS, applyWorkspace, closePanel, deleteWorks
 import type {PanelId} from './dock/layout';
 import {ScriptBar} from './panels/ScriptBar';
 import {SettingsDialog} from './panels/SettingsDialog';
+import {ProjectSettingsDialog} from './panels/ProjectSettingsDialog';
 import {toggleFullscreen} from './preview/PreviewControls';
 import './app.css';
 
@@ -239,6 +240,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
     <HStack gap={0} vAlign="center" role="menubar" aria-label="メニュー">
       <DropdownMenu button={menu('ファイル')} hasChevron={false} menuWidth={260} menuMaxHeight={maxH}>
         <DropdownMenuItem label="新規" endContent={key(`${mod}N`)} onClick={() => void newProjectAction(notify)} />
+        <DropdownMenuItem label="サンプルを開く" description="キャラクターとセリフの入った見本" onClick={() => void newProjectAction(notify, true)} />
         <DropdownMenuItem label="開く…" endContent={key(`${mod}O`)} onClick={() => void openProject(notify)} />
         <DropdownMenuSubMenu label="最近使ったファイル" isDisabled={!recent.length}>
           {recent.map(path => (
@@ -251,6 +253,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuDivider />
         <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
         <DropdownMenuDivider />
+        <DropdownMenuItem label="プロジェクトの設定…" description="動画の大きさ（縦長のショートも）・fps・背景色" onClick={() => setState({projectSettingsOpen: true})} />
         <DropdownMenuItem label="音声合成ソフトの設定…" onClick={openSettings} />
       </DropdownMenu>
       <DropdownMenu button={menu('編集')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
@@ -580,6 +583,7 @@ export function App() {
         }
       />
       <SettingsDialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} notify={notify} />
+      <ProjectSettingsDialog />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />
       <ShortcutsDialog />
