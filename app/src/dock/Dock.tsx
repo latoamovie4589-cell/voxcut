@@ -155,6 +155,14 @@ function NodeView({node, ...rest}: ViewProps & {node: DockNode}) {
   return node.kind === 'group' ? <GroupFrame group={node} {...rest} /> : <SplitView split={node} {...rest} />;
 }
 
+/** 枠の最小の幅：プロパティの入る枠は狭くしすぎると項目やタブが切れるので 300px は取る */
+const PANEL_MIN_W: Partial<Record<PanelId, number>> = {inspector: 300};
+function minWidth(n: DockNode): number {
+  if (n.kind === 'group') return Math.max(0, ...n.tabs.map(t => PANEL_MIN_W[t] ?? 0));
+  const each = n.children.map(minWidth);
+  return n.dir === 'row' ? each.reduce((a, b) => a + b, 0) : Math.max(0, ...each);
+}
+
 function SplitView({split, ...rest}: ViewProps & {split: Split}) {
   const ref = useRef<HTMLDivElement>(null);
   return (
@@ -162,7 +170,7 @@ function SplitView({split, ...rest}: ViewProps & {split: Split}) {
       {split.children.map((c, i) => (
         <Fragment key={c.id}>
           {i > 0 && <Splitter split={split} index={i - 1} containerRef={ref} />}
-          <div className="vx-dock-cell" style={{flex: `${split.sizes[i]} 1 0px`}}>
+          <div className="vx-dock-cell" style={{flex: `${split.sizes[i]} 1 0px`, minWidth: split.dir === 'row' ? minWidth(c) || undefined : undefined}}>
             <NodeView node={c} {...rest} />
           </div>
         </Fragment>

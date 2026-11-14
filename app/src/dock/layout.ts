@@ -51,22 +51,33 @@ const sp = (dir: Split['dir'], parts: [DockNode, number][]): Split => ({
 
 // ---- ワークスペース（ひな形） ----
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+/** 初期配置の割合（タイムラインの高さ・右の列の幅）を画面の大きさから決める */
+function fitShares() {
+  const w = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const h = typeof window === 'undefined' ? 900 : window.innerHeight - 48;
+  return {tl: clamp(330 / Math.max(1, h), 0.36, 0.56), side: clamp(360 / Math.max(1, w), 0.22, 0.32)};
+}
+
 export const PRESETS: {id: string; name: string; make: () => DockNode}[] = [
   {
     // YMM4 の初期配置：左上にプレビュー、その下にタイムライン（一番下にセリフ入力欄）、右にアイテムのプロパティ
     id: 'edit',
     name: '標準（YMM4）',
-    make: () =>
-      sp('row', [
+    make: () => {
+      // 画面の大きさに合わせる：タイムラインはレイヤー 6 本と入力欄が入る高さ、プロパティは 360px ほど。残りをプレビューに
+      const {tl, side} = fitShares();
+      return sp('row', [
         [
           sp('column', [
-            [g('preview'), 0.52],
-            [g('timeline'), 0.48],
+            [g('preview'), 1 - tl],
+            [g('timeline'), tl],
           ]),
-          0.74,
+          1 - side,
         ],
-        [g('inspector', 'script', 'characters', 'engines'), 0.26],
-      ]),
+        [g('inspector', 'script', 'characters', 'engines'), side],
+      ]);
+    },
   },
   {
     id: 'timeline',
