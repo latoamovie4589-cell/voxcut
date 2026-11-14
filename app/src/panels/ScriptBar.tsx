@@ -116,7 +116,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
             isLabelHidden
             variant="secondary"
             size="sm"
-            width={tight ? 84 : compact ? 92 : 130}
+            width={tight ? 100 : compact ? 100 : 130}
             value={presetId ?? ''}
             // 選ぶ欄には Alt+数字の番号も出す（打ちながら Alt+1〜9 で切り替えられる）
             options={[{value: '', label: '通常', description: 'Alt+0'}, ...presets.map((x, i) => ({value: x.id, label: x.name, description: i < 9 ? `Alt+${i + 1}` : undefined}))]}
@@ -140,7 +140,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
           size: 'sm',
           ...(tight ? {isIconOnly: true, icon: <Icon icon={ListEnd} />} : {}),
         }}
-        hasChevron
+        hasChevron={!tight}
         menuWidth={300}>
         <DropdownMenuRadioGroup label="入れ方" value={mode} onChange={v => setInputMode(v as InputMode)}>
           {MODES.map(x => (
@@ -149,7 +149,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </DropdownMenuRadioGroup>
       </DropdownMenu>
       <div
-        style={{flex: 1, minWidth: tight ? 90 : 140}}
+        style={{flex: 1, minWidth: 140}}
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
@@ -189,15 +189,22 @@ export function ScriptBar({notify}: {notify: Notify}) {
           width="100%"
         />
       </div>
-      <IconButton
-        label="台本読み込み"
-        tooltip="台本読み込み（ツール → 台本読み込み）"
-        variant="ghost"
-        size="sm"
-        icon={<Icon icon={ClipboardPaste} />}
-        onClick={() => setState({pasteOpen: true, pasteText: text.includes('\n') ? text : ''})}
-      />
-      <Button label="追加" size="sm" icon={<Icon icon={CornerDownLeft} />} onClick={submit} isDisabled={!text.trim()} />
+      {/* とても狭いときは、台本読み込みはメニュー（ツール → 台本読み込み）から。「追加」は絵だけにして、打つ欄を広く残す */}
+      {!tight && (
+        <IconButton
+          label="台本読み込み"
+          tooltip="台本読み込み（ツール → 台本読み込み）"
+          variant="ghost"
+          size="sm"
+          icon={<Icon icon={ClipboardPaste} />}
+          onClick={() => setState({pasteOpen: true, pasteText: text.includes('\n') ? text : ''})}
+        />
+      )}
+      {tight ? (
+        <IconButton label="追加" tooltip="追加（Enter）" size="sm" icon={<Icon icon={CornerDownLeft} />} onClick={submit} isDisabled={!text.trim()} />
+      ) : (
+        <Button label="追加" size="sm" icon={<Icon icon={CornerDownLeft} />} onClick={submit} isDisabled={!text.trim()} />
+      )}
     </HStack>
   );
 }
