@@ -105,9 +105,20 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + '
 
 // ───────────── プロジェクト ─────────────
 
+/// 新しいプロジェクト。sample なら見本の入ったもの（「サンプルを開く」）、ふだんは空
 #[tauri::command]
-pub fn new_project() -> Project {
-    Project::sample()
+pub fn new_project(sample: Option<bool>) -> Project {
+    if sample.unwrap_or(false) {
+        Project::sample()
+    } else {
+        Project::new("新しいプロジェクト")
+    }
+}
+
+/// 字幕を SRT で書き出す
+#[tauri::command]
+pub async fn export_srt(project: Project, out: PathBuf) -> CmdResult<()> {
+    blocking(move || std::fs::write(&out, voxcut_core::subtitle::build_srt(&project)).map_err(err)).await
 }
 
 #[tauri::command]
