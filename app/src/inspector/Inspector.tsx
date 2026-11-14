@@ -54,6 +54,8 @@ import {
   setCharacterForSelection,
   setPortrait,
   setPresetForSelection,
+  setExpressionForSelection,
+  setGapForSelection,
   setState,
   splitClip,
   updateCharacter,
@@ -1244,6 +1246,40 @@ function MultiInspector({ids, notify}: {ids: string[]; notify: Notify}) {
             if (v === '__mixed') return;
             const n = setPresetForSelection(sameCh.id, v || null);
             notify(`${n} 行の声を「${v ? sameCh.voicePresets!.find(p => p.id === v)!.name : 'キャラクターの声'}」にしました`);
+          }}
+          width="100%"
+        />
+      )}
+      {sameCh?.portrait?.psd && (sameCh.portrait.expressions ?? []).length > 0 && (
+        <Selector
+          label="表情をまとめて変える"
+          value={lines.every(l => (l.expression ?? '') === (lines[0].expression ?? '')) ? (lines[0].expression ?? '') : '__mixed'}
+          options={[
+            ...(lines.some(l => (l.expression ?? '') !== (lines[0].expression ?? '')) ? [{value: '__mixed', label: 'いろいろ'}] : []),
+            {value: '', label: '変えない'},
+            {value: BASE_EXPRESSION, label: '通常'},
+            ...(sameCh.portrait.expressions ?? []).map(e => ({value: e.name, label: e.name})),
+          ]}
+          onChange={v => {
+            if (v === '__mixed') return;
+            const n = setExpressionForSelection(v || null);
+            notify(`${n} 行の表情を「${v === BASE_EXPRESSION ? '通常' : v || '変えない'}」にしました`);
+          }}
+          width="100%"
+        />
+      )}
+      {lines.length > 0 && (
+        <NumberInput
+          label="セリフの後ろの間をまとめて変える"
+          units="フレーム"
+          value={lines.every(l => l.gapAfter === lines[0].gapAfter) ? lines[0].gapAfter : null}
+          placeholder="いろいろ"
+          min={0}
+          max={fps * 10}
+          onChange={v => {
+            if (v === null || v === undefined || Number.isNaN(v)) return;
+            const n = setGapForSelection(v);
+            notify(`${n} 行の後ろの間を ${v} フレームにしました`);
           }}
           width="100%"
         />
