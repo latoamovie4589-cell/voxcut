@@ -5,6 +5,7 @@
 // - 枠の右上の ≡ から、閉じる・最大化・ワークスペースのリセット
 // HTML5 のドラッグ＆ドロップは Windows の Tauri では使えない（ファイルのドロップと取り合う）ので、ポインターで実装する。
 
+import {modalOpen} from '../keys';
 import {Fragment, useEffect, useRef, useState, type ReactNode} from 'react';
 import {DropdownMenu, DropdownMenuDivider, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -71,6 +72,7 @@ export function Dock({panels}: {panels: Registry}) {
   // ` キー：最後に触った枠を最大化／元に戻す（入力欄の中では効かない）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (modalOpen()) return;
       // Alt+Shift+1〜9：ワークスペースを切り替える（Premiere Pro と同じ）
       if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code)) {
         const ws = workspaceOrder()[Number(e.code.slice(5)) - 1];
