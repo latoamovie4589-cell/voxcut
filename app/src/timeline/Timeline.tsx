@@ -214,16 +214,13 @@ function TrackHeader({track}: {track: Track}) {
       onMouseDown={e => {
         if (e.button === 1) e.preventDefault();
       }}>
-      <span className="vx-track-code" aria-hidden title={code}>
-        {index + 1}
-      </span>
-      {/* YMM4 と同じく、名前は付けたときだけ出す。ダブルクリックで名前を変える */}
-      <div className="vx-track-name" onDoubleClick={() => setEditing(true)}>
+      {/* YMM4 と同じく、名前を付けていなければ「レイヤー 1」。ダブルクリックで名前を変える */}
+      <div className="vx-track-name" onDoubleClick={() => setEditing(true)} title={track.name ? `${code}（${track.name}）` : undefined}>
         {editing ? (
-          <TextInput label="レイヤー名" isLabelHidden size="sm" value={name} placeholder={code} onChange={setName} onEnter={finish} onBlur={finish} hasAutoFocus width={80} />
+          <TextInput label="レイヤー名" isLabelHidden size="sm" value={name} placeholder={code} onChange={setName} onEnter={finish} onBlur={finish} hasAutoFocus width={110} />
         ) : (
           <Text type="label" maxLines={1}>
-            {track.name}
+            {track.name || code}
           </Text>
         )}
       </div>

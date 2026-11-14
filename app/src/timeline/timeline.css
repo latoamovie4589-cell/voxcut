@@ -62,22 +62,6 @@
   align-items: center;
   gap: 4px;
 }
-/* レイヤーの番号 */
-.vx-track-code {
-  flex: none;
-  min-width: 26px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  font:
-    600 11px/1.2 system-ui,
-    sans-serif;
-  text-align: center;
-  color: #fff;
-  background: #5e5ce6;
-}
-.vx-track-header[data-kind='audio'] .vx-track-code {
-  background: #2f9e6e;
-}
 /* M・S のボタン */
 .vx-track-toggle {
   flex: none;
