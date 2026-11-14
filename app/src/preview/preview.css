@@ -13,7 +13,7 @@
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 10px;
+  padding: 6px;
   overflow: hidden;
   /* ダークでは黒い映像と見分けられるよう、周りを少し明るい灰色に */
   background: light-dark(var(--color-background-muted), #2c2c2e);
@@ -38,7 +38,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  height: 44px;
+  height: 40px;
   padding-inline: 8px;
   background: var(--color-background-surface);
   border-top: 0.5px solid var(--color-border);

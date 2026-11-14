@@ -97,6 +97,9 @@ type Gesture = {
   moved: boolean;
   /** 1 回のドラッグを 1 つの「元に戻す」にまとめる目印 */
   id: number;
+  /** Esc で取り消すときに、つかみを放す */
+  pointerId?: number;
+  captureEl?: Element;
 };
 const HANDLE = 10;
 /** 中央・端に吸着する距離（画面の px） */
@@ -108,6 +111,12 @@ const corners = (r: Rect): [number, number][] => [
   [r.x, r.y + r.h],
   [r.x + r.w, r.y + r.h],
 ];
+/** つまみの位置。画面（プレビューの枠）の外に出るときは、枠の中に寄せて出す（大きくしてもつかめるように） */
+type Bounds = {x0: number; y0: number; x1: number; y1: number};
+const handles = (r: Rect, b: Bounds | null): [number, number][] => {
+  const m = HANDLE / 2 + 1;
+  return corners(r).map(([x, y]) => (b ? [Math.min(b.x1 - m, Math.max(b.x0 + m, x)), Math.min(b.y1 - m, Math.max(b.y0 + m, y))] : [x, y]));
+};
 const inside = (r: Rect, p: {x: number; y: number}) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const distToCenter = (r: Rect, p: {x: number; y: number}) => Math.hypot(p.x - (r.x + r.w / 2), p.y - (r.y + r.h / 2));
 
@@ -254,6 +263,8 @@ export function Preview() {
   const guidesRef = useRef<{v: number[]; h: number[]}>({v: [], h: []});
   // 動かしている間もプロパティの X・Y を追従させる（1 コマに 1 回だけ書き込む）
   const liveRef = useRef(0);
+  // つまみを寄せる枠（プレビューの見えている範囲。プレビューの左上からの位置）
+  const boundsRef = useRef<Bounds | null>(null);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -498,6 +509,7 @@ export function Preview() {
       o.clearRect(0, 0, wr.width, wr.height);
       if (sel && !isPlaying) {
         o.translate(cr.left - wr.left, cr.top - wr.top);
+        boundsRef.current = {x0: wr.left - cr.left, y0: wr.top - cr.top, x1: wr.right - cr.left, y1: wr.bottom - cr.top};
         const r = sel.rect;
         // 吸着した線（中央・端）
         const gd = guidesRef.current;
@@ -526,7 +538,7 @@ export function Preview() {
         o.lineWidth = 1.5;
         o.strokeRect(r.x, r.y, r.w, r.h);
         o.fillStyle = '#fff';
-        for (const [cx, cy] of corners(r)) {
+        for (const [cx, cy] of handles(r, boundsRef.current)) {
           o.fillRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
           o.strokeRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
         }
@@ -545,7 +557,7 @@ export function Preview() {
     const targets = targetsRef.current;
     const sel = targets.find(t => t.key === selectedKey);
     // 選んでいるもののつまみ → 大きさを変える
-    if (sel && corners(sel.rect).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE)) {
+    if (sel && handles(sel.rect, boundsRef.current).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE)) {
       gestureRef.current = {
         target: sel,
         mode: 'scale',
@@ -554,6 +566,8 @@ export function Preview() {
         dist: distToCenter(sel.rect, pt),
         moved: false,
         id: Date.now(),
+        pointerId: e.pointerId,
+        captureEl: e.target as Element,
       };
       (e.target as Element).setPointerCapture(e.pointerId);
       return;
@@ -570,6 +584,8 @@ export function Preview() {
       dist: 0,
       moved: false,
       id: Date.now(),
+      pointerId: e.pointerId,
+      captureEl: e.target as Element,
     };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
@@ -580,7 +596,7 @@ export function Preview() {
     const canvas = wrapRef.current!;
     if (!g) {
       const sel = targetsRef.current.find(t => t.key === selectedKey);
-      const onHandle = sel && corners(sel.rect).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE);
+      const onHandle = sel && handles(sel.rect, boundsRef.current).some(([cx, cy]) => Math.abs(pt.x - cx) <= HANDLE && Math.abs(pt.y - cy) <= HANDLE);
       canvas.style.cursor = onHandle ? 'nwse-resize' : targetsRef.current.some(t => inside(t.rect, pt)) ? 'move' : 'default';
       return;
     }
@@ -626,7 +642,8 @@ export function Preview() {
           }
         : {
             ...t0,
-            scale: Math.max(0.05, Math.round(t0.scale * (distToCenter(g.target.rect, pt) / Math.max(1, g.dist)) * 1000) / 1000),
+            // 5% 刻みで止める（Alt を押している間は細かく）
+            scale: Math.max(0.05, ((raw: number) => (e.altKey ? Math.round(raw * 1000) / 1000 : Math.round(raw * 20) / 20))(t0.scale * (distToCenter(g.target.rect, pt) / Math.max(1, g.dist)))),
           };
     overrideRef.current = {key: g.target.key, transform: next};
     setTick(x => x + 1);
@@ -638,6 +655,31 @@ export function Preview() {
         if (ov && g2) commitTransform(g2.target, ov.transform, `drag:${g2.target.key}:${g2.id}`);
       });
   };
+
+  // Esc：動かしている途中ならやめて、元の位置に戻す
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const g = gestureRef.current;
+      if (e.key !== 'Escape' || !g) return;
+      e.preventDefault();
+      e.stopPropagation();
+      gestureRef.current = null;
+      cancelAnimationFrame(liveRef.current);
+      liveRef.current = 0;
+      guidesRef.current = {v: [], h: []};
+      overrideRef.current = null;
+      try {
+        g.captureEl?.releasePointerCapture(g.pointerId ?? 0);
+      } catch {
+        // もう放れていれば何もしない
+      }
+      // 途中でプロパティに書いた分も、つかむ前に戻す
+      if (g.moved) commitTransform(g.target, g.target.transform, `drag:${g.target.key}:${g.id}`);
+      setTick(x => x + 1);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
 
   const onPointerUp = () => {
     const g = gestureRef.current;
