@@ -306,12 +306,26 @@ function GroupFrame({group, panels, drag, setDrag}: ViewProps & {group: Group}) 
   useEffect(() => {
     const el = tabsRef.current;
     if (!el) return;
-    const check = () => setOverflow(el.scrollWidth > el.clientWidth + 1);
+    const check = () => {
+      setOverflow(el.scrollWidth > el.clientWidth + 1);
+      // 途中で切れるタブは出さない（「音声合」のように文字の途中で切れると読めない）。隠れたタブは「»」から選ぶ
+      const left = el.scrollLeft;
+      const right = left + el.clientWidth;
+      for (const t of el.querySelectorAll<HTMLElement>('[role="tab"]')) {
+        const cut = t.offsetLeft < left - 1 || t.offsetLeft + t.offsetWidth > right + 1;
+        if (cut) t.dataset.clipped = '';
+        else delete t.dataset.clipped;
+      }
+    };
     check();
     const ro = new ResizeObserver(check);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [group.tabs.length]);
+    el.addEventListener('scroll', check);
+    return () => {
+      ro.disconnect();
+      el.removeEventListener('scroll', check);
+    };
+  }, [group.tabs.length, group.active]);
   useEffect(() => {
     tabsRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({block: 'nearest', inline: 'nearest'});
   }, [group.active]);
