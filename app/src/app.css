@@ -536,3 +536,18 @@ textarea {
 .vx-tabsummary {
   padding: 12px 16px 0;
 }
+
+/* セリフ入力欄：キャラクターが 1 人のときは名前だけ */
+.vx-scriptbar-char {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  padding: 0 8px;
+}
+.vx-scriptbar-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
