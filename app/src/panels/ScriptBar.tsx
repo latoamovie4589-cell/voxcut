@@ -9,6 +9,7 @@ import {DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astr
 import {Icon} from '@astryxdesign/core/Icon';
 import {HStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
+import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {ClipboardPaste, CornerDownLeft, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
@@ -73,16 +74,26 @@ export function ScriptBar({notify}: {notify: Notify}) {
 
   return (
     <HStack gap={1} vAlign="center" padding={2} className="vx-scriptbar">
-      <Selector
-        label="話すキャラクター"
-        isLabelHidden
-        variant="secondary"
-        size="sm"
-        width={160}
-        value={current}
-        options={project.characters.map(c => ({value: c.id, label: c.name}))}
-        onChange={v => setState({selectedCharacterId: v})}
-      />
+      {/* キャラクターが 1 人なら選ぶものがないので、名前だけ出す */}
+      {project.characters.length > 1 ? (
+        <Selector
+          label="話すキャラクター"
+          isLabelHidden
+          variant="secondary"
+          size="sm"
+          width={160}
+          value={current}
+          options={project.characters.map(c => ({value: c.id, label: c.name}))}
+          onChange={v => setState({selectedCharacterId: v})}
+        />
+      ) : (
+        <div className="vx-scriptbar-char" aria-label="話すキャラクター">
+          <span className="vx-scriptbar-dot" style={{background: project.characters[0]?.color}} aria-hidden />
+          <Text type="label" maxLines={1}>
+            {project.characters[0]?.name ?? 'キャラクターなし'}
+          </Text>
+        </div>
+      )}
       {presets.length > 0 && (
         <Selector
           label="声のプリセット"
