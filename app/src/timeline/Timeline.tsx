@@ -20,6 +20,7 @@ import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
   getState,
+  addCharacter,
   moveClip,
   moveClips,
   moveDestination,
@@ -330,6 +331,56 @@ function TrackHeader({track}: {track: Track}) {
       }}>
       {header}
     </ContextMenu>
+  );
+}
+
+/**
+ * 空のプロジェクトでタイムラインに出す「最初の 3 手順」。終わった手順には印が付き、何か置けば消える。
+ * 見本を見たい人には「サンプルを開く」
+ */
+function StartCard() {
+  const chars = useStore(s => s.project?.characters.length ?? 0);
+  const step = (done: boolean, n: number, title: string, body: React.ReactNode) => (
+    <li className="vx-start-step" data-done={done || undefined}>
+      <span className="vx-start-num" aria-hidden>
+        {done ? '✓' : n}
+      </span>
+      <div>
+        <div className="vx-start-title">
+          {title}
+          {done && <VisuallyHidden>（済み）</VisuallyHidden>}
+        </div>
+        <div className="vx-start-body">{body}</div>
+      </div>
+    </li>
+  );
+  return (
+    <section className="vx-start" aria-label="最初の 3 手順">
+      <h2 className="vx-start-head">最初の 3 手順</h2>
+      <ol className="vx-start-list">
+        {step(
+          chars > 0,
+          1,
+          '話すキャラクターを作る',
+          chars > 0 ? (
+            `${chars} 人います。声や立ち絵は「キャラクター」で変えられます`
+          ) : (
+            <Button
+              label="キャラクターを作る…"
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                const id = addCharacter();
+                setState({characterDialogOpen: true, dialogCharacterId: id});
+              }}
+            />
+          ),
+        )}
+        {step(false, 2, 'セリフを打って Enter', '下の入力欄に打つと、声と字幕がタイムラインに並びます（台本をまとめて貼っても入ります）')}
+        {step(false, 3, '書き出す', '右上の「動画を書き出す…」から。音声だけ・字幕だけも書き出せます')}
+      </ol>
+      <Button label="サンプルを開いて見る" size="sm" variant="ghost" onClick={() => void import('../actions').then(m => m.newProjectAction(m.getNotify(), true))} />
+    </section>
   );
 }
 
@@ -1522,6 +1573,7 @@ export function Timeline() {
             <div style={{width: contentW, height: RULER_H + height + 24}} className="vx-timeline-spacer" />
           </div>
         </ContextMenu>
+        {project.clips.length === 0 && <StartCard />}
       </div>
       <VisuallyHidden>
         <div aria-live="polite" className="vx-timeline-live">
