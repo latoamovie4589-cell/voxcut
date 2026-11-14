@@ -54,7 +54,7 @@ export async function pickPsdPortrait(character: Character, projectHeight: numbe
     // まだ立ち絵アイテムが無ければ、全体にわたるアイテムを 1 つ置く（すぐ見えるように）
     const st = await import('../store');
     const placed = !st.getState().project?.clips.some(c => c.type === 'portrait' && c.characterId === character.id) && st.addPortraitItem(character.id, {whole: true});
-    const parts = found ? `目と口のレイヤーを ${found} か所、名前から割り当てました` : '目と口に使うレイヤーを選んでください';
+    const parts = found ? `目と口のパーツを ${found} か所、名前から割り当てました` : '目と口に使うパーツを選んでください';
     notify(`PSD を読み込みました。${parts}${placed ? '。タイムラインに立ち絵アイテムを置きました' : ''}`);
   } catch (e) {
     notify(`PSD を読み込めませんでした：${String(e).replace(/^Error:\s*/, '')}`, 'error');
@@ -140,7 +140,7 @@ export function PsdPortraitEditor({character}: {character: Character}) {
         <VStack gap={0}>
           <Text type="label">PSD</Text>
           <Text type="supporting" maxLines={1}>
-            {psd.src.split(/[\\/]/).pop()}（{doc.width}×{doc.height}・レイヤー {allNodes(doc).length}）
+            {psd.src.split(/[\\/]/).pop()}（{doc.width}×{doc.height}・パーツ {allNodes(doc).length}）
           </Text>
         </VStack>
         <Button label="選び直す" size="sm" variant="ghost" icon={<Icon icon={FileImage} />} onClick={() => void pickPsdPortrait(character, projectHeight)} />
@@ -182,7 +182,7 @@ export function PsdPortraitEditor({character}: {character: Character}) {
             }}
           />
         </HStack>
-        <Hint>それぞれに使うレイヤーを選びます。選んだレイヤーのうち、今の状態のものだけが表示されます。半目・半開きが無ければ「使わない」のままで大丈夫です。</Hint>
+        <Hint>それぞれに使うパーツ（PSD のレイヤー）を選びます。選んだパーツのうち、今の状態のものだけが表示されます。半目・半開きが無ければ「使わない」のままで大丈夫です。</Hint>
         {eyesL.map((l, i) => (
           <Selector key={l} label={l} value={psd.eyes[i] ?? ''} options={layerOptions} hasSearch onChange={v => part('eyes', i, v)} width="100%" />
         ))}
@@ -193,7 +193,7 @@ export function PsdPortraitEditor({character}: {character: Character}) {
 
       <VStack gap={2}>
         <Heading level={4}>表情</Heading>
-        <Hint>表情を選んでからレイヤーの表示を変えると、その表情だけの変更になります。セリフごとに表情を選べます。</Hint>
+        <Hint>表情を選んでからパーツの表示を変えると、その表情だけの変更になります。セリフごとに表情を選べます。</Hint>
         <HStack gap={1} wrap="wrap">
           <Button label="いつもの姿" size="sm" variant={target === -1 ? 'primary' : 'secondary'} onClick={() => setTarget(-1)} />
           {pt.expressions.map((e, i) => (
@@ -233,7 +233,7 @@ export function PsdPortraitEditor({character}: {character: Character}) {
 
       <VStack gap={1}>
         <HStack hAlign="between" vAlign="center">
-          <Heading level={4}>{ex ? `レイヤー（${ex.name}）` : 'レイヤー（いつもの姿）'}</Heading>
+          <Heading level={4}>{ex ? `パーツ（${ex.name}）` : 'パーツ（いつもの姿）'}</Heading>
           <Button
             label={ex ? 'いつもの姿と同じに' : 'PSD のままに戻す'}
             size="sm"
@@ -339,7 +339,7 @@ function LayerTree({doc, eff, changed, onToggle}: {doc: PsdDoc; eff: Map<string,
   };
   walk(doc.nodes, 0);
   return (
-    <ul className="vx-psd-tree" role="tree" aria-label="PSD のレイヤー">
+    <ul className="vx-psd-tree" role="tree" aria-label="PSD のパーツ">
       {rows.map(({n, depth}) => {
         const on = eff.get(n.id) ?? n.visible;
         return (

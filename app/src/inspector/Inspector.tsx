@@ -738,7 +738,7 @@ export function PortraitSection({character}: {character: Character}) {
     return (
       <Section title="立ち絵">
         {pt && <Banner status="warning" title="PNG の立ち絵は使えなくなりました" description="立ち絵は PSD だけに対応しています。PSD を読み込み直してください。" />}
-        <Text type="supporting">PSD を読み込むと、レイヤーの表示を切り替えて口パク・目パチ・表情が付きます。タイムラインに「立ち絵アイテム」を置いた間だけ表示されます。</Text>
+        <Text type="supporting">PSD を読み込むと、パーツ（PSD のレイヤー）の表示を切り替えて口パク・目パチ・表情が付きます。タイムラインに「立ち絵アイテム」を置いた間だけ表示されます。</Text>
         <HStack gap={2} wrap="wrap">
           <Button label="PSD を読み込む" variant="primary" icon={<Icon icon={FileImage} />} onClick={() => void pickPsdPortrait(character, projectHeight)} />
           {pt && <Button label="立ち絵を外す" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => setPortrait(character.id, null)} />}
