@@ -12,7 +12,7 @@ import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
 import {getPeaks, onPeaks} from '../peaks';
-import {commit, getState, setState, useStore} from '../store';
+import {commit, getState, revertMerge, setState, useStore} from '../store';
 import {pauseExcept, syncVideo, videoFor} from './video';
 import {PreviewControls, toggleFullscreen} from './PreviewControls';
 import {fadeAlpha, popScale, typewriterCount} from '../subtitleAnim';
@@ -673,8 +673,9 @@ export function Preview() {
       } catch {
         // もう放れていれば何もしない
       }
-      // 途中でプロパティに書いた分も、つかむ前に戻す
-      if (g.moved) commitTransform(g.target, g.target.transform, `drag:${g.target.key}:${g.id}`);
+      // 途中でプロパティに書いた分も、履歴ごと取り消して、つかむ前に戻す
+      const key = `drag:${g.target.key}:${g.id}`;
+      if (g.moved && !revertMerge(key) && getState().project) commitTransform(g.target, g.target.transform, key);
       setTick(x => x + 1);
     };
     window.addEventListener('keydown', onKey, true);
