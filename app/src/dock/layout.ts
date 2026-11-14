@@ -56,7 +56,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 function fitShares() {
   const w = typeof window === 'undefined' ? 1440 : window.innerWidth;
   const h = typeof window === 'undefined' ? 900 : window.innerHeight - 48;
-  return {tl: clamp(330 / Math.max(1, h), 0.36, 0.56), side: clamp(360 / Math.max(1, w), 0.22, 0.32)};
+  return {tl: clamp(300 / Math.max(1, h), 0.34, 0.56), side: clamp(360 / Math.max(1, w), 0.22, 0.32)};
 }
 
 export const PRESETS: {id: string; name: string; make: () => DockNode}[] = [
