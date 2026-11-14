@@ -3,7 +3,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {setHintsShown, useHintsShown} from './hints';
-import {modalOpen, onControl} from './keys';
+import {modalOpen, onControl, startSpaceGuard} from './keys';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
 import {HStack, Layout, LayoutContent, LayoutHeader} from '@astryxdesign/core/Layout';
@@ -417,6 +417,9 @@ export function App() {
     });
     void boot(notify).catch(e => notify(String(e), 'error'));
   }, [notify]);
+
+  // マウスで押したボタンの上での Space は再生（ボタンをもう一度押さない）
+  useEffect(() => startSpaceGuard(toggle), []);
 
   // キーボードショートカット（入力欄にいるときは奪わない）
   useEffect(() => {

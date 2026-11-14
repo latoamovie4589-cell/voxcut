@@ -9,7 +9,9 @@ import {App} from './App';
 import {FloatApp} from './FloatApp';
 import {floatingPanelOfThisWindow, startGuest} from './sync';
 import {startHints} from './hints';
+import {startDialogEscape} from './keys';
 startHints();
+startDialogEscape();
 
 // 別ウィンドウに切り離したパネルなら、そのパネルだけを出す（状態はメインウィンドウと共有）
 const floatPanel = floatingPanelOfThisWindow();

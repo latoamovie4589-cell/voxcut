@@ -2,7 +2,7 @@
 // 中身はメインウィンドウと同じパネル。状態はメインウィンドウと共有し（sync.ts）、再生と元に戻すはメインウィンドウで行う。
 // 2 台目のモニターにプレビューだけを大きく出す、といった使い方ができる。
 
-import {modalOpen, onControl} from './keys';
+import {modalOpen, onControl, startSpaceGuard} from './keys';
 import {useEffect} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -28,6 +28,9 @@ export function FloatApp({panel, onDock}: {panel: PanelId; onDock: () => void}) 
     setNotify(notify);
     document.title = `${PANEL_TITLE[panel]} — VoxCut`;
   }, [notify, panel]);
+
+  // マウスで押したボタンの上での Space は再生（ボタンをもう一度押さない）
+  useEffect(() => startSpaceGuard(toggle), []);
 
   // このウィンドウでもよく使うキーを効かせる（再生・元に戻すはメインウィンドウで行う）
   useEffect(() => {
