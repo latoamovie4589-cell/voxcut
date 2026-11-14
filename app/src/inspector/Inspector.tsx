@@ -150,6 +150,7 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
     <>
       {/* YMM4 のセリフアイテムと同じく、音声・字幕・立ち絵の設定をセリフに持たせる。設定ごとにタブで分ける */}
       <div className="vx-linetabs">
+        <QuickBar clip={clip} notify={notify} openVoice={() => setTab('voice')} />
         <TabList role="tablist" aria-label="セリフの設定" value={tab} onChange={v => setTab(v as LineTab)} layout="fill" size="sm" hasDivider>
           <Tab value="line" label="セリフ" panelId="vx-line-panel" />
           <Tab value="voice" label="音声" panelId="vx-line-panel" />
@@ -180,6 +181,47 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * いちばんよく触る「声（感情のプリセット）」と「表情」を、タブより上にいつも出す（タブを開かずに 1 クリックで変えられる）。
+ * どちらも無いキャラクターなら出さない
+ */
+function QuickBar({clip, notify, openVoice}: {clip: VoiceClip; notify: Notify; openVoice: () => void}) {
+  const ch = useStore(s => s.project!.characters.find(c => c.id === clip.characterId));
+  if (!ch) return null;
+  const presets = ch.voicePresets ?? [];
+  const expressions = ch.portrait?.psd ? (ch.portrait.expressions ?? []) : [];
+  if (!presets.length && !expressions.length) return null;
+  return (
+    <div className="vx-quickbar">
+      {presets.length > 0 ? (
+        <Selector
+          label="声"
+          size="sm"
+          value={presets.some(p => p.id === clip.presetId) ? clip.presetId! : ''}
+          options={[{value: '', label: '通常'}, ...presets.map((p, i) => ({value: p.id, label: p.name, description: i < 9 ? `入力欄で Alt+${i + 1}` : undefined}))]}
+          onChange={v => {
+            updateClip(clip.id, {presetId: v || null, paramsOverride: null});
+            void synthesize(notify, [clip.id]);
+          }}
+          width="100%"
+        />
+      ) : (
+        <Button label="感情・調声…" size="sm" variant="secondary" onClick={openVoice} tooltip="音声タブの調声を開きます" />
+      )}
+      {expressions.length > 0 && (
+        <Selector
+          label="表情"
+          size="sm"
+          value={clip.expression ?? ''}
+          options={[{value: '', label: '変えない'}, {value: BASE_EXPRESSION, label: '通常'}, ...expressions.map(e => ({value: e.name, label: e.name}))]}
+          onChange={v => updateClip(clip.id, {expression: v || null})}
+          width="100%"
+        />
+      )}
+    </div>
   );
 }
 
