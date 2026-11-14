@@ -210,6 +210,7 @@ function TrackHeader({track}: {track: Track}) {
     if (name !== track.name) updateTrack(track.id, {name: name.trim()});
   };
   const toggleOut = () => updateTrack(track.id, {hidden: !track.hidden});
+  const headerRef = useRef<HTMLDivElement>(null);
   // 「…」と見出しの右クリックで同じメニュー。オン・オフはチェックボックス、下げ幅は丸の選択（読み上げでも状態が伝わる）
   const hint = (text: string, help: string) => (
     <span title={help} aria-description={help} className="vx-menu-label">
@@ -245,6 +246,7 @@ function TrackHeader({track}: {track: Track}) {
   );
   const header = (
     <div
+      ref={headerRef}
       className="vx-track-header"
       style={{height: LAYER_H}}
       data-muted={track.hidden || undefined}
@@ -313,7 +315,17 @@ function TrackHeader({track}: {track: Track}) {
   );
   // 見出しの右クリックでも「…」と同じメニューを出す
   return (
-    <ContextMenu menuContent={menu} menuWidth={240} label={`${label}のメニュー`}>
+    <ContextMenu
+      menuContent={menu}
+      menuWidth={240}
+      label={`${label}のメニュー`}
+      onOpenChange={open => {
+        // Esc などで閉じたとき、フォーカスが行き場を失ったら、この見出しの「…」へ戻す（キーボードで続けて操作できるように）
+        if (!open)
+          setTimeout(() => {
+            if (document.activeElement === document.body || !document.activeElement) headerRef.current?.querySelector<HTMLElement>('button[aria-haspopup]')?.focus();
+          }, 0);
+      }}>
       {header}
     </ContextMenu>
   );
@@ -690,12 +702,15 @@ export function Timeline() {
 
       // ドラッグ中の案内（クリップより手前に描く）：重なるなら「空いているトラックへ」か「挿入」、置けないトラックなら「置けません」
       if (drag?.mode === 'move' && drag.moved) {
-        const tag = (ti: number, x: number, label: string, color: string) => {
+        const tag = (ti: number, x0: number, label: string, color: string) => {
           if (ti < 0) return;
-          const ty = Y(ti);
+          // アイテムの名前に重ねないよう、1 つ上の行に出す（一番上なら 1 つ下）
+          const ty = Y(ti > 0 ? ti - 1 : ti + 1);
           ctx.font = `600 11px ${FONT}`;
           ctx.textBaseline = 'middle';
           const lw = ctx.measureText(label).width + 10;
+          // 右端・左端で切れないよう、見えている範囲に収める
+          const x = Math.max(2, Math.min(w - lw - 2, x0));
           ctx.fillStyle = color;
           ctx.beginPath();
           ctx.roundRect(x, ty + LAYER_H / 2 - 9, lw, 18, 3);
@@ -728,7 +743,7 @@ export function Timeline() {
                 single && !destRaw
                   ? '置ける所がないので元の場所のまま（Ctrl で挿入）'
                   : dest && dest !== drag.trackId
-                    ? `重なるので${trackCode(p, dest)}へ（Ctrl で挿入）`
+                    ? `重なるので「${trackCode(p, dest)}」へ（Ctrl で挿入）`
                     : '重なるので空いているレイヤーへ（Ctrl で挿入）';
               tag(di >= 0 ? di : ti, ix + 6, msg, pal.text2);
             }
@@ -1169,7 +1184,7 @@ export function Timeline() {
         // 置いた結果を知らせる（黙って動かさない）
         const p2 = getState().project!;
         if (r.kind === 'blocked') getNotify()('重なるので動かせませんでした。Ctrl を押しながら落とすと、挿入して後ろを押し出します', 'info');
-        else if (r.kind === 'relocated' && r.trackId) getNotify()(`重なるので ${trackCode(p2, r.trackId)} に置きました`, 'info');
+        else if (r.kind === 'relocated' && r.trackId) getNotify()(`重なるので「${trackCode(p2, r.trackId)}」へ置きました`, 'info');
         else if (r.kind === 'inserted' && r.pushed) getNotify()(`挿入して、${r.pushed} 個を後ろへずらしました（${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}Z で元に戻せます）`, 'info');
         draw();
       } else trimClip(d.clipId, d.start, d.duration);

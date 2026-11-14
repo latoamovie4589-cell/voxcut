@@ -87,8 +87,9 @@
   outline-offset: 1px;
 }
 .vx-track-toggle[aria-pressed='true'] {
-  background: #30b0c7;
-  color: #fff;
+  /* テーマのアクセント色の地に、その上で読める文字色（白地に水色より読みやすい） */
+  background: var(--color-accent);
+  color: var(--color-on-accent);
 }
 .vx-track-toggle[data-solo][aria-pressed='true'] {
   background: #ffcc00;
