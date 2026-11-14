@@ -206,7 +206,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuDivider />
         <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
         <DropdownMenuDivider />
-        <DropdownMenuItem label="設定…" onClick={openSettings} />
+        <DropdownMenuItem label="音声合成ソフトの設定…" onClick={openSettings} />
       </DropdownMenu>
       <DropdownMenu button={menu('編集')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
         <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={key(`${mod}Z`)} onClick={undo} />
