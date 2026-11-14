@@ -368,7 +368,8 @@ function mockApi(): Api {
     let done = 0;
     const audio = new Map<string, {cacheKey: string; durationMs: number}>();
     for (const c of targets) {
-      await sleep(120);
+      // 試すときは window.__mockSynthMs で 1 行の合成時間を変えられる（本物の VOICEPEAK は 1〜3 秒）
+      await sleep((globalThis as {__mockSynthMs?: number}).__mockSynthMs ?? 120);
       const durationMs = 600 + [...c.text].length * 110;
       const cacheKey = `mock-${c.id}-${durationMs}`;
       durations.set(cacheKey, durationMs);

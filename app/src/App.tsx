@@ -30,7 +30,7 @@ import {
   undo,
   useStore,
 } from './store';
-import {boot, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {boot, cancelSynthesis, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {CharacterDialog} from './panels/CharacterDialog';
 import {closeFloating, startHost} from './sync';
 import {ExportDialog} from './panels/ExportDialog';
@@ -44,6 +44,7 @@ import {Preview} from './preview/Preview';
 import {jumpTo, jumpToEdit, shuttleBackward, shuttleForward, step, stop, toggle} from './preview/playback';
 import {Inspector} from './inspector/Inspector';
 import {CharactersPanel, EnginesPanel, useEngineProblems} from './panels/Sidebar';
+import {ENGINE_LABEL} from './model';
 import {ScriptList} from './panels/ScriptList';
 import {WorkspaceDialog} from './panels/WorkspaceDialog';
 import {Dock, type Registry} from './dock/Dock';
@@ -66,6 +67,25 @@ function SynthStatus() {
   const errors = useStore(s => s.synthErrors);
   const failed = Object.keys(errors);
   const busy = useStore(s => s.busy);
+  const run = useStore(s => s.synthRun);
+  // 合成中：何行のうち何行・残りの目安・取り消し（合成中も編集はそのまま続けられる）
+  if (run) {
+    const per = run.done ? run.workMs / run.done : 0;
+    const left = Math.max(0, run.total - run.done);
+    const eta = per ? Math.max(1, Math.round((left * per) / 1000)) : null;
+    return (
+      <HStack gap={1} vAlign="center">
+        <span className="vx-synth-run" role="status" aria-live="polite">
+          <span className="vx-synth-run-bar" style={{width: `${(run.done / Math.max(1, run.total)) * 100}%`}} aria-hidden />
+          <span className="vx-synth-run-text">
+            合成 {run.done}/{run.total}
+            {eta !== null ? `・残り約 ${eta < 60 ? `${eta} 秒` : `${Math.round(eta / 60)} 分`}` : '・残りを計算中'}
+          </span>
+        </span>
+        <Button label="取り消し" size="sm" variant="ghost" tooltip="まだ始めていない行の合成をやめます（合成済みの行はそのまま）" onClick={cancelSynthesis} />
+      </HStack>
+    );
+  }
   if (busy || (!pending && !failed.length)) return null;
   if (failed.length) {
     const first = () => {
@@ -93,6 +113,30 @@ function SynthStatus() {
     <span className="vx-pending-badge" data-hint="まだ音声を作っていないセリフの数です。「すべて合成」で作れます">
       未合成 {pending} 行
     </span>
+  );
+}
+
+/**
+ * 使っている音声合成ソフトが動いていないとき、見出しにずっと出す（押すとその場で設定を開いて直せる）。
+ * パネルのタブの小さな点だけでは気づけないため
+ */
+function EngineAlert() {
+  const problems = useEngineProblems();
+  const engines = useStore(s => s.engines);
+  if (!problems.length) return null;
+  const first = engines.find(e => e.engine === problems[0]);
+  const why = first && first.status.state === 'notRunning' ? 'が起動していません' : 'が見つかりません';
+  const label = `${ENGINE_LABEL[problems[0]]} ${why}${problems.length > 1 ? `（ほか ${problems.length - 1}）` : ''}`;
+  const detail = first && first.status.state !== 'ready' ? first.status.detail : '';
+  return (
+    <Button
+      label={label}
+      size="sm"
+      variant="ghost"
+      icon={<Icon icon={TriangleAlert} color="warning" />}
+      tooltip={`${detail ? `${detail}。` : ''}押すと音声合成ソフトの設定を開きます`}
+      onClick={() => setState({settingsOpen: true})}
+    />
   );
 }
 
@@ -300,6 +344,7 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
               </div>
             </HStack>
           )}
+          <EngineAlert />
           <SynthStatus />
           {narrow ? (
             <IconButton label="すべて合成" tooltip="未合成のセリフをすべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />

@@ -1,8 +1,8 @@
 // UI から呼ぶ非同期の操作（IPC ＋ 状態更新）。
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
-import type {EngineId, Portrait, Project} from './model';
-import {ENGINE_LABEL, isSpeakerMissing} from './model';
+import type {EngineId, Portrait, Project, VoiceClip} from './model';
+import {ENGINE_LABEL, effectiveVoice, isSpeakerMissing, reflowAll, synthKey} from './model';
 import {addCharacterFrom, addMediaClips, getState, replaceProject, setState} from './store';
 import {forget, stop} from './preview/playback';
 
@@ -184,60 +184,208 @@ export async function loadVoices(engine: EngineId) {
   setState(s => ({voices: {...s.voices, [engine]: v}}));
 }
 
-export async function synthesize(notify: Notify, clipIds?: string[]) {
+// ───────────── 音声合成（順番待ちの列） ─────────────
+//
+// 打っている間も止めずに、届いた行から順に合成して 1 行ずつ反映する（YMM4 と同じく、打つ → 合成 → 次の行が止まらない）。
+// - 合成中に別の行を足しても、列の後ろに並ぶだけ（前のように「合成中なので何もしない」ことはない）
+// - 合成中にその行を書き直したら、結果は捨てずに比べ、変わった行だけもう一度並べる（ほかの行の結果は生かす）
+// - 取り消しは、まだ始めていない行を列から外す（始めた数行は終わりしだい反映）
+
+/** 一度に送る行の数（1 行ずつより速く、反映も細かく見える数） */
+const BATCH = 3;
+/** 待っている行（順番どおり） */
+let queue: string[] = [];
+/** 合成し終わったら呼ぶ（synthesize(…) が返す Promise） */
+let waiters: {ids: Set<string>; resolve: () => void}[] = [];
+let pumping = false;
+
+/** 行の合成結果を左右するもの（文・声・アクセント）。送ったときと今で違えば、その結果は使わない */
+function synthSignature(p: Project, id: string): string | null {
+  const c = p.clips.find(x => x.id === id);
+  if (!c || c.type !== 'voice' || !c.text.trim()) return null;
+  const ch = p.characters.find(x => x.id === c.characterId);
+  if (!ch) return null;
+  return `${synthKey(effectiveVoice(ch, c))}\u0001${c.text}\u0001${JSON.stringify(c.accent ?? null)}`;
+}
+
+function settle(ids: string[]) {
+  const set = new Set(ids);
+  waiters = waiters.filter(w => {
+    for (const id of set) w.ids.delete(id);
+    if (w.ids.size) return true;
+    w.resolve();
+    return false;
+  });
+}
+
+function setStatus(ids: string[], st: 'queued' | 'running' | null) {
+  setState(s => {
+    const next = {...s.synthStatus};
+    for (const id of ids) {
+      if (st) next[id] = st;
+      else delete next[id];
+    }
+    return {synthStatus: next};
+  });
+}
+
+/**
+ * 行を合成の列に並べる。clipIds を省くと、すべてのセリフ（合成済みはキャッシュから一瞬で戻る）。
+ * 返す Promise は、並べた行がすべて終わった（反映・失敗・取り消し）ときに解決する
+ */
+export async function synthesize(notify: Notify, clipIds?: string[]): Promise<void> {
   const s = getState();
-  if (!s.project || s.busy) return;
-  const a = await api;
+  if (!s.project) return;
   clearNotice('synth');
+  const all = s.project.clips.filter(c => c.type === 'voice' && c.text.trim()).map(c => c.id);
+  let ids = (clipIds ?? all).filter(id => all.includes(id));
   // このPCのソフトに入っていない話者の行は送らず、分かる言葉で知らせる
   const missing = new Map<string, string>();
-  for (const c of s.project.clips) {
-    if (c.type !== 'voice' || (clipIds && !clipIds.includes(c.id))) continue;
+  for (const id of ids) {
+    const c = s.project.clips.find(x => x.id === id);
+    if (c?.type !== 'voice') continue;
     const ch = s.project.characters.find(x => x.id === c.characterId);
     if (ch && isSpeakerMissing(ch.voice, s.voices)) {
       missing.set(c.id, `話者「${ch.voice.speaker}」は ${ENGINE_LABEL[ch.voice.engine]} に入っていません。右のパネルで「${ch.name}」の話者を選び直してください`);
     }
   }
   if (missing.size) {
-    const ids = (clipIds ?? s.project.clips.filter(c => c.type === 'voice').map(c => c.id)).filter(id => !missing.has(id));
     setState(st => ({synthErrors: {...st.synthErrors, ...Object.fromEntries(missing)}}));
     notify(`${missing.size} 件のセリフを合成できませんでした：${[...missing.values()][0]}`, 'error', 'synth');
-    if (!ids.length) return;
-    clipIds = ids;
+    ids = ids.filter(id => !missing.has(id));
   }
-  setState({busy: {label: '音声を合成しています', ratio: 0}});
-  const off = await a.onSynthProgress(p => setState({busy: {label: '音声を合成しています', ratio: p.done / Math.max(1, p.total)}}));
+  // すでに並んでいる・合成中の行は二重に並べない
+  const fresh = ids.filter(id => !queue.includes(id) && getState().synthStatus[id] !== 'running');
+  if (!ids.length) return;
+  const done = new Promise<void>(resolve => waiters.push({ids: new Set(ids), resolve}));
+  if (fresh.length) {
+    queue.push(...fresh);
+    setStatus(fresh, 'queued');
+    setState(st => ({
+      synthRun: st.synthRun ? {...st.synthRun, total: st.synthRun.total + fresh.length} : {done: 0, total: fresh.length, startedAt: performance.now(), workMs: 0},
+    }));
+  }
+  void pump(notify);
+  return done;
+}
+
+/** まだ始めていない行を列から外す（始めた数行は、終わりしだい反映する） */
+export function cancelSynthesis() {
+  const dropped = queue;
+  queue = [];
+  setStatus(dropped, null);
+  setState(st => (st.synthRun ? {synthRun: {...st.synthRun, total: Math.max(st.synthRun.done, st.synthRun.total - dropped.length)}} : {}));
+  settle(dropped);
+}
+
+/** 合成の列が空になるまで待つ（書き出しの前など） */
+export function whenSynthIdle(): Promise<void> {
+  if (!pumping && !queue.length) return Promise.resolve();
+  return new Promise(resolve => {
+    const t = window.setInterval(() => {
+      if (!pumping && !queue.length) {
+        window.clearInterval(t);
+        resolve();
+      }
+    }, 100);
+  });
+}
+
+async function pump(notify: Notify) {
+  if (pumping) return;
+  pumping = true;
+  const a = await api;
+  let failedCount = 0;
+  let firstError = '';
   try {
-    // 合成中に編集されても上書きしないよう、送った時点の版と比べる
-    const sent = s.project;
-    const old = new Set(sent.clips.flatMap(c => (c.type === 'voice' && c.audio ? [c.audio.cacheKey] : [])));
-    const {project, failed} = await a.synthesize(sent, clipIds);
-    project.clips.forEach(c => c.type === 'voice' && c.audio && old.delete(c.audio.cacheKey));
-    old.forEach(forget);
-    if (getState().project === sent) replaceProject(project);
-    else notify('合成中に編集されたため、もう一度合成してください');
-    // 失敗した行を覚えておき、タイムライン・台本・右パネルに出す（成功した行は消す）
-    setState(st => {
-      const errors = {...st.synthErrors};
-      for (const c of project.clips) if (c.type === 'voice' && c.audio) delete errors[c.id];
-      for (const [id, msg] of failed) errors[id] = friendlyError(msg);
-      return {synthErrors: errors};
-    });
-    if (failed.length) notify(`${failed.length} 行のセリフを合成できませんでした：${friendlyError(failed[0][1])}`, 'error', 'synth');
-  } catch (e) {
-    notify(friendlyError(e), 'error');
+    while (queue.length) {
+      const batch = queue.splice(0, BATCH);
+      const sent = getState().project;
+      if (!sent) break;
+      const sigs = new Map(batch.map(id => [id, synthSignature(sent, id)]));
+      const live = batch.filter(id => sigs.get(id));
+      setStatus(live, 'running');
+      settle(batch.filter(id => !sigs.get(id)));
+      if (!live.length) continue;
+      const t0 = performance.now();
+      let result: {project: Project; failed: [string, string][]} | null = null;
+      let batchError: string | null = null;
+      try {
+        result = await a.synthesize(sent, live);
+      } catch (e) {
+        batchError = friendlyError(e);
+      }
+      const workMs = performance.now() - t0;
+      // 結果を今のプロジェクトへ 1 行ずつ入れる。合成中に書き直された行は使わず、もう一度並べる
+      const cur = getState().project;
+      const again: string[] = [];
+      const errors: Record<string, string> = {};
+      const ok = new Map<string, NonNullable<VoiceClip['audio']>>();
+      if (cur) {
+        for (const id of live) {
+          const now = synthSignature(cur, id);
+          if (!now) continue;
+          if (now !== sigs.get(id)) {
+            again.push(id);
+            continue;
+          }
+          if (batchError) {
+            errors[id] = batchError;
+            continue;
+          }
+          const f = result!.failed.find(([fid]) => fid === id);
+          if (f) {
+            errors[id] = friendlyError(f[1]);
+            continue;
+          }
+          const got = result!.project.clips.find(c => c.id === id);
+          if (got?.type === 'voice' && got.audio) ok.set(id, got.audio);
+        }
+        if (ok.size) {
+          const prev = new Set(cur.clips.flatMap(c => (c.type === 'voice' && ok.has(c.id) && c.audio ? [c.audio.cacheKey] : [])));
+          const next = reflowAll({...cur, clips: cur.clips.map(c => (c.type === 'voice' && ok.has(c.id) ? {...c, audio: ok.get(c.id)!} : c))});
+          replaceProject(next);
+          for (const au of ok.values()) prev.delete(au.cacheKey);
+          prev.forEach(forget);
+        }
+      }
+      failedCount += Object.keys(errors).length;
+      if (!firstError) firstError = Object.values(errors)[0] ?? '';
+      setState(st => {
+        const e = {...st.synthErrors};
+        for (const id of ok.keys()) delete e[id];
+        Object.assign(e, errors);
+        const run = st.synthRun;
+        return {synthErrors: e, synthRun: run ? {...run, done: run.done + live.length - again.length, workMs: run.workMs + workMs} : run};
+      });
+      setStatus(live, null);
+      if (again.length) {
+        queue.unshift(...again.filter(id => !queue.includes(id)));
+        setStatus(again, 'queued');
+      }
+      settle(live.filter(id => !again.includes(id)));
+    }
   } finally {
-    off();
-    // 長さが変わって選んでいた行が画面の外へ出ないよう、選択を見せ直す（スクロールだけ）。
-    // 再生位置は動かさない（追記モードでは、次のセリフが入る末尾にいるので。動かすと行が逆順に入ってしまう）
-    setState(st => ({busy: null, revealSeq: st.revealSeq + 1}));
+    pumping = false;
+    // 長さが変わって選んでいた行が画面の外へ出ないよう、選択を見せ直す（スクロールだけ。再生位置は動かさない）
+    setState(st => ({synthRun: null, revealSeq: st.revealSeq + 1}));
+    if (failedCount) notify(`${failedCount} 行のセリフを合成できませんでした：${firstError}`, 'error', 'synth');
+    // 取り消しや反映の途中で残った待ちがあれば、もう一度回す
+    if (queue.length) void pump(notify);
   }
 }
 
 /** 書き出す。進捗はヘッダーにも出す。取り消されたら 'cancelled' を投げる */
 export async function runExport(out: string, options: ExportRequest, onProgress: (p: ExportProgress) => void): Promise<void> {
+  if (!getState().project || getState().busy) return;
+  // 合成の列が残っていれば、終わるのを待ってから（書き出しの合成と重ならないように）
+  if (getState().synthRun) {
+    setState({busy: {label: '合成の終わりを待っています', ratio: null}});
+    await whenSynthIdle();
+    setState({busy: null});
+  }
   const s = getState();
-  if (!s.project || s.busy) return;
+  if (!s.project) return;
   stop();
   const a = await api;
   const label = (p: ExportProgress) => (p.stage === 'synth' ? '音声を合成しています' : p.stage === 'portrait' ? '立ち絵を準備しています' : '書き出しています');

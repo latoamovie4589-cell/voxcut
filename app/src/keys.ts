@@ -10,12 +10,22 @@ export function modalOpen(): boolean {
  * :focus-visible はキーを押した瞬間に付いてしまうので、Space を押す前の状態を自分で覚えておく
  */
 let lastNav: 'keyboard' | 'pointer' = 'pointer';
+// 移動のキーを押した時刻。そのすぐあとにフォーカスが動いたときだけ「キーボードで移った」とみなす
+// （←→ や Home はコマ送り・先頭へにも使うので、押しただけでは変えない）
+let navKeyAt = 0;
 if (typeof window !== 'undefined') {
   window.addEventListener('pointerdown', () => (lastNav = 'pointer'), true);
   window.addEventListener(
     'keydown',
     e => {
-      if (e.key === 'Tab' || e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' || e.key === 'F6') lastNav = 'keyboard';
+      if (e.key === 'Tab' || e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' || e.key === 'F6') navKeyAt = performance.now();
+    },
+    true,
+  );
+  window.addEventListener(
+    'focusin',
+    () => {
+      if (performance.now() - navKeyAt < 300) lastNav = 'keyboard';
     },
     true,
   );
@@ -34,14 +44,24 @@ export function onControl(t: EventTarget | null): boolean {
   return lastNav === 'keyboard';
 }
 
-/** 今出ている小さな説明（ツールチップ）があるか */
+/**
+ * 今出ている小さな説明（ツールチップ、タブなどに Tab で入ったときの「←→ で移動」の案内）があるか。
+ * どちらも Esc を 1 回使う層。メニュー・一覧・ダイアログのように操作するものは含めない
+ */
 function tooltipShown(): boolean {
-  return [...document.querySelectorAll<HTMLElement>('.astryx-tooltip')].some(el => {
-    const root = el.closest<HTMLElement>('[popover]');
-    if (root && !root.matches(':popover-open')) return false;
+  const visible = (el: Element) => {
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).opacity !== '0';
-  });
+    const cs = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.opacity !== '0';
+  };
+  if ([...document.querySelectorAll('.astryx-tooltip')].some(el => !el.closest('[popover]:not(:popover-open)') && visible(el))) return true;
+  return [...document.querySelectorAll('[popover]')].some(
+    el =>
+      el.matches(':popover-open') &&
+      !el.querySelector('[role="menu"], [role="listbox"], [role="dialog"], button, input, textarea, select, a[href], [tabindex]') &&
+      !['menu', 'listbox', 'dialog'].includes(el.getAttribute('role') ?? '') &&
+      visible(el),
+  );
 }
 
 /**

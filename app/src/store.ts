@@ -97,6 +97,10 @@ export interface State {
   proxies: Record<string, {ratio: number; url: string | null; error?: string}>;
   /** 合成に失敗したセリフ（clipId → 理由）。次に成功したら消える */
   synthErrors: Record<string, string>;
+  /** 合成の列の中の行：待ち・合成中（タイムライン・台本・プロパティに出す） */
+  synthStatus: Record<string, 'queued' | 'running'>;
+  /** 今回の合成のまとまり：何行のうち何行終わったか・かかった時間（見出しに n/m と残り時間） */
+  synthRun: null | {done: number; total: number; startedAt: number; workMs: number};
   /** 右パネルのキャラクター設定で開いているタブ */
   inspectorTab: 'voice' | 'subtitle' | 'portrait';
   /** 左パネルの表示 */
@@ -158,6 +162,8 @@ let state: State = {
   media: {},
   proxies: {},
   synthErrors: {},
+  synthStatus: {},
+  synthRun: null,
   inspectorTab: 'voice',
   revealSeq: 0,
   inputMode: loadInputMode(),

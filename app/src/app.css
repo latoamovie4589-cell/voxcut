@@ -605,3 +605,52 @@ textarea {
     animation: none;
   }
 }
+
+/* Alt+数字で声を切り替えたときに、打つ欄の上に少しだけ出す名前 */
+.vx-preset-flash {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 4px);
+  z-index: 5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+  animation: vx-pop-in 120ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx-preset-flash {
+    animation: none;
+  }
+}
+
+/* 見出しの合成の進み具合（n/m・残り時間）。地の帯が進む */
+.vx-synth-run {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  background: var(--color-background-muted);
+}
+.vx-synth-run-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  transition: width 240ms ease-out;
+}
+.vx-synth-run-text {
+  position: relative;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx-synth-run-bar {
+    transition: none;
+  }
+}
