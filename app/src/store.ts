@@ -114,6 +114,8 @@ export interface State {
   settingsOpen: boolean;
   /** プロジェクトの設定（解像度・fps・背景色） */
   projectSettingsOpen: boolean;
+  /** タイムラインのレイヤーの高さ（この PC に覚える） */
+  layerSize: 'small' | 'medium' | 'large';
   /** 最近使ったプロジェクト */
   recent: string[];
   /** 台本の貼り付け画面・辞書の画面を開いているか */
@@ -172,6 +174,7 @@ let state: State = {
   inputPresets: {},
   settingsOpen: false,
   projectSettingsOpen: false,
+  layerSize: readLayerSize(),
   recent: [],
   pasteOpen: false,
   workspaceDialogOpen: false,
@@ -299,6 +302,25 @@ export function revertMerge(mergeKey: string): boolean {
   lastMerge = null;
   setState(s => (s.past.length ? {project: s.past[s.past.length - 1], past: s.past.slice(0, -1), dirty: dirtyBefore} : {}));
   return true;
+}
+
+function readLayerSize(): 'small' | 'medium' | 'large' {
+  try {
+    const v = localStorage.getItem('voxcut.layerSize');
+    return v === 'medium' || v === 'large' ? v : 'small';
+  } catch {
+    return 'small';
+  }
+}
+
+/** タイムラインのレイヤーの高さを変える（この PC に覚える） */
+export function setLayerSize(layerSize: 'small' | 'medium' | 'large') {
+  try {
+    localStorage.setItem('voxcut.layerSize', layerSize);
+  } catch {
+    // 覚えられなくても、今は変える
+  }
+  setState({layerSize});
 }
 
 /**
