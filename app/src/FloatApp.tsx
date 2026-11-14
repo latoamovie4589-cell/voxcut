@@ -2,6 +2,7 @@
 // 中身はメインウィンドウと同じパネル。状態はメインウィンドウと共有し（sync.ts）、再生と元に戻すはメインウィンドウで行う。
 // 2 台目のモニターにプレビューだけを大きく出す、といった使い方ができる。
 
+import {modalOpen, onControl} from './keys';
 import {useEffect} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -33,6 +34,7 @@ export function FloatApp({panel, onDock}: {panel: PanelId; onDock: () => void}) 
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;
+      if (modalOpen() || (e.key === ' ' && onControl(t))) return;
       const m = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       if (m && k === 'z' && !e.shiftKey) undo();

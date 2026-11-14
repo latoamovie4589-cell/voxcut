@@ -20,8 +20,8 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <InternationalizationProvider locale="ja-JP" messages={{'ja-JP': ja}}>
       <Theme theme={voxcutTheme}>
-        {/* 通知は右下（プロパティの下の空いたところ）。タブやレイヤーの見出し・入力欄を隠さないように */}
-        <ToastViewport position="bottomEnd" inset={{bottom: 16, end: 16}} maxVisible={3} isTopLayer={false}>
+        {/* 通知は右下。セリフ入力欄（下から 50px ほど）の上に出し、タブ・レイヤーの見出し・「追加」ボタンを隠さないように */}
+        <ToastViewport position="bottomEnd" inset={{bottom: 64, end: 16}} maxVisible={3} isTopLayer={false}>
           {floatPanel && guest ? <FloatApp panel={floatPanel} onDock={guest.dock} /> : <App />}
         </ToastViewport>
       </Theme>

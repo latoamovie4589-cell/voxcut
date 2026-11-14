@@ -3,6 +3,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {setHintsShown, useHintsShown} from './hints';
+import {modalOpen, onControl} from './keys';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
 import {HStack, Layout, LayoutContent, LayoutHeader} from '@astryxdesign/core/Layout';
@@ -426,6 +427,11 @@ export function App() {
       // （タイムライン・プレビューは自分で使うキーだけ止めるので、ここでは除かない）
       const inPanel = !!t.closest('[role="separator"], [role="tablist"], [role="listbox"], [role="menu"], [role="slider"]');
       const m = e.metaKey || e.ctrlKey;
+      // ダイアログを開いている間は、後ろの編集画面のショートカットを効かせない（Delete で後ろのセリフが消える、Space で再生が始まる等を防ぐ）。
+      // 保存（Ctrl+S）だけは通す
+      if (modalOpen() && !(m && e.key.toLowerCase() === 's')) return;
+      // ボタン・メニュー項目・タブ・スイッチなどにフォーカスがあるときの Space は、その部品の操作（押す・チェック）に使う
+      if (e.key === ' ' && onControl(t)) return;
       if (m && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void saveProject(notify, e.shiftKey);

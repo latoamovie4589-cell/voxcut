@@ -588,3 +588,20 @@ textarea {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* メニュー・選ぶ欄の一覧は、開くときに短くふわっと出す */
+[data-astryx-layer-root]:popover-open > .astryx-popover {
+  animation: vx-pop-in 120ms ease-out;
+  transform-origin: top;
+}
+@keyframes vx-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-astryx-layer-root]:popover-open > .astryx-popover {
+    animation: none;
+  }
+}
