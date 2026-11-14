@@ -17,7 +17,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Trash2, Unlink, UserPen, FileImage, X} from 'lucide-react';
+import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, X} from 'lucide-react';
 import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import type {AudioFilter, LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
@@ -197,7 +197,7 @@ function TabSummary({text}: {text: string}) {
 /** セリフタブ：キャラクター・文・合成・削除・分離 */
 function LineBasics({clip, notify}: {clip: VoiceClip; notify: Notify}) {
   const project = useStore(s => s.project)!;
-  const busy = useStore(s => s.busy);
+  const status = useStore(s => s.synthStatus[clip.id]);
   const error = useStore(s => s.synthErrors[clip.id]);
   const fps = project.video.fps;
   return (
@@ -218,16 +218,18 @@ function LineBasics({clip, notify}: {clip: VoiceClip; notify: Notify}) {
           <Text type="supporting" hasTabularNumbers>
             {framesToTimecode(clip.start, fps)} から 長さ {framesToTimecode(clip.duration, fps)}
           </Text>
-          <Text type="supporting">{error ? '合成できませんでした' : clip.audio ? '合成済み' : '未合成'}</Text>
+          <Text type="supporting">{status === 'running' ? '合成中…' : status === 'queued' ? '合成待ち' : error ? '合成できませんでした' : clip.audio ? '合成済み' : '未合成'}</Text>
         </HStack>
         {error && <Banner status="error" title="この行を合成できませんでした" description={error} />}
         <HStack gap={2} wrap="wrap">
           <Button
             label={error ? 'もう一度合成' : clip.audio ? 'この行を合成し直す' : 'この行を合成'}
             icon={<Icon icon={AudioLines} />}
-            isLoading={!!busy}
+            isLoading={!!status}
             onClick={() => void synthesize(notify, [clip.id])}
           />
+          {/* 失敗の多くはソフトが起動していない・場所が違うため。その場で直しに行けるように */}
+          {error && <Button label="音声合成ソフトの設定" variant="secondary" icon={<Icon icon={Settings} />} onClick={() => setState({settingsOpen: true})} />}
           <Button label="削除" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => deleteClip(clip.id)} />
         </HStack>
         {canSeparate(project, clip) ? (
