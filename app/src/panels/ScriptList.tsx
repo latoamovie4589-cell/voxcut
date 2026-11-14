@@ -2,18 +2,19 @@
 // 選ぶとタイムラインとプレビューがその行へ動く。ダブルクリック（または Enter / F2）でその場で書き直せ、
 // 左のつまみをドラッグ（または Alt+↑↓）で並べ替えられる。
 
-import {useRef, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Badge} from '@astryxdesign/core/Badge';
 import {Text} from '@astryxdesign/core/Text';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Button} from '@astryxdesign/core/Button';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
-import {ClipboardPaste, Copy, GripVertical} from 'lucide-react';
-import {getNotify} from '../actions';
+import {ClipboardPaste, Copy, GripVertical, Replace, Search} from 'lucide-react';
+import {TextInput} from '@astryxdesign/core/TextInput';
+import {getNotify, synthesize} from '../actions';
 import type {VoiceClip} from '../model';
 import {framesToTimecode} from '../model';
-import {reorderLine, setState, updateClip, useStore} from '../store';
+import {reorderLine, replaceInLines, setState, updateClip, useStore} from '../store';
 
 export function ScriptList() {
   const project = useStore(s => s.project);
@@ -23,9 +24,30 @@ export function ScriptList() {
   const [draft, setDraft] = useState('');
   const [drag, setDrag] = useState<{id: string; to: number} | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
+  // 探す・置き換える（Ctrl+F でここへ）
+  const [query, setQuery] = useState('');
+  const [replacing, setReplacing] = useState(false);
+  const [to, setTo] = useState('');
+  // Ctrl+H（App から）：置き換えの欄を開く
+  useEffect(() => {
+    const on = () => setReplacing(true);
+    window.addEventListener('vx-open-replace', on);
+    return () => window.removeEventListener('vx-open-replace', on);
+  }, []);
   if (!project) return null;
   // どのトラックのセリフも、時間順に並べる
-  const lines = project.clips.filter((c): c is VoiceClip => c.type === 'voice').sort((a, b) => a.start - b.start);
+  const all = project.clips.filter((c): c is VoiceClip => c.type === 'voice').sort((a, b) => a.start - b.start);
+  const nameOf = (c: VoiceClip) => project.characters.find(x => x.id === c.characterId)?.name ?? '';
+  const q = query.trim();
+  const hits = q ? all.filter(c => c.text.includes(q) || (c.subtitle ?? '').includes(q) || nameOf(c).includes(q)) : all;
+  const lines = all;
+  const shown = hits;
+  const replaceAll = () => {
+    const ids = replaceInLines(q, to, {onlyIds: hits.map(c => c.id)});
+    if (!ids.length) return getNotify()(`「${q}」は見つかりませんでした`);
+    getNotify()(`${ids.length} 行の「${q}」を「${to}」に置き換えました（音声を作り直します）`, 'info', undefined, {label: '元に戻す', onClick: () => void import('../store').then(m => m.undo())});
+    void synthesize(getNotify(), ids);
+  };
   const copyAll = () => {
     const text = lines.map(c => `${project.characters.find(x => x.id === c.characterId)?.name ?? ''}：${c.text}`).join('\n');
     void navigator.clipboard?.writeText(text).then(() => getNotify()(`${lines.length} 行を「名前：セリフ」の形で写しました`));
@@ -76,13 +98,41 @@ export function ScriptList() {
   };
 
   const header = (
-    <HStack gap={1} hAlign="between" vAlign="center" paddingInlineStart={1}>
-      <Text type="supporting">{lines.length} 行</Text>
-      <HStack gap={0}>
-        <Button label="貼り付け…" size="sm" variant="ghost" icon={<Icon icon={ClipboardPaste} />} tooltip="「名前：セリフ」の台本をまとめて追加" onClick={() => setState({pasteOpen: true})} />
-        {lines.length > 0 && <IconButton label="台本を写す" tooltip="台本を文として写す（Word やメモ帳に貼れます）" size="sm" variant="ghost" icon={<Icon icon={Copy} />} onClick={copyAll} />}
+    <VStack gap={1}>
+      <HStack gap={1} hAlign="between" vAlign="center" paddingInlineStart={1}>
+        <Text type="supporting" hasTabularNumbers>
+          {q ? `${hits.length} / ${lines.length} 行` : `${lines.length} 行`}
+        </Text>
+        <HStack gap={0}>
+          <Button label="貼り付け…" size="sm" variant="ghost" icon={<Icon icon={ClipboardPaste} />} tooltip="「名前：セリフ」の台本をまとめて追加" onClick={() => setState({pasteOpen: true})} />
+          {lines.length > 0 && <IconButton label="台本を写す" tooltip="台本を文として写す（Word やメモ帳に貼れます）" size="sm" variant="ghost" icon={<Icon icon={Copy} />} onClick={copyAll} />}
+          {lines.length > 0 && (
+            <IconButton
+              label="置き換え"
+              tooltip="文を探して置き換える（Ctrl+H）"
+              size="sm"
+              variant="ghost"
+              icon={<Icon icon={Replace} />}
+              aria-pressed={replacing}
+              onClick={() => setReplacing(r => !r)}
+            />
+          )}
+        </HStack>
       </HStack>
-    </HStack>
+      {lines.length > 0 && (
+        <div data-script-search>
+          <TextInput label="台本を探す" isLabelHidden size="sm" startIcon={Search} placeholder="台本を探す（Ctrl+F）" value={query} onChange={setQuery} width="100%" />
+        </div>
+      )}
+      {replacing && lines.length > 0 && (
+        <HStack gap={1} vAlign="center">
+          <div style={{flex: 1, minWidth: 0}}>
+            <TextInput label="置き換える文" isLabelHidden size="sm" placeholder="置き換える文" value={to} onChange={setTo} onEnter={replaceAll} width="100%" />
+          </div>
+          <Button label={`${q ? hits.length : 0} 行を置き換え`} size="sm" isDisabled={!q || !hits.length} onClick={replaceAll} />
+        </HStack>
+      )}
+    </VStack>
   );
   if (!lines.length) {
     return (
@@ -99,7 +149,13 @@ export function ScriptList() {
     <VStack gap={2} padding={2}>
       {header}
       <ol ref={listRef} className="vx-script" aria-label="台本（ダブルクリックで書き直し、Alt+↑↓ で並べ替え）">
-        {lines.map((c, i) => {
+        {q && !shown.length && (
+          <li className="vx-script-empty">
+            <Text type="supporting">「{q}」を含む行はありません</Text>
+          </li>
+        )}
+        {shown.map(c => {
+          const i = lines.indexOf(c);
           const ch = project.characters.find(x => x.id === c.characterId);
           const err = errors[c.id];
           const isSel = c.id === selected;
