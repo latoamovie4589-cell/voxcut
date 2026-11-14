@@ -435,6 +435,47 @@ export function setPresetForSelection(characterId: string, presetId: string | nu
   return ids.size;
 }
 
+/** 選んでいるセリフの表情をまとめて変える（null で立ち絵アイテムのまま） */
+export function setExpressionForSelection(expression: string | null) {
+  const ids = new Set(
+    editableSelection()
+      .filter(c => c.type === 'voice')
+      .map(c => c.id),
+  );
+  if (!ids.size) return 0;
+  commit(p => ({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, expression} : c))}));
+  return ids.size;
+}
+
+/** 選んでいるセリフの「後ろの間」（余韻）をまとめて変える。長さはそのぶん伸び縮みし、後ろのセリフも付いていく */
+export function setGapForSelection(gapAfter: number) {
+  const ids = new Set(
+    editableSelection()
+      .filter(c => c.type === 'voice')
+      .map(c => c.id),
+  );
+  if (!ids.size) return 0;
+  commit(p => reflowAll({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, gapAfter: Math.max(0, Math.round(gapAfter))} : c))}));
+  return ids.size;
+}
+
+/** 台本の文を探して置き換える。置き換えた行は音声を作り直す（その行の id を返す） */
+export function replaceInLines(find: string, to: string, opts: {onlyIds?: string[]} = {}): string[] {
+  if (!find) return [];
+  const changed: string[] = [];
+  commit(p =>
+    invalidateChangedVoices(p, {
+      ...p,
+      clips: p.clips.map(c => {
+        if (c.type !== 'voice' || (opts.onlyIds && !opts.onlyIds.includes(c.id)) || !c.text.includes(find)) return c;
+        changed.push(c.id);
+        return {...c, text: c.text.split(find).join(to), subtitle: c.subtitle ? c.subtitle.split(find).join(to) : c.subtitle};
+      }),
+    }),
+  );
+  return changed;
+}
+
 export function presetParams(params: VoiceParams): VoiceParams {
   return {...params, emotions: {...params.emotions}, extra: {...(params.extra ?? {})}};
 }

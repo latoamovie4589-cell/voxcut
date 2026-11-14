@@ -496,6 +496,16 @@ export function App() {
       } else if (m && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         void newProjectAction(notify);
+      } else if (m && !e.shiftKey && (e.key.toLowerCase() === 'f' || e.key.toLowerCase() === 'h')) {
+        // 台本を探す（Ctrl+F）・置き換える（Ctrl+H）：台本パネルを出して、探す欄へ
+        e.preventDefault();
+        showPanel('script');
+        const replace = e.key.toLowerCase() === 'h';
+        // パネルが出てから（今は隠れていて、まだ作られていないこともある）
+        setTimeout(() => {
+          if (replace) window.dispatchEvent(new Event('vx-open-replace'));
+          document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus();
+        }, 80);
       } else if (e.key === 'Escape' && getState().previewFull) {
         e.preventDefault();
         void toggleFullscreen();

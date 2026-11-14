@@ -660,3 +660,13 @@ textarea {
     transition: none;
   }
 }
+
+/* 台本の行：画面の外の行は描かない（数百行でも軽く。高さはおおよその値で取っておく） */
+.vx-script-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
+}
+.vx-script-empty {
+  list-style: none;
+  padding: 8px;
+}
