@@ -389,6 +389,7 @@ export function Timeline() {
   const zoom = useStore(s => s.zoom);
   const proxies = useStore(s => s.proxies);
   const synthErrors = useStore(s => s.synthErrors);
+  const synthStatus = useStore(s => s.synthStatus);
   const revealSeq = useStore(s => s.revealSeq);
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -567,6 +568,25 @@ export function Timeline() {
         if (unsynth) ctx.setLineDash([4, 3]); // 未合成は破線（文字でも示す）
         ctx.stroke();
         ctx.setLineDash([]);
+        // 合成中の行には、斜めのしまを右へ流して「いま作っている」ことを見せる
+        if (s.synthStatus[c.id] === 'running') {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(x, y, cw, ch, 3);
+          ctx.clip();
+          ctx.globalAlpha *= 0.18;
+          ctx.fillStyle = pal.accent;
+          const off = (performance.now() / 40) % 16;
+          for (let sx = x - ch - 16 + off; sx < x + cw; sx += 16) {
+            ctx.beginPath();
+            ctx.moveTo(sx, y + ch);
+            ctx.lineTo(sx + ch, y);
+            ctx.lineTo(sx + ch + 7, y);
+            ctx.lineTo(sx + 7, y + ch);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
         // 重なりは色だけでなく形でも示す：上の辺に黄色と黒の斜めのしま（キャラクターの色と見分けられるように）
         if (overlapped) {
           ctx.save();
@@ -617,7 +637,10 @@ export function Timeline() {
         const badges: {text: string; color: string; ink?: string}[] = [];
         if (failed) badges.push({text: '⚠ 失敗', color: pal.error});
         if (overlapped) badges.push({text: '⚠ 重なり', color: pal.warn, ink: pal.text});
-        if (unsynth && !failed) badges.push({text: '未合成', color: pal.text2});
+        const st = s.synthStatus[c.id];
+        if (st === 'running') badges.push({text: '合成中', color: pal.accent});
+        else if (st === 'queued') badges.push({text: '合成待ち', color: pal.text2});
+        else if (unsynth && !failed) badges.push({text: '未合成', color: pal.text2});
         if (c.type === 'media' && c.mediaKind === 'video') {
           const px = s.proxies[c.src];
           if (px && !px.url && !px.error)
@@ -851,7 +874,19 @@ export function Timeline() {
   };
   const linkedSel = useStore(s => s.linkedSelection);
   const canPaste = useStore(s => s.clipboardCount > 0);
-  useEffect(draw, [draw, project, selected, selectedIds, playhead, zoom, proxies, synthErrors]);
+  useEffect(draw, [draw, project, selected, selectedIds, playhead, zoom, proxies, synthErrors, synthStatus]);
+  // 合成中の行があるあいだは、斜めのしまを流すために描き続ける（動きを減らす設定なら止まった絵のまま）
+  const anyRunning = Object.values(synthStatus).includes('running');
+  useEffect(() => {
+    if (!anyRunning || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let raf = 0;
+    const tick = () => {
+      draw();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [anyRunning, draw]);
   useEffect(() => onPeaks(draw), [draw]);
 
   // 再生中は再生位置が見えるようにスクロールを追従
