@@ -150,7 +150,7 @@ function ClipInspector({clip, notify}: {clip: VoiceClip; notify: Notify}) {
     <>
       {/* YMM4 のセリフアイテムと同じく、音声・字幕・立ち絵の設定をセリフに持たせる。設定ごとにタブで分ける */}
       <div className="vx-linetabs">
-        <TabList value={tab} onChange={v => setTab(v as LineTab)} layout="fill" size="sm" hasDivider>
+        <TabList role="tablist" aria-label="セリフの設定" value={tab} onChange={v => setTab(v as LineTab)} layout="fill" size="sm" hasDivider>
           <Tab value="line" label="セリフ" panelId="vx-line-panel" />
           <Tab value="voice" label="音声" panelId="vx-line-panel" />
           <Tab value="subtitle" label="字幕" panelId="vx-line-panel" />
@@ -282,7 +282,7 @@ function voiceSummary(project: Project, clip: VoiceClip): string {
   const preset = ch?.voicePresets?.find(p => p.id === clip.presetId);
   const a = clip.audioFx;
   return [
-    preset ? `プリセット「${preset.name}」` : 'キャラクターの声',
+    preset ? `使う声：プリセット「${preset.name}」` : '使う声：キャラクターの声',
     clip.paramsOverride && '個別に調整',
     a?.pan && (a.pan < 0 ? '左寄り' : '右寄り'),
     (a?.fadeIn || a?.fadeOut) && 'フェード',
@@ -296,16 +296,16 @@ function voiceSummary(project: Project, clip: VoiceClip): string {
 
 function portraitSummary(project: Project, clip: VoiceClip): string {
   const ch = project.characters.find(c => c.id === clip.characterId);
-  if (!ch?.portrait?.psd) return '立ち絵なし';
+  if (!ch?.portrait?.psd) return 'このキャラクターには PSD 立ち絵がありません';
   const lp = clip.portrait;
   const parts = [
-    clip.expression && (clip.expression === BASE_EXPRESSION ? '通常' : clip.expression),
-    Object.keys(lp?.visibility ?? {}).length > 0 && 'レイヤー',
+    `表情：${clip.expression ? (clip.expression === BASE_EXPRESSION ? '通常' : clip.expression) : '変更なし'}`,
+    Object.keys(lp?.visibility ?? {}).length > 0 && 'レイヤーを変更',
     lp?.noBlink && '目パチなし',
     lp?.noMouth && '口パクなし',
     (lp?.effects ?? []).length > 0 && 'エフェクト',
   ].filter(Boolean);
-  return parts.length ? parts.join('・') : 'そのまま';
+  return parts.join('・');
 }
 
 const AUDIO_FILTER_LABEL = {highpass: '低い音を削る', lowpass: '高い音を削る'} as const;
@@ -493,7 +493,7 @@ function LineSubtitleSettings({voice, caption}: {voice: VoiceClip; caption?: Cap
             <Text type="supporting">
               {ch ? `${ch.name}の字幕設定（${ch.subtitle.fontSize}px・${ch.subtitle.position === 'bottom' ? '下' : ch.subtitle.position === 'top' ? '上' : '中央'}）` : 'キャラクターの字幕設定'}
             </Text>
-            <Button label="キャラクターの字幕設定…" size="sm" variant="ghost" onClick={() => setState({dialogCharacterId: voice.characterId, inspectorTab: 'subtitle', characterDialogOpen: true})} />
+            <Button label="キャラクターの字幕設定…" size="sm" onClick={() => setState({dialogCharacterId: voice.characterId, inspectorTab: 'subtitle', characterDialogOpen: true})} />
           </HStack>
         )}
         {sc && <TextStyleFields value={sc} onChange={set} />}
@@ -615,7 +615,7 @@ function LinePortraitSettings({clip}: {clip: VoiceClip}) {
         ) : (
           <HStack gap={2} vAlign="center" hAlign="between" wrap="wrap">
             <Text type="supporting">立ち絵に表情（笑顔など）を足すと、セリフごとに選べます</Text>
-            <Button label="表情を登録…" size="sm" variant="ghost" onClick={goPortrait} />
+            <Button label="表情を登録…" size="sm" onClick={goPortrait} />
           </HStack>
         )}
         <Selector
@@ -646,7 +646,7 @@ function LinePortraitSettings({clip}: {clip: VoiceClip}) {
           trigger={
             <VStack gap={0}>
               <Heading level={4}>レイヤー</Heading>
-              <Text type="supporting">このセリフの間だけ、PSD のレイヤーの表示を変えます</Text>
+              <Hint>このセリフの間だけ、PSD のレイヤーの表示を変えます</Hint>
             </VStack>
           }>
           <div style={{paddingBlockStart: 8}}>
@@ -1049,7 +1049,7 @@ function CaptionInspector({clip}: {clip: CaptionClip}) {
         <Button label="セリフを選ぶ" variant="secondary" onClick={() => setState(s => ({selectedClipId: voice.id, revealSeq: s.revealSeq + 1}))} />
         <Button
           label="キャラクターの字幕設定…"
-          variant="ghost"
+          variant="secondary"
           tooltip="このキャラクターの字幕すべての見た目（キャラクターの編集）"
           onClick={() => setState({dialogCharacterId: voice.characterId, inspectorTab: 'subtitle', characterDialogOpen: true})}
         />
@@ -1279,7 +1279,7 @@ export function Inspector({notify}: {notify: Notify}) {
         isCompact
         icon={<Icon icon={MousePointerClick} size="lg" color="secondary" />}
         title="何も選ばれていません"
-        description="タイムラインのクリップか、「キャラクター」タブの人物を選ぶと設定が出ます"
+        description="タイムラインのアイテムか、「キャラクター」タブの人物を選ぶと設定が出ます"
       />
     </VStack>
   );
