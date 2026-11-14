@@ -78,7 +78,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
     void synthesize(notify, [id]).then(() => {
       // 合成で長さが決まってから、ほかのキャラクターのセリフと重なっていないか確かめる
       const p = getState().project;
-      if (p && overlappingLines(p).has(id)) notify('ほかのキャラクターのセリフと時間が重なっています（タイムラインの黄色い枠）。字幕も重なって表示されます', 'info');
+      if (p && overlappingLines(p).has(id)) notify('ほかのキャラクターのセリフと時間が重なっています（タイムラインの「⚠ 重なり」の札と、上の辺のしま）。字幕も重なって表示されます', 'info');
     });
   };
 
@@ -105,7 +105,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </div>
       )}
       {presets.length > 0 && (
-        <span data-hint="声のプリセット。セリフを打ちながら Alt+1〜9 で切り替え、Alt+0 で通常に戻せます" style={{display: 'contents'}}>
+        <span className="vx-scriptbar-preset" data-hint="声のプリセット。セリフを打ちながら Alt+1〜9 で切り替え、Alt+0 で通常に戻せます" style={{display: 'contents'}}>
           <Selector
             label="声のプリセット"
             isLabelHidden
@@ -138,7 +138,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </DropdownMenuRadioGroup>
       </DropdownMenu>
       <div
-        style={{flex: 1, minWidth: 180}}
+        style={{flex: 1, minWidth: 140}}
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
