@@ -300,7 +300,7 @@ function portraitSummary(project: Project, clip: VoiceClip): string {
   const lp = clip.portrait;
   const parts = [
     `表情：${clip.expression ? (clip.expression === BASE_EXPRESSION ? '通常' : clip.expression) : '変更なし'}`,
-    Object.keys(lp?.visibility ?? {}).length > 0 && 'レイヤーを変更',
+    Object.keys(lp?.visibility ?? {}).length > 0 && 'パーツを変更',
     lp?.noBlink && '目パチなし',
     lp?.noMouth && '口パクなし',
     (lp?.effects ?? []).length > 0 && 'エフェクト',
@@ -645,8 +645,8 @@ function LinePortraitSettings({clip}: {clip: VoiceClip}) {
           defaultIsOpen={Object.keys(lp.visibility ?? {}).length > 0}
           trigger={
             <VStack gap={0}>
-              <Heading level={4}>レイヤー</Heading>
-              <Hint>このセリフの間だけ、PSD のレイヤーの表示を変えます</Hint>
+              <Heading level={4}>PSD のパーツ表示</Heading>
+              <Hint>このセリフの間だけ、PSD のパーツ（PSD のレイヤー）の表示を変えます</Hint>
             </VStack>
           }>
           <div style={{paddingBlockStart: 8}}>
