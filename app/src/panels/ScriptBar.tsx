@@ -231,7 +231,15 @@ export function ScriptBar({notify}: {notify: Notify}) {
           label="新しいセリフ"
           isLabelHidden
           size="sm"
-          placeholder={compact ? (presetName ? `${presetName}：セリフを入力` : 'セリフを入力 → Enter') : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で${layer}へ`}
+          placeholder={
+            !current
+              ? 'まずキャラクターを作ってください（上の「キャラクター」）'
+              : compact
+                ? presetName
+                  ? `${presetName}：セリフを入力`
+                  : 'セリフを入力 → Enter'
+                : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で${layer}へ`
+          }
           value={text}
           onChange={setText}
           onEnter={submit}

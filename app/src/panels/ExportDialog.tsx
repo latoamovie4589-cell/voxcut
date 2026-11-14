@@ -12,11 +12,20 @@ import {Selector} from '@astryxdesign/core/Selector';
 import {Hint} from '../Hint';
 import {Text} from '@astryxdesign/core/Text';
 import {api, type Encoder, type ExportProgress} from '../ipc';
-import {collectCredits, framesToTimecode, projectDuration} from '../model';
-import {useStore} from '../store';
-import {cancelExport, pickExportPath, revealInFolder, runExport} from '../actions';
+import {collectCredits, framesToTimecode, overlappingLines, projectDuration, ENGINE_LABEL} from '../model';
+import {getState, setState, useStore} from '../store';
+import {cancelExport, exportSubtitles, openFile, pickExportPath, revealInFolder, runExport, type ExportKind} from '../actions';
+import {useEngineProblems} from './Sidebar';
 
-type Phase = {kind: 'setup'} | {kind: 'running'; progress: ExportProgress | null} | {kind: 'done'; out: string} | {kind: 'error'; message: string} | {kind: 'cancelled'};
+type Phase = {kind: 'setup'} | {kind: 'running'; progress: ExportProgress | null} | {kind: 'done'; out: string; what: ExportKind} | {kind: 'error'; message: string} | {kind: 'cancelled'};
+
+const KIND_LABEL: Record<ExportKind, string> = {video: '動画', audio: '音声だけ', subtitle: '字幕だけ'};
+
+/** その行を選んで、タイムラインとプロパティで見せる（書き出す前の確認から） */
+function goToLine(id: string) {
+  const c = getState().project?.clips.find(x => x.id === id);
+  if (c) setState(st => ({selectedClipId: c.id, selectedClipIds: [c.id], playhead: c.start, revealSeq: st.revealSeq + 1}));
+}
 
 const QUALITY = {high: {crf: 18, label: '高画質'}, normal: {crf: 20, label: '標準'}, light: {crf: 26, label: '軽量'}} as const;
 type Quality = keyof typeof QUALITY;
@@ -74,6 +83,9 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const [height, setHeight] = useState<string>('same');
   const [encoders, setEncoders] = useState<Encoder[] | null>(null);
   const [encoder, setEncoder] = useState<Encoder>('x264');
+  const [what, setWhat] = useState<ExportKind>('video');
+  const errors = useStore(s => s.synthErrors);
+  const problems = useEngineProblems();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -92,13 +104,19 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const sizeLabel = (h: number) => `${Math.round((v.width * h) / v.height / 2) * 2}×${h}`;
   const running = phase.kind === 'running';
 
+  // 書き出す前の確認：失敗した行・止まっている音声合成ソフト・時間の重なり
+  const failedIds = project.clips.filter(c => c.type === 'voice' && errors[c.id]).map(c => c.id);
+  const overlaps = [...overlappingLines(project)];
+  const needsVoice = what !== 'subtitle';
+
   const start = async () => {
-    const out = await pickExportPath();
+    const out = await pickExportPath(what);
     if (!out) return;
     setPhase({kind: 'running', progress: null});
     try {
-      await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height), encoder}, p => setPhase({kind: 'running', progress: p}));
-      setPhase({kind: 'done', out});
+      if (what === 'subtitle') await exportSubtitles(out);
+      else await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height), encoder}, p => setPhase({kind: 'running', progress: p}));
+      setPhase({kind: 'done', out, what});
     } catch (e) {
       setPhase(String(e).includes('cancelled') ? {kind: 'cancelled'} : {kind: 'error', message: String(e).replace(/^Error:\s*/, '')});
     }
@@ -112,51 +130,108 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
 
   return (
     <Dialog isOpen={isOpen} onOpenChange={close} width={480} maxHeight="92dvh" purpose="form">
-      <DialogHeader title="動画を書き出す" onOpenChange={close} />
+      <DialogHeader title="書き出す" onOpenChange={close} />
       <div style={{maxHeight: 'calc(92dvh - 72px)', overflowY: 'auto'}}>
         <VStack gap={4} padding={4}>
           {phase.kind === 'setup' && (
             <>
-              <MetadataList>
-                <MetadataListItem label="長さ">{framesToTimecode(projectDuration(project), v.fps)}</MetadataListItem>
-                <MetadataListItem label="形式">MP4（H.264 / AAC）・{v.fps} fps</MetadataListItem>
-              </MetadataList>
-              <Selector
-                label="大きさ"
-                value={height}
-                options={heights.map(h => ({value: h === v.height ? 'same' : String(h), label: h === v.height ? `${sizeLabel(h)}（プロジェクトのまま）` : sizeLabel(h)}))}
-                onChange={setHeight}
-                width="100%"
-              />
               <VStack gap={1}>
-                <Text type="label">画質</Text>
-                <SegmentedControl label="画質" layout="fill" value={quality} onChange={q => setQuality(q as Quality)}>
-                  {(Object.keys(QUALITY) as Quality[]).map(q => (
-                    <SegmentedControlItem key={q} value={q} label={QUALITY[q].label} />
+                <Text type="label">書き出すもの</Text>
+                <SegmentedControl label="書き出すもの" layout="fill" value={what} onChange={k => setWhat(k as ExportKind)}>
+                  {(Object.keys(KIND_LABEL) as ExportKind[]).map(k => (
+                    <SegmentedControlItem key={k} value={k} label={KIND_LABEL[k]} />
                   ))}
                 </SegmentedControl>
-                <Hint>軽量にするとファイルが小さくなり、細かい部分が少し粗くなります</Hint>
               </VStack>
-              <Selector
-                label="書き出しに使うもの"
-                description={
-                  encoders
-                    ? encoders.length > 1
-                      ? 'グラフィックボードを使うと数倍速くなります。うまくいかないときは自動で CPU に切り替えます'
-                      : 'この PC では CPU で書き出します'
-                    : 'この PC で使えるものを調べています…'
-                }
-                value={encoder}
-                isDisabled={!encoders || encoders.length < 2}
-                options={(encoders ?? ['x264']).map(e => ({value: e, label: ENCODER_LABEL[e]}))}
-                onChange={v => setEncoder(v as Encoder)}
-                width="100%"
-              />
-              {pending > 0 && <Banner status="info" title={`まだ合成していないセリフが ${pending} 行あります`} description="書き出す前にまとめて合成します" />}
+              <MetadataList>
+                <MetadataListItem label="長さ">{framesToTimecode(projectDuration(project), v.fps)}</MetadataListItem>
+                <MetadataListItem label="形式">
+                  {what === 'video' ? `MP4（H.264 / AAC）・${v.width}×${v.height}・${v.fps} fps` : what === 'audio' ? 'WAV（PCM 16bit）' : 'SRT（字幕の文と時刻だけ。見た目は付きません）'}
+                </MetadataListItem>
+              </MetadataList>
+              {/* 書き出す前の確認（直せるものは、その場で直しに行ける） */}
+              {needsVoice && problems.length > 0 && pending > 0 && (
+                <Banner
+                  status="warning"
+                  title={`${problems.map(e => ENGINE_LABEL[e]).join('・')} を使えないため、まだの ${pending} 行を合成できません`}
+                  description="起動してから書き出すか、設定でソフトの場所を選んでください。"
+                  endContent={<Button size="sm" label="音声合成ソフトの設定" onClick={() => setState({settingsOpen: true})} />}
+                />
+              )}
+              {needsVoice && failedIds.length > 0 && (
+                <Banner
+                  status="error"
+                  title={`合成できなかったセリフが ${failedIds.length} 行あります`}
+                  description="このまま書き出すと止まります。その行の理由を確かめてください。"
+                  endContent={
+                    <Button
+                      size="sm"
+                      label="その行へ"
+                      onClick={() => {
+                        goToLine(failedIds[0]);
+                        close(false);
+                      }}
+                    />
+                  }
+                />
+              )}
+              {overlaps.length > 0 && (
+                <Banner
+                  status="info"
+                  title={`時間が重なっているセリフが ${overlaps.length} 行あります`}
+                  description="声が同時に鳴り、字幕も重なります。わざとでなければ直してから書き出してください。"
+                  endContent={
+                    <Button
+                      size="sm"
+                      label="その行へ"
+                      onClick={() => {
+                        goToLine(overlaps[0]);
+                        close(false);
+                      }}
+                    />
+                  }
+                />
+              )}
+              {what === 'video' && (
+                <>
+                  <Selector
+                    label="大きさ"
+                    value={height}
+                    options={heights.map(h => ({value: h === v.height ? 'same' : String(h), label: h === v.height ? `${sizeLabel(h)}（プロジェクトのまま）` : sizeLabel(h)}))}
+                    onChange={setHeight}
+                    width="100%"
+                  />
+                  <VStack gap={1}>
+                    <Text type="label">画質</Text>
+                    <SegmentedControl label="画質" layout="fill" value={quality} onChange={q => setQuality(q as Quality)}>
+                      {(Object.keys(QUALITY) as Quality[]).map(q => (
+                        <SegmentedControlItem key={q} value={q} label={QUALITY[q].label} />
+                      ))}
+                    </SegmentedControl>
+                    <Hint>軽量にするとファイルが小さくなり、細かい部分が少し粗くなります</Hint>
+                  </VStack>
+                  <Selector
+                    label="書き出しに使うもの"
+                    description={
+                      encoders
+                        ? encoders.length > 1
+                          ? 'グラフィックボードを使うと数倍速くなります。うまくいかないときは自動で CPU に切り替えます'
+                          : 'この PC では CPU で書き出します'
+                        : 'この PC で使えるものを調べています…'
+                    }
+                    value={encoder}
+                    isDisabled={!encoders || encoders.length < 2}
+                    options={(encoders ?? ['x264']).map(e => ({value: e, label: ENCODER_LABEL[e]}))}
+                    onChange={v => setEncoder(v as Encoder)}
+                    width="100%"
+                  />
+                </>
+              )}
+              {needsVoice && pending > 0 && !problems.length && <Banner status="info" title={`まだ合成していないセリフが ${pending} 行あります`} description="書き出す前にまとめて合成します" />}
               <Credits />
               <HStack gap={2} hAlign="end">
                 <Button label="キャンセル" variant="ghost" onClick={() => close(false)} />
-                <Button label="保存先を選んで書き出す…" variant="primary" onClick={() => void start()} />
+                <Button label="保存先を選んで書き出す…" variant="primary" isDisabled={needsVoice && failedIds.length > 0} onClick={() => void start()} />
               </HStack>
             </>
           )}
@@ -168,7 +243,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                 isIndeterminate={!phase.progress || phase.progress.stage === 'portrait'}
                 hasValueLabel={phase.progress?.stage === 'encode'}
               />
-              <Text type="supporting">書き出している間も、ほかの作業はできます</Text>
+              <Text type="supporting">終わるまで少しお待ちください。取り消すと、書きかけのファイルは消します</Text>
               <HStack hAlign="end">
                 <Button label="取り消す" variant="secondary" onClick={() => void cancelExport()} />
               </HStack>
@@ -176,11 +251,12 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
           )}
           {phase.kind === 'done' && (
             <>
-              <Banner status="success" title="書き出しました" description={phase.out} />
-              <Credits />
+              <Banner status="success" title={`${KIND_LABEL[phase.what]}を書き出しました`} description={phase.out} />
+              {phase.what !== 'subtitle' && <Credits />}
               <HStack gap={2} hAlign="end">
                 <Button label="閉じる" variant="ghost" onClick={() => close(false)} />
-                <Button label="フォルダを開く" variant="primary" onClick={() => void revealInFolder(phase.out)} />
+                <Button label="フォルダを開く" variant={phase.what === 'subtitle' ? 'primary' : 'secondary'} onClick={() => void revealInFolder(phase.out)} />
+                {phase.what !== 'subtitle' && <Button label={phase.what === 'video' ? '再生する' : '聞く'} variant="primary" onClick={() => void openFile(phase.out)} />}
               </HStack>
             </>
           )}
