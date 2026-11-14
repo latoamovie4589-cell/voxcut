@@ -534,7 +534,7 @@ export function Preview() {
           }
           o.restore();
         }
-        o.strokeStyle = '#0A84FF';
+        o.strokeStyle = '#8B74F0'; // ブランドの紫。動画の明暗どちらの上でも見える中間の明るさ
         o.lineWidth = 1.5;
         o.strokeRect(r.x, r.y, r.w, r.h);
         o.fillStyle = '#fff';
