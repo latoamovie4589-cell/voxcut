@@ -181,10 +181,43 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
     out
 }
 
+/// 秒 → SRT の "HH:MM:SS,mmm"
+fn srt_time(secs: f64) -> String {
+    let ms = (secs.max(0.0) * 1000.0).round() as u64;
+    format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, (ms / 60_000) % 60, (ms / 1000) % 60, ms % 1000)
+}
+
+/// 字幕を SRT にする（YouTube などに字幕として上げる用）。見た目は付けず、文と時刻だけ。隠したレイヤーは入れない
+pub fn build_srt(p: &Project) -> String {
+    let mut lines: Vec<(Frame, Frame, String)> = p
+        .clips
+        .iter()
+        .filter(|c| p.track(&c.track_id).is_some_and(|t| !t.hidden))
+        .filter_map(|c| p.line_of_subtitle(c).map(|v| (c, v)))
+        .map(|(c, v)| (c.start, c.end(), v.subtitle.as_deref().unwrap_or(&v.text).trim().to_string()))
+        .filter(|(_, _, t)| !t.is_empty())
+        .collect();
+    lines.sort_by_key(|(s, _, _)| *s);
+    let mut out = String::new();
+    for (i, (s, e, t)) in lines.iter().enumerate() {
+        let _ = write!(out, "{}\r\n{} --> {}\r\n{}\r\n\r\n", i + 1, srt_time(p.video.frames_to_secs(*s)), srt_time(p.video.frames_to_secs(*e)), t.replace("\r\n", "\n").replace('\n', "\r\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::ClipBody;
+
+    #[test]
+    fn srt_has_numbered_cues_in_time_order() {
+        let p = Project::sample();
+        let srt = build_srt(&p);
+        assert!(srt.starts_with("1\r\n00:00:00,000 --> "), "{srt}");
+        assert!(srt.contains("\r\n2\r\n"), "{srt}");
+        assert_eq!(srt_time(3725.5), "01:02:05,500");
+    }
 
     #[test]
     fn color_and_time() {

@@ -611,7 +611,13 @@ pub fn build_args(
         Some(oh) if oh != v.height => format!(",scale=-2:{oh}:flags=lanczos"),
         _ => String::new(),
     };
-    fc.push(format!("[{last_v}]null{resize}[vout]"));
+    // 音声だけ（.wav）に書き出すときは、映像は作らずに捨てる
+    let audio_only = opt.out.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if audio_only {
+        fc.push(format!("[{last_v}]nullsink"));
+    } else {
+        fc.push(format!("[{last_v}]null{resize}[vout]"));
+    }
     // 音声（なければ無音）
     if audio_labels.is_empty() {
         fc.push(format!("anullsrc=r={}:cl=stereo,atrim=0:{total_s:.3}[aout]", v.sample_rate));
@@ -624,6 +630,25 @@ pub fn build_args(
         fc.push(format!("{ins}amix=inputs={}:normalize=0:duration=longest,apad,atrim=0:{total_s:.3}[aout]", audio_labels.len()));
     }
 
+    if audio_only {
+        args.extend([
+            "-filter_complex".into(),
+            fc.join(";"),
+            "-map".into(),
+            "[aout]".into(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            "-ar".into(),
+            v.sample_rate.to_string(),
+            "-t".into(),
+            format!("{total_s:.3}"),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+            opt.out.to_string_lossy().into_owned(),
+        ]);
+        return Ok(args);
+    }
     args.extend([
         "-filter_complex".into(),
         fc.join(";"),
@@ -966,6 +991,20 @@ mod tests {
         assert!(args.contains(&Path::new("/proj").join("bg.png").to_string_lossy().into_owned()));
         // 背景の長さ＝最後のクリップの終わり（270 フレーム = 9 秒）
         assert!(args.iter().any(|a| a.ends_with(":d=9.000")));
+    }
+
+    /// 音声だけ（.wav）：映像は捨て、PCM の WAV にする（字幕・立ち絵は作らない）
+    #[test]
+    fn wav_export_is_audio_only() {
+        let p = with_media(Project::sample());
+        let opt = ExportOptions::new("ffmpeg", "/tmp/o.wav", "/proj");
+        let args = build_args(&p, &|id| Some(PathBuf::from(format!("/cache/{id}.wav"))), &[], &[], &opt).unwrap();
+        let fc = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(fc.contains("nullsink"), "{fc}");
+        assert!(!fc.contains("[vout]"), "{fc}");
+        assert!(args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "pcm_s16le"));
+        assert!(!args.iter().any(|a| a == "-c:v" || a == "-movflags"));
+        assert_eq!(args.last().unwrap(), "/tmp/o.wav");
     }
 
     /// 分離した動画：映像（音を使わない）と、リンクした音声クリップ（音声トラック）
