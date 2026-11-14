@@ -3,7 +3,7 @@
 // すぐ合成を始める（キャッシュがあれば一瞬で終わる）。何も打たずに Enter を押すと、選んでいるセリフを再生する。
 // 追加モード：通常＝再生位置に入れるだけ／追記＝入れたセリフの末尾まで進む（続けて打てる）／連結＝同じトラックの直前のセリフを延ばしてつなぐ
 
-import {useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -32,6 +32,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
   // 再生位置・内容が変わったら、入る時刻の案内を出し直す
   useStore(s => s.playhead);
   const [text, setText] = useState('');
+  // 欄の幅が狭いときは、選ぶものを細くして、セリフを打つ欄の幅を残す
+  const barRef = useRef<HTMLElement>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setCompact(el.clientWidth < 820));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [project === null]);
   if (!project) return null;
   const current = characterId && project.characters.some(c => c.id === characterId) ? characterId : (project.characters[0]?.id ?? '');
   // 置く先（音声トラック・字幕の映像トラック。足りなければ追加時に作る）
@@ -68,12 +78,12 @@ export function ScriptBar({notify}: {notify: Notify}) {
     void synthesize(notify, [id]).then(() => {
       // 合成で長さが決まってから、ほかのキャラクターのセリフと重なっていないか確かめる
       const p = getState().project;
-      if (p && overlappingLines(p).has(id)) notify('ほかのキャラクターのセリフと時間が重なっています（タイムラインの赤い枠）。字幕も重なって表示されます', 'info');
+      if (p && overlappingLines(p).has(id)) notify('ほかのキャラクターのセリフと時間が重なっています（タイムラインの黄色い枠）。字幕も重なって表示されます', 'info');
     });
   };
 
   return (
-    <HStack gap={1} vAlign="center" padding={2} className="vx-scriptbar">
+    <HStack ref={barRef} gap={1} vAlign="center" padding={2} className="vx-scriptbar">
       {/* キャラクターが 1 人なら選ぶものがないので、名前だけ出す */}
       {project.characters.length > 1 ? (
         <Selector
@@ -81,7 +91,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
           isLabelHidden
           variant="secondary"
           size="sm"
-          width={160}
+          width={compact ? 128 : 160}
           value={current}
           options={project.characters.map(c => ({value: c.id, label: c.name}))}
           onChange={v => setState({selectedCharacterId: v})}
@@ -95,26 +105,32 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </div>
       )}
       {presets.length > 0 && (
-        <Selector
-          label="声のプリセット"
-          isLabelHidden
-          variant="secondary"
-          size="sm"
-          width={130}
-          value={presetId ?? ''}
-          options={[{value: '', label: '通常'}, ...presets.map(x => ({value: x.id, label: x.name}))]}
-          onChange={v => setPreset(v || null)}
-        />
+        <span data-hint="声のプリセット。セリフを打ちながら Alt+1〜9 で切り替え、Alt+0 で通常に戻せます" style={{display: 'contents'}}>
+          <Selector
+            label="声のプリセット"
+            isLabelHidden
+            variant="secondary"
+            size="sm"
+            width={compact ? 92 : 130}
+            value={presetId ?? ''}
+            // 選ぶ欄には Alt+数字の番号も出す（打ちながら Alt+1〜9 で切り替えられる）
+            options={[{value: '', label: '通常', description: 'Alt+0'}, ...presets.map((x, i) => ({value: x.id, label: x.name, description: i < 9 ? `Alt+${i + 1}` : undefined}))]}
+            onChange={v => setPreset(v || null)}
+          />
+        </span>
       )}
       <IconButton
         label="キャラクター設定"
-        tooltip="キャラクター設定（声・字幕・立ち絵・レイヤー）"
+        tooltip="キャラクター設定（声・字幕・立ち絵・声のプリセット）"
         variant="ghost"
         size="sm"
         icon={<Icon icon={UserPen} />}
         onClick={() => setState({characterDialogOpen: true, dialogCharacterId: current})}
       />
-      <DropdownMenu button={{label: `入れ方：${m.short}`, tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`, variant: 'secondary', size: 'sm'}} hasChevron menuWidth={300}>
+      <DropdownMenu
+        button={{label: compact ? m.short : `入れ方：${m.short}`, tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`, variant: 'secondary', size: 'sm'}}
+        hasChevron
+        menuWidth={300}>
         <DropdownMenuRadioGroup label="入れ方" value={mode} onChange={v => setInputMode(v as InputMode)}>
           {MODES.map(x => (
             <DropdownMenuRadioItem key={x.value} value={x.value} label={x.label} description={x.description} />
@@ -122,7 +138,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
         </DropdownMenuRadioGroup>
       </DropdownMenu>
       <div
-        style={{flex: 1, minWidth: 0}}
+        style={{flex: 1, minWidth: 180}}
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
@@ -131,7 +147,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
           const n = Number(e.code.slice(5));
           if (n === 0) setPreset(null);
           else if (presets[n - 1]) setPreset(presets[n - 1].id);
-          else return;
+          else {
+            e.preventDefault();
+            notify(
+              presets.length
+                ? `Alt+${n} のプリセットはありません（Alt+1〜${Math.min(9, presets.length)} が使えます）`
+                : 'このキャラクターには声のプリセットがありません（キャラクター設定の「声」で作れます）',
+              'info',
+            );
+            return;
+          }
           e.preventDefault();
         }}
         onPasteCapture={e => {
@@ -142,7 +167,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
             setState({pasteOpen: true, pasteText: pasted});
           }
         }}>
-        <TextInput label="新しいセリフ" isLabelHidden size="sm" placeholder={`セリフを入力 → Enter で${layer}へ`} value={text} onChange={setText} onEnter={submit} width="100%" />
+        <TextInput
+          label="新しいセリフ"
+          isLabelHidden
+          size="sm"
+          placeholder={compact ? 'セリフを入力 → Enter' : `セリフを入力 → Enter で${layer}へ`}
+          value={text}
+          onChange={setText}
+          onEnter={submit}
+          width="100%"
+        />
       </div>
       <IconButton
         label="台本読み込み"
