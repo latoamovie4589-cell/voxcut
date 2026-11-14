@@ -126,9 +126,9 @@ export function EnginesPanel() {
               descriptionLines={4}
               endContent={
                 checking ? undefined : !ok && (engine === 'aivoice' || engine === 'voicepeak') ? (
-                  <Button label="場所を選ぶ" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
+                  <Button label="場所を選ぶ" size="sm" onClick={() => setState({settingsOpen: true})} />
                 ) : !ok ? (
-                  <Button label="設定" size="sm" variant="ghost" onClick={() => setState({settingsOpen: true})} />
+                  <Button label="設定" size="sm" onClick={() => setState({settingsOpen: true})} />
                 ) : undefined
               }
               startContent={

@@ -21,7 +21,7 @@ import {captionLayerFor, framesToTimecode, lineOf, overlappingLines, trackCode} 
 const MODES: {value: InputMode; short: string; label: string; description: string}[] = [
   {value: 'normal', short: '通常', label: '通常', description: '再生位置に入れるだけ'},
   {value: 'append', short: '追記', label: '追記', description: '入れたセリフの末尾まで進む（続けて打てる）'},
-  {value: 'join', short: '連結', label: '連結', description: '同じトラックの直前のセリフを延ばして、すき間なくつなぐ'},
+  {value: 'join', short: '連結', label: '連結', description: '同じレイヤーの直前のセリフを延ばして、すき間なくつなぐ'},
 ];
 
 export function ScriptBar({notify}: {notify: Notify}) {
@@ -108,13 +108,13 @@ export function ScriptBar({notify}: {notify: Notify}) {
       )}
       <IconButton
         label="キャラクター設定"
-        tooltip="キャラクター設定（声・字幕・立ち絵・トラック）"
+        tooltip="キャラクター設定（声・字幕・立ち絵・レイヤー）"
         variant="ghost"
         size="sm"
         icon={<Icon icon={UserPen} />}
         onClick={() => setState({characterDialogOpen: true, dialogCharacterId: current})}
       />
-      <DropdownMenu button={{label: `入れ方：${m.short}`, tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`, variant: 'ghost', size: 'sm'}} hasChevron menuWidth={300}>
+      <DropdownMenu button={{label: `入れ方：${m.short}`, tooltip: `入れ方を切り替え（いまは「${m.label}」：${m.description}）`, variant: 'secondary', size: 'sm'}} hasChevron menuWidth={300}>
         <DropdownMenuRadioGroup label="入れ方" value={mode} onChange={v => setInputMode(v as InputMode)}>
           {MODES.map(x => (
             <DropdownMenuRadioItem key={x.value} value={x.value} label={x.label} description={x.description} />
@@ -124,6 +124,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
       <div
         style={{flex: 1, minWidth: 0}}
         data-script-input
+        data-hint={current ? `Enter で${layer}の ${insertAt} に追加します` : undefined}
         onKeyDownCapture={e => {
           // 打ちながら声のプリセットを切り替える：Alt+1〜9 でプリセット、Alt+0 で通常
           if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || !/^Digit\d$/.test(e.code)) return;
@@ -141,7 +142,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
             setState({pasteOpen: true, pasteText: pasted});
           }
         }}>
-        <TextInput label="新しいセリフ" isLabelHidden size="sm" placeholder={`セリフを入力（Enter で${layer} の ${insertAt} に追加）`} value={text} onChange={setText} onEnter={submit} width="100%" />
+        <TextInput label="新しいセリフ" isLabelHidden size="sm" placeholder={`セリフを入力 → Enter で${layer}へ`} value={text} onChange={setText} onEnter={submit} width="100%" />
       </div>
       <IconButton
         label="台本読み込み"

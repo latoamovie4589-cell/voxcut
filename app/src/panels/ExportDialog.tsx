@@ -9,6 +9,7 @@ import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
 import {Selector} from '@astryxdesign/core/Selector';
+import {Hint} from '../Hint';
 import {Text} from '@astryxdesign/core/Text';
 import {api, type Encoder, type ExportProgress} from '../ipc';
 import {collectCredits, framesToTimecode, projectDuration} from '../model';
@@ -134,7 +135,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                     <SegmentedControlItem key={q} value={q} label={QUALITY[q].label} />
                   ))}
                 </SegmentedControl>
-                <Text type="supporting">軽量にするとファイルが小さくなり、細かい部分が少し粗くなります</Text>
+                <Hint>軽量にするとファイルが小さくなり、細かい部分が少し粗くなります</Hint>
               </VStack>
               <Selector
                 label="書き出しに使うもの"

@@ -70,7 +70,7 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
 
   return (
     <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width={560} maxHeight="92dvh" purpose="form">
-      <DialogHeader title="設定" onOpenChange={onOpenChange} />
+      <DialogHeader title="音声合成ソフトの設定" onOpenChange={onOpenChange} />
       {/* 窓が小さくても「保存」が隠れないよう、中身だけをスクロールさせる */}
       <div style={{maxHeight: 'calc(92dvh - 132px)', overflowY: 'auto', overscrollBehavior: 'contain'}}>
         <VStack gap={4} padding={4}>
