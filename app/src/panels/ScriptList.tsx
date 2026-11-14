@@ -1,6 +1,7 @@
 // 台本：セリフを時間順に並べた一覧（YMM4 の台本表示に相当）。
 // 選ぶとタイムラインとプレビューがその行へ動く。ダブルクリック（または Enter / F2）でその場で書き直せ、
 // 左のつまみをドラッグ（または Alt+↑↓）で並べ替えられる。
+// 「文書」に切り替えると、台本を文書のように書ける（ScriptDoc）。
 
 import {useEffect, useRef, useState} from 'react';
 import {Badge} from '@astryxdesign/core/Badge';
@@ -12,11 +13,58 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {ClipboardPaste, Copy, GripVertical, Replace, Search} from 'lucide-react';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {getNotify, synthesize} from '../actions';
+import {Avatar} from './Avatar';
+import {ScriptDoc} from './ScriptDoc';
+import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
 import type {VoiceClip} from '../model';
 import {framesToTimecode} from '../model';
 import {reorderLine, replaceInLines, setState, updateClip, useStore} from '../store';
 
+type View = 'list' | 'doc';
+const VIEW_KEY = 'voxcut.scriptView';
+function readView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'doc' ? 'doc' : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+/** 台本パネル：一覧と文書（台本モード）を切り替える */
 export function ScriptList() {
+  const [view, setView] = useState<View>(readView);
+  const change = (v: View) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // 保存できなくてもよい
+    }
+  };
+  // Ctrl+F / Ctrl+H は一覧の検索を使うので、一覧へ戻す
+  useEffect(() => {
+    const on = () => change('list');
+    window.addEventListener('vx-open-search', on);
+    window.addEventListener('vx-open-replace', on);
+    return () => {
+      window.removeEventListener('vx-open-search', on);
+      window.removeEventListener('vx-open-replace', on);
+    };
+  }, []);
+  return (
+    <div className="vx-script-panel">
+      <div className="vx-script-switch">
+        <SegmentedControl label="台本の見せ方" size="sm" layout="fill" value={view} onChange={v => change(v as View)}>
+          <SegmentedControlItem value="list" label="一覧" />
+          <SegmentedControlItem value="doc" label="文書で書く" />
+        </SegmentedControl>
+      </div>
+      <div className="vx-script-pane">{view === 'doc' ? <ScriptDoc /> : <ScriptLines />}</div>
+    </div>
+  );
+}
+
+function ScriptLines() {
   const project = useStore(s => s.project);
   const selected = useStore(s => s.selectedClipId);
   const errors = useStore(s => s.synthErrors);
@@ -193,7 +241,7 @@ export function ScriptList() {
                 onClick={e => e.stopPropagation()}>
                 <Icon icon={GripVertical} size="sm" color="secondary" />
               </span>
-              <span className="vx-swatch" style={{background: ch?.color ?? '#8E8E93'}} aria-hidden />
+              <Avatar character={ch} size={24} />
               <div className="vx-script-body">
                 {editing === c.id ? (
                   <textarea

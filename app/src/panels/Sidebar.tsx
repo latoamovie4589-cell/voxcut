@@ -12,10 +12,7 @@ import {ENGINE_LABEL, isSpeakerMissing, speakerLabel} from '../model';
 import {addCharacter, getState, removeCharacter, setState, useStore} from '../store';
 import {exportCharacterFile, getNotify, importCharacterFile, refreshEngines} from '../actions';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
-
-function Swatch({color}: {color: string}) {
-  return <span className="vx-swatch" style={{background: color}} aria-hidden />;
-}
+import {Avatar} from './Avatar';
 
 /** 使っているキャラクターのソフトのうち、今使えないもの */
 export function useEngineProblems() {
@@ -89,7 +86,7 @@ export function CharactersPanel({inDialog = false}: {inDialog?: boolean}) {
             density="compact"
             label={c.name}
             description={`${ENGINE_LABEL[c.voice.engine]} · ${speakerLabel(c.voice, voices)}${problems.includes(c.voice.engine) ? '（今は使えません）' : isSpeakerMissing(c.voice, voices) ? '（話者が入っていません）' : ''}`}
-            startContent={<Swatch color={c.color} />}
+            startContent={<Avatar character={c} size={28} />}
             isSelected={!selectedClipId && c.id === selectedCharacterId}
             onClick={() => setState(inDialog ? {dialogCharacterId: c.id} : {selectedCharacterId: c.id, selectedClipId: null})}
           />

@@ -16,6 +16,7 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {addLine, getState, lineInsertPoint, setInputMode, setState, useStore, type InputMode} from '../store';
 import {synthesize, type Notify} from '../actions';
 import {play} from '../preview/playback';
+import {Avatar} from './Avatar';
 import {captionLayerFor, framesToTimecode, lineOf, overlappingLines, trackCode} from '../model';
 
 const MODES: {value: InputMode; short: string; label: string; description: string}[] = [
@@ -118,12 +119,13 @@ export function ScriptBar({notify}: {notify: Notify}) {
           size="sm"
           width={tight ? 112 : compact ? 128 : 160}
           value={current}
-          options={project.characters.map(c => ({value: c.id, label: c.name}))}
+          startIcon={<Avatar character={project.characters.find(c => c.id === current)} size={18} />}
+          options={project.characters.map(c => ({value: c.id, label: c.name, icon: <Avatar character={c} size={18} />}))}
           onChange={v => setState({selectedCharacterId: v})}
         />
       ) : (
         <div className="vx-scriptbar-char" aria-label="話すキャラクター">
-          <span className="vx-scriptbar-dot" style={{background: project.characters[0]?.color}} aria-hidden />
+          <Avatar character={project.characters[0]} size={20} />
           <Text type="label" maxLines={1}>
             {project.characters[0]?.name ?? 'キャラクターなし'}
           </Text>
