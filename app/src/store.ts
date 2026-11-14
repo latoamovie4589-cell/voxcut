@@ -251,7 +251,7 @@ export function setLinkedSelection(on: boolean) {
 
 const HISTORY_LIMIT = 100;
 
-let lastMerge: {key: string; at: number} | null = null;
+let lastMerge: {key: string; at: number; dirtyBefore: boolean} | null = null;
 
 /**
  * 履歴に残る変更。`mergeKey` が直前と同じで 1 秒以内なら、1 つの履歴にまとめる
@@ -272,11 +272,24 @@ export function commit(update: (p: Project) => Project, mergeKey?: string) {
     const next = keepLinks(s.project, update(s.project));
     if (next === s.project) return {};
     const now = performance.now();
-    const merge = mergeKey && lastMerge?.key === mergeKey && now - lastMerge.at < 1000 && s.past.length > 0;
-    lastMerge = mergeKey ? {key: mergeKey, at: now} : null;
+    // ドラッグ（drag:…）は途中で手を止めても 1 つの「元に戻す」にまとめる
+    const merge = mergeKey && lastMerge?.key === mergeKey && (mergeKey.startsWith('drag:') || now - lastMerge.at < 1000) && s.past.length > 0;
+    lastMerge = mergeKey ? {key: mergeKey, at: now, dirtyBefore: merge && lastMerge ? lastMerge.dirtyBefore : s.dirty} : null;
     if (merge) return {project: next, dirty: true, future: []};
     return {project: next, dirty: true, past: [...s.past.slice(-HISTORY_LIMIT + 1), s.project], future: []};
   });
+}
+
+/**
+ * mergeKey でまとめて書いてきた変更を、履歴ごと無かったことにする（ドラッグを Esc でやめたとき）。
+ * 「元に戻す」に何も変わらない手順が残らず、保存済みなら「未保存」にもならない
+ */
+export function revertMerge(mergeKey: string): boolean {
+  if (remote || lastMerge?.key !== mergeKey) return false;
+  const dirtyBefore = lastMerge.dirtyBefore;
+  lastMerge = null;
+  setState(s => (s.past.length ? {project: s.past[s.past.length - 1], past: s.past.slice(0, -1), dirty: dirtyBefore} : {}));
+  return true;
 }
 
 /** 履歴に残さない置き換え（合成結果の反映など） */
@@ -766,6 +779,23 @@ function freeTrackNear(p: Project, kind: 'video' | 'audio', want: string, start:
   );
   const order = list.map((t, i) => [t, Math.abs(i - at) * 2 + (i < at ? 1 : 0)] as const).sort((a, b) => a[1] - b[1]);
   return order.find(([t]) => !t.locked && freeOver(p, t.id, start, end, ignore))?.[0].id ?? null;
+}
+
+/**
+ * ドラッグ中の見た目用：離したら実際にどのレイヤーに置かれるか（moveClip と同じ決め方）。置けなければ null。
+ * 挿入（Ctrl）や、まとめて動かすときは使わない
+ */
+export function moveDestination(id: string, start: number, trackId: string): string | null {
+  const p = state.project;
+  const c = p?.clips.find(x => x.id === id);
+  if (!p || !c) return null;
+  const want = p.tracks.some(t => t.id === trackId && !t.locked) ? trackId : c.trackId;
+  const s = Math.max(0, Math.round(start));
+  const delta = s - c.start;
+  const partners = c.linkId ? p.clips.filter(x => x.linkId === c.linkId && x.id !== c.id) : [];
+  const ignore = new Set([c.id, ...partners.map(x => x.id)]);
+  if (!partners.every(x => freeOver(p, x.trackId, x.start + delta, x.start + delta + x.duration, ignore))) return null;
+  return freeOver(p, want, s, s + c.duration, ignore) ? want : freeTrackNear(p, trackKindOf(p, c), want, s, s + c.duration, ignore);
 }
 
 /** 動かしたときに位置が変わった（押し出された）ほかのクリップの数 */

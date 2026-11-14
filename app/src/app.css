@@ -266,6 +266,11 @@ textarea {
   flex: none;
   border-top: 1px solid var(--color-border);
 }
+/* 狭くても、選ぶものやボタンが「追.」のように潰れない（縮むのはセリフを打つ欄だけ） */
+.vx-scriptbar > :not([data-script-input]),
+.vx-scriptbar-preset > * {
+  flex-shrink: 0;
+}
 .vx-toolbar-sep {
   width: 1px;
   height: 18px;

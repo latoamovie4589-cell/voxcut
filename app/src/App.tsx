@@ -278,7 +278,7 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
               onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
             />
           )}
-          <IconButton label="設定" tooltip="音声合成ソフトの設定" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
+          <IconButton label="音声合成ソフトの設定" tooltip="音声合成ソフトの設定" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
           <div className="vx-toolbar-sep" aria-hidden />
           <span className="vx-project-name">
             <Text type="label" maxLines={1}>
