@@ -16,7 +16,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {Check, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
@@ -73,6 +73,7 @@ interface Palette {
   text2: string;
   accent: string;
   error: string;
+  warn: string;
 }
 
 // トークンは light-dark() などで書かれていて Canvas にはそのまま渡せないので、
@@ -100,6 +101,7 @@ function readPalette(el: HTMLElement): Palette {
     text2: v('--color-text-secondary', '#5B5B63'),
     accent: v('--color-accent', '#007AFF'),
     error: v('--color-error', '#FF3B30'),
+    warn: v('--color-warning', '#E9AF08'),
   };
 }
 
@@ -132,7 +134,7 @@ function clipColor(p: Project, c: Clip): string {
 /** 読み上げ・台本で使うクリップの説明 */
 /** タイムラインの何もないところに 3 秒乗せると出す案内 */
 const TIMELINE_HELP =
-  '下の入力欄にセリフを打って Enter で追加。画像・動画・BGM はドラッグ＆ドロップで追加。どのアイテムもどのレイヤーにも置けます（番号の大きいレイヤーほど手前）。セリフや音の入った動画は右クリックで分離。クリップの端をドラッグで長さ調整（Alt でスナップ解除）・Ctrl+クリックで複数選択・? でショートカット一覧';
+  '下の入力欄にセリフを打って Enter で追加。画像・動画・BGM はドラッグ＆ドロップで追加。どのアイテムもどのレイヤーにも置けます（番号の大きいレイヤーほど手前）。セリフや音の入った動画は右クリックで分離。アイテムの端をドラッグで長さ調整（Alt でスナップ解除）・Ctrl+クリックで複数選択・? でショートカット一覧';
 
 export function describeClip(p: Project, c: Clip, synthErrors: Record<string, string>): string {
   const fps = p.video.fps;
@@ -140,7 +142,7 @@ export function describeClip(p: Project, c: Clip, synthErrors: Record<string, st
   if (c.type === 'voice') {
     const ch = p.characters.find(x => x.id === c.characterId)?.name ?? '?';
     const st = synthErrors[c.id] ? '合成に失敗' : c.audio ? '合成済み' : '未合成';
-    return `セリフ、${ch}「${c.text}」、${where}、${st}${overlappingLines(p).has(c.id) ? '、ほかのキャラクターのセリフと重なっています' : ''}`;
+    return `セリフ、${ch}「${c.text}」、${where}、${st}${overlappingLines(p).has(c.id) ? '\n⚠ ほかのキャラクターのセリフと時間が重なっています（声が同時に鳴ります）。わざとでなければ、どちらかを横にずらしてください' : ''}`;
   }
   if (c.type === 'caption') {
     const v = p.clips.find(x => x.id === c.voiceId);
@@ -203,7 +205,43 @@ function TrackHeader({track}: {track: Track}) {
     if (name !== track.name) updateTrack(track.id, {name: name.trim()});
   };
   const toggleOut = () => updateTrack(track.id, {hidden: !track.hidden});
-  return (
+  const menu = tidyMenu([
+    {label: '素材を追加…', onClick: () => void addMedia()},
+    {type: 'divider' as const},
+    ...[
+      {
+        label: 'セリフ中は音を下げる',
+        endContent: track.duck ? <Icon icon={Check} color="accent" /> : undefined,
+        description: 'BGM がセリフの邪魔にならないよう、自動で下げます',
+        onClick: () => updateTrack(track.id, {duck: !track.duck}),
+      },
+      ...(track.duck
+        ? (
+            [
+              ['少し下げる', 0.5],
+              ['下げる', 0.3],
+              ['大きく下げる', 0.15],
+            ] as const
+          ).map(([l, v]) => ({
+            label: `${l}（${Math.round(v * 100)}%）`,
+            endContent: Math.abs(track.duckLevel - v) < 0.01 ? <Icon icon={Check} color="accent" /> : undefined,
+            onClick: () => updateTrack(track.id, {duckLevel: v}),
+          }))
+        : []),
+      {type: 'divider' as const},
+    ],
+    // 上ほど番号が小さい（上に足す = この番号に入れる）
+    {label: '上にレイヤーを追加', onClick: () => addTrack('video', index)},
+    {label: '下にレイヤーを追加', onClick: () => addTrack('video', index + 1)},
+    {label: '名前を変更', onClick: () => setEditing(true)},
+    {type: 'divider'},
+    {
+      label: 'レイヤーを削除',
+      variant: 'destructive',
+      onClick: () => removeTrack(track.id),
+    },
+  ]);
+  const header = (
     <div
       className="vx-track-header"
       style={{height: LAYER_H}}
@@ -262,48 +300,21 @@ function TrackHeader({track}: {track: Track}) {
           aria-pressed={track.locked}
           onClick={() => updateTrack(track.id, {locked: !track.locked})}
         />
-        <MoreMenu
-          label={`${label}のメニュー`}
-          size="sm"
-          items={tidyMenu([
-            {label: '素材を追加…', onClick: () => void addMedia()},
-            {type: 'divider' as const},
-            ...[
-              {
-                label: `${track.duck ? '✓' : '　'} セリフ中は音を下げる（${track.duck ? 'オン' : 'オフ'}）`,
-                description: 'BGM がセリフの邪魔にならないよう、自動で下げます',
-                onClick: () => updateTrack(track.id, {duck: !track.duck}),
-              },
-              ...(track.duck
-                ? (
-                    [
-                      ['少し下げる', 0.5],
-                      ['下げる', 0.3],
-                      ['大きく下げる', 0.15],
-                    ] as const
-                  ).map(([l, v]) => ({
-                    label: `${Math.abs(track.duckLevel - v) < 0.01 ? '✓ ' : '　 '}${l}（${Math.round(v * 100)}%）${Math.abs(track.duckLevel - v) < 0.01 ? '・選択中' : ''}`,
-                    onClick: () => updateTrack(track.id, {duckLevel: v}),
-                  }))
-                : []),
-              {type: 'divider' as const},
-            ],
-            // 上ほど番号が小さい（上に足す = この番号に入れる）
-            {label: '上にレイヤーを追加', onClick: () => addTrack('video', index)},
-            {label: '下にレイヤーを追加', onClick: () => addTrack('video', index + 1)},
-            {label: '名前を変更', onClick: () => setEditing(true)},
-            {type: 'divider'},
-            {
-              label: 'レイヤーを削除',
-              variant: 'destructive',
-              onClick: () => removeTrack(track.id),
-            },
-          ])}
-        />
+        <MoreMenu label={`${label}のメニュー`} size="sm" items={menu} />
       </HStack>
     </div>
   );
+  // 見出しの右クリックでも「…」と同じメニューを出す
+  return (
+    <ContextMenu items={menu} menuWidth={240} label={`${label}のメニュー`}>
+      {header}
+    </ContextMenu>
+  );
 }
+
+/** メニューの右端に出すショートカット */
+const MOD = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl+';
+const menuKey = (k: string) => <span className="vx-menu-key">{k}</span>;
 
 /** メニューの項目を整える：空の項目を除き、先頭・末尾・続きの区切り線を取る */
 function tidyMenu(items: (ContextMenuOption | null)[]): ContextMenuOption[] {
@@ -512,13 +523,14 @@ export function Timeline() {
         ctx.beginPath();
         ctx.roundRect(x, y, cw, ch, 3);
         ctx.save();
-        ctx.globalAlpha *= isSel ? 0.34 : unsynth ? 0.1 : 0.2;
+        const hovered = hoverRef.current?.clipId === c.id && !dragRef.current;
+        ctx.globalAlpha *= isSel ? 0.34 : (unsynth ? 0.1 : 0.2) + (hovered ? 0.12 : 0);
         ctx.fillStyle = color;
         ctx.fill();
         ctx.restore();
         ctx.lineWidth = 1;
-        ctx.strokeStyle = failed || overlapped || forbiddenHere ? pal.error : color;
-        if (overlapped || forbiddenHere) ctx.lineWidth = 2;
+        ctx.strokeStyle = failed || forbiddenHere ? pal.error : overlapped ? pal.warn : color;
+        if (overlapped || forbiddenHere || (hovered && !isSel)) ctx.lineWidth = 2;
         if (forbiddenHere) ctx.setLineDash([5, 4]);
         if (unsynth) ctx.setLineDash([4, 3]); // 未合成は破線（文字でも示す）
         ctx.stroke();
@@ -549,9 +561,9 @@ export function Timeline() {
           }
         }
         // 状態の札（未合成・失敗・プレビュー準備中）
-        let badge: {text: string; color: string} | null = null;
+        let badge: {text: string; color: string; ink?: string} | null = null;
         if (failed) badge = {text: '⚠ 失敗', color: pal.error};
-        else if (overlapped) badge = {text: '⚠ 重なり', color: pal.error};
+        else if (overlapped) badge = {text: '⚠ 重なり', color: pal.warn, ink: pal.text};
         else if (unsynth) badge = {text: '未合成', color: pal.text2};
         else if (c.type === 'media' && c.mediaKind === 'video') {
           const px = s.proxies[c.src];
@@ -586,7 +598,7 @@ export function Timeline() {
           ctx.strokeStyle = badge.color;
           ctx.lineWidth = 1;
           ctx.stroke();
-          ctx.fillStyle = badge.color;
+          ctx.fillStyle = badge.ink ?? badge.color;
           ctx.fillText(badge.text, labelX + 3, cy + 0.5);
           labelX += bw + 4;
         }
@@ -644,11 +656,7 @@ export function Timeline() {
           ctx.fillStyle = '#fff';
           ctx.fillText(label, x + 5, ty + LAYER_H / 2);
         };
-        if (drag.forbidden) {
-          const fi = rowOf(drag.forbidden);
-          const kind = rows[fi]?.kind === 'audio' ? '音声トラック' : '映像トラック';
-          tag(fi, Math.max(4, X(drag.start)), `${kind}には置けません`, pal.error);
-        } else {
+        {
           const ti = rowOf(drag.trackId);
           const moving = new Set([drag.clipId, ...drag.group, ...drag.linked]);
           const hit = p.clips.some(c => c.trackId === drag.trackId && !moving.has(c.id) && drag.start < c.start + c.duration && drag.start + drag.duration > c.start);
@@ -658,7 +666,7 @@ export function Timeline() {
               ctx.fillStyle = pal.accent;
               ctx.fillRect(ix - 1.5, Y(ti) + 1, 3, LAYER_H - 2);
             }
-            tag(ti, ix + 6, drag.insert ? '挿入（後ろを押し出す）' : '重なるので空いているトラックへ（Ctrl で挿入）', drag.insert ? pal.accent : pal.text2);
+            tag(ti, ix + 6, drag.insert ? '挿入（後ろを押し出す）' : '重なるので空いているレイヤーへ（Ctrl で挿入）', drag.insert ? pal.accent : pal.text2);
           }
         }
       }
@@ -1042,13 +1050,7 @@ export function Timeline() {
     dragRef.current = null;
     if (d?.moved && (d.start !== d.origStart || d.duration !== d.origDuration || d.trackId !== d.origTrack)) {
       const insert = e.ctrlKey || e.metaKey;
-      if (d.mode === 'move' && d.forbidden) {
-        // 置けない種類のトラックで離したら、動かさない（表示と結果をそろえる）
-        const p2 = getState().project!;
-        const kind = p2.tracks.find(t => t.id === d.forbidden)?.kind === 'audio' ? '音声トラック' : '映像トラック';
-        getNotify()(`${kind}には置けないので、元の場所に戻しました`, 'info');
-        draw();
-      } else if (d.mode === 'move') {
+      if (d.mode === 'move') {
         const r = d.group.length ? moveClips([d.clipId, ...d.group], d.start - d.origStart, {insert}) : moveClip(d.clipId, d.start, d.trackId, undefined, {insert, solo: d.solo});
         // 置いた結果を知らせる（黙って動かさない）
         const p2 = getState().project!;
@@ -1194,7 +1196,7 @@ export function Timeline() {
           ? [
               {
                 label: primary.type === 'media' ? '映像と音声をまとめる' : '字幕と音声をまとめる',
-                description: '分離したものを 1 つのクリップに戻します',
+                description: '分離したものを 1 つのアイテムに戻します',
                 onClick: () => mergeClip(primary.id),
               },
             ]
@@ -1202,21 +1204,22 @@ export function Timeline() {
         anyLinked
           ? {label: 'リンク解除', description: '一緒に動かないようにします（別々に動かせます）', onClick: () => unlinkClips(selClips.map(c => c.id))}
           : n >= 2
-            ? {label: 'リンク', description: '選んだクリップを一緒に動くようにします', onClick: () => linkClips(selClips.map(c => c.id))}
+            ? {label: 'リンク', description: '選んだアイテムを一緒に動くようにします', onClick: () => linkClips(selClips.map(c => c.id))}
             : null,
         {type: 'divider' as const},
-        {label: '複製（Ctrl+D）', onClick: () => duplicateSelection()},
-        {label: 'コピー（Ctrl+C）', onClick: () => copySelection()},
-        {label: '切り取り（Ctrl+X）', onClick: () => cutSelection()},
+        {label: '複製', endContent: menuKey(`${MOD}D`), onClick: () => duplicateSelection()},
+        {label: 'コピー', endContent: menuKey(`${MOD}C`), onClick: () => copySelection()},
+        {label: '切り取り', endContent: menuKey(`${MOD}X`), onClick: () => cutSelection()},
         {type: 'divider' as const},
         {
-          label: n > 1 ? `${n} 個を削除（Delete）` : '削除（Delete）',
+          label: n > 1 ? `${n} 個を削除` : '削除',
+          endContent: menuKey('Delete'),
           variant: 'destructive' as const,
           onClick: () => deleteClips(selClips.map(c => c.id)),
         },
       ]
     : [
-        {label: '貼り付け（Ctrl+V）', isDisabled: !canPaste, onClick: () => pasteClipboard()},
+        {label: '貼り付け', endContent: menuKey(`${MOD}V`), isDisabled: !canPaste, onClick: () => pasteClipboard()},
         {type: 'divider' as const},
         {
           label: '立ち絵アイテムを追加',
@@ -1303,7 +1306,7 @@ export function Timeline() {
               ref={headersRef}
               role="toolbar"
               aria-orientation="vertical"
-              aria-label="トラック見出し（↑↓で上下のトラック、←→で同じトラックのボタンへ）"
+              aria-label="レイヤー見出し（↑↓で上下のレイヤー、←→で同じレイヤーのボタンへ）"
               onKeyDown={onHeadersKey}
               onFocus={onHeadersFocus}>
               {trackRows(project).map(t => (
@@ -1314,7 +1317,7 @@ export function Timeline() {
             </div>
           </div>
         </div>
-        <ContextMenu items={tidyMenu(menuItems)} menuWidth={240} label="クリップの操作">
+        <ContextMenu items={tidyMenu(menuItems)} menuWidth={240} label="アイテムの操作">
           <div
             ref={scrollRef}
             onContextMenuCapture={onContextMenuCapture}
@@ -1323,7 +1326,7 @@ export function Timeline() {
             tabIndex={0}
             role="application"
             aria-roledescription="タイムライン"
-            aria-label="タイムライン。←→で1コマ送り、↑↓で前後の編集点、Ctrl+←→で前後のクリップ、Ctrl+↑↓で上下のトラックのクリップを選ぶ。Alt+←→か , . で選んだクリップを1コマ動かす"
+            aria-label="タイムライン。←→で1コマ送り、↑↓で前後の編集点、Ctrl+←→で前後のアイテム、Ctrl+↑↓で上下のレイヤーのアイテムを選ぶ。Alt+←→か , . で選んだアイテムを1コマ動かす"
             onKeyDown={onKeyDown}>
             <canvas
               ref={canvasRef}

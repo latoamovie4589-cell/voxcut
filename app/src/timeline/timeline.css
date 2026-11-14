@@ -62,15 +62,14 @@
   align-items: center;
   gap: 4px;
 }
-/* M・S のボタン */
+/* M・S のボタン（目・ロックの絵のボタンと同じ大きさ・見た目。押しているときだけ色を付ける） */
 .vx-track-toggle {
   flex: none;
-  width: 24px;
-  height: 24px;
-  margin-inline: 1px;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-text-secondary);
   font:
@@ -78,12 +77,15 @@
     sans-serif;
   cursor: pointer;
 }
+.vx-track-toggle:hover {
+  background: var(--color-background-muted);
+  color: var(--color-text-primary);
+}
 .vx-track-toggle:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
 .vx-track-toggle[aria-pressed='true'] {
-  border-color: transparent;
   background: #30b0c7;
   color: #fff;
 }
