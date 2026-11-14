@@ -16,7 +16,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Check, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {Circle, CircleDot, Square, SquareCheck, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
@@ -181,6 +181,11 @@ interface Drag {
   insert?: boolean;
   /** 置けない種類のトラック（映像 ↔ 音声）の上にいる：そのトラックの id */
   forbidden?: string | null;
+  /** つかんだときの横スクロール（端で自動スクロールしても位置がずれないように） */
+  startScroll: number;
+  /** Esc で取り消すときに、つかみを放す */
+  pointerId: number;
+  captureEl: Element;
 }
 
 function nearest(targets: number[], f: number): number | null {
@@ -210,8 +215,13 @@ function TrackHeader({track}: {track: Track}) {
     {type: 'divider' as const},
     ...[
       {
-        label: 'セリフ中は音を下げる',
-        endContent: track.duck ? <Icon icon={Check} color="accent" /> : undefined,
+        // 表示メニューのチェックボックスと同じく、先頭に入・切の印（読み上げにはオン・オフを伝える）
+        label: (
+          <>
+            セリフ中は音を下げる<VisuallyHidden>{track.duck ? '（オン）' : '（オフ）'}</VisuallyHidden>
+          </>
+        ),
+        icon: <Icon icon={track.duck ? SquareCheck : Square} color={track.duck ? 'accent' : 'secondary'} />,
         description: 'BGM がセリフの邪魔にならないよう、自動で下げます',
         onClick: () => updateTrack(track.id, {duck: !track.duck}),
       },
@@ -223,8 +233,12 @@ function TrackHeader({track}: {track: Track}) {
               ['大きく下げる', 0.15],
             ] as const
           ).map(([l, v]) => ({
-            label: `${l}（${Math.round(v * 100)}%）`,
-            endContent: Math.abs(track.duckLevel - v) < 0.01 ? <Icon icon={Check} color="accent" /> : undefined,
+            label: (
+              <>
+                {l}（{Math.round(v * 100)}%）<VisuallyHidden>{Math.abs(track.duckLevel - v) < 0.01 ? '（選択中）' : ''}</VisuallyHidden>
+              </>
+            ),
+            icon: <Icon icon={Math.abs(track.duckLevel - v) < 0.01 ? CircleDot : Circle} color={Math.abs(track.duckLevel - v) < 0.01 ? 'accent' : 'secondary'} />,
             onClick: () => updateTrack(track.id, {duckLevel: v}),
           }))
         : []),
@@ -352,6 +366,11 @@ function hoverDescription<T extends ContextMenuOption>(x: T): T {
 }
 
 /** キャラクターの編集の「立ち絵」タブを開く（PSD をまだ設定していないとき） */
+/** 端からこの距離（px）に入ったら自動で横にスクロールする */
+const EDGE_SCROLL = 40;
+/** スクロールする枠の左にある、時間の流れない部分（見出しは別の枠なので 0） */
+const HEADER_W_IN_SCROLL = 0;
+
 const openPortraitSettings = (characterId: string) => setState({dialogCharacterId: characterId, inspectorTab: 'portrait', characterDialogOpen: true});
 
 // ───────────── 本体 ─────────────
@@ -535,6 +554,25 @@ export function Timeline() {
         if (unsynth) ctx.setLineDash([4, 3]); // 未合成は破線（文字でも示す）
         ctx.stroke();
         ctx.setLineDash([]);
+        // 重なりは色だけでなく形でも示す：上の辺に黄色と黒の斜めのしま（キャラクターの色と見分けられるように）
+        if (overlapped) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, cw, 4);
+          ctx.clip();
+          ctx.fillStyle = pal.warn;
+          ctx.fillRect(x, y, cw, 4);
+          ctx.fillStyle = pal.text;
+          for (let sx = x - 4; sx < x + cw; sx += 8) {
+            ctx.beginPath();
+            ctx.moveTo(sx, y + 4);
+            ctx.lineTo(sx + 4, y);
+            ctx.lineTo(sx + 7, y);
+            ctx.lineTo(sx + 3, y + 4);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
 
         ctx.save();
         ctx.beginPath();
@@ -548,7 +586,8 @@ export function Timeline() {
             const amp = ch * 0.28;
             const perFrame = 100 / fps; // ピークは 100 個/秒
             ctx.fillStyle = color;
-            ctx.globalAlpha *= 0.55;
+            // 名前の文字と重なっても読めるよう、波形は薄く（文字には縁取りも付ける）
+            ctx.globalAlpha *= 0.35;
             for (let px = Math.max(0, -x); px < Math.min(cw, w - x); px++) {
               // 再生開始位置で飛ばした頭は描かない
               const i = Math.floor((px / z + startOffsetOf(c)) * perFrame) * 2;
@@ -561,17 +600,18 @@ export function Timeline() {
           }
         }
         // 状態の札（未合成・失敗・プレビュー準備中）
-        let badge: {text: string; color: string; ink?: string} | null = null;
-        if (failed) badge = {text: '⚠ 失敗', color: pal.error};
-        else if (overlapped) badge = {text: '⚠ 重なり', color: pal.warn, ink: pal.text};
-        else if (unsynth) badge = {text: '未合成', color: pal.text2};
-        else if (c.type === 'media' && c.mediaKind === 'video') {
+        // 札は重ねて出す（重なっていて未合成なら、両方とも見えるように）
+        const badges: {text: string; color: string; ink?: string}[] = [];
+        if (failed) badges.push({text: '⚠ 失敗', color: pal.error});
+        if (overlapped) badges.push({text: '⚠ 重なり', color: pal.warn, ink: pal.text});
+        if (unsynth && !failed) badges.push({text: '未合成', color: pal.text2});
+        if (c.type === 'media' && c.mediaKind === 'video') {
           const px = s.proxies[c.src];
           if (px && !px.url && !px.error)
-            badge = {
+            badges.push({
               text: `準備中 ${Math.round(px.ratio * 100)}%`,
               color: pal.text2,
-            };
+            });
         }
         ctx.font = `12px ${FONT}`;
         ctx.textBaseline = 'middle';
@@ -589,7 +629,7 @@ export function Timeline() {
           ctx.restore();
           labelX += 18;
         }
-        if (badge && cw > 80) {
+        for (const badge of cw > 80 ? badges : []) {
           const bw = ctx.measureText(badge.text).width + 10;
           ctx.fillStyle = pal.bg;
           ctx.beginPath();
@@ -622,6 +662,14 @@ export function Timeline() {
                   : c.type === 'portrait'
                     ? `立ち絵  ${p.characters.find(x2 => x2.id === c.characterId)?.name ?? '?'}`
                     : (c.src.split(/[\\/]/).pop() ?? c.src);
+        // 波形の上でも読めるよう、地の色で縁取りしてから書く
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = pal.bg;
+        ctx.globalAlpha *= 0.85;
+        ctx.strokeText(label, labelX, cy + 0.5);
+        ctx.restore();
         ctx.fillStyle = pal.text;
         ctx.fillText(label, labelX, cy + 0.5);
         ctx.restore();
@@ -956,9 +1004,53 @@ export function Timeline() {
       moved: false,
       targets,
       snappedAt: null,
+      startScroll: scrollRef.current?.scrollLeft ?? 0,
+      pointerId: e.pointerId,
+      captureEl: e.target as Element,
     };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
+
+  // ドラッグ中に端（40px 以内）へ寄せたら、近いほど速く横にスクロールする
+  const lastMoveRef = useRef<React.PointerEvent | null>(null);
+  const scrollRaf = useRef(0);
+  const autoScroll = () => {
+    if (scrollRaf.current) return;
+    const tick = () => {
+      scrollRaf.current = 0;
+      const el = scrollRef.current;
+      const m = lastMoveRef.current;
+      if (!el || !m || !dragRef.current) return;
+      const r = el.getBoundingClientRect();
+      const left = r.left + HEADER_W_IN_SCROLL;
+      const v = m.clientX < left + EDGE_SCROLL ? -(left + EDGE_SCROLL - m.clientX) : m.clientX > r.right - EDGE_SCROLL ? m.clientX - (r.right - EDGE_SCROLL) : 0;
+      if (!v) return;
+      const before = el.scrollLeft;
+      el.scrollLeft = Math.max(0, before + Math.sign(v) * Math.min(16, Math.abs(v) / 3 + 2));
+      if (el.scrollLeft === before) return;
+      onPointerMove(m);
+    };
+    scrollRaf.current = requestAnimationFrame(tick);
+  };
+
+  // Esc：ドラッグをやめて、元の場所に戻す（離しても置かない）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const d = dragRef.current;
+      if (e.key !== 'Escape' || !d) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragRef.current = null;
+      try {
+        d.captureEl.releasePointerCapture(d.pointerId);
+      } catch {
+        // もう放れていれば何もしない
+      }
+      draw();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
@@ -986,8 +1078,11 @@ export function Timeline() {
       return;
     }
     const z = getState().zoom;
-    if (Math.abs(e.clientX - d.startX) > 3) d.moved = true;
-    const df = Math.round((e.clientX - d.startX) / z);
+    lastMoveRef.current = e;
+    autoScroll();
+    const scrolled = (scrollRef.current?.scrollLeft ?? 0) - d.startScroll;
+    if (Math.abs(e.clientX - d.startX + scrolled) > 3) d.moved = true;
+    const df = Math.round((e.clientX - d.startX + scrolled) / z);
     const tol = SNAP_PX / z;
     // Alt を押している間はスナップしない
     const snap = (f: number) => {

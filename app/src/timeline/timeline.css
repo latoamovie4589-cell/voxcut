@@ -71,9 +71,10 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--color-text-secondary);
+  /* 目・ロックの絵と同じ色・重さ */
+  color: var(--color-text-primary);
   font:
-    600 11px/1 system-ui,
+    700 13px/1 system-ui,
     sans-serif;
   cursor: pointer;
 }
@@ -93,7 +94,7 @@
   background: #ffcc00;
   color: #000;
 }
-/* 映像トラックと音声トラックの境目 */
+/* レイヤーの区切り（古い配置の名残） */
 .vx-track-divider {
   background: var(--color-background-muted);
   border-bottom: 0.5px solid var(--color-border);
