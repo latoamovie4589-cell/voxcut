@@ -108,7 +108,7 @@ function readPalette(el: HTMLElement): Palette {
     border: v('--color-border', 'rgba(60,60,67,.29)'),
     text: v('--color-text-primary', '#000'),
     text2: v('--color-text-secondary', '#5B5B63'),
-    accent: v('--color-accent', '#007AFF'),
+    accent: v('--color-accent', '#6E56CF'),
     error: v('--color-error', '#FF3B30'),
     warn: v('--color-warning', '#E9AF08'),
   };
@@ -1070,8 +1070,12 @@ export function Timeline() {
       draw();
     };
     mq.addEventListener('change', onScheme);
+    // 「画面の明るさ」を切り替えると <html data-theme> が変わる
+    const mo = new MutationObserver(onScheme);
+    mo.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
     return () => {
       ro.disconnect();
+      mo.disconnect();
       mq.removeEventListener('change', onScheme);
     };
   }, [draw]);
