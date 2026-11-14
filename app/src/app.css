@@ -146,6 +146,45 @@ textarea {
   text-align: center;
 }
 
+/* 台本パネル（一覧／文書で書く） */
+.vx-script-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.vx-script-switch {
+  padding: 8px 8px 0;
+}
+.vx-script-pane {
+  flex: 1;
+  min-height: 0;
+}
+/* 台本モード：文書のように書く欄 */
+.vx-script-doc {
+  flex: 1;
+  min-height: 240px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.9;
+  tab-size: 2;
+}
+.vx-script-doc:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+.vx-script-doc::placeholder {
+  color: var(--color-text-secondary);
+}
+
 /* 台本の一覧 */
 .vx-script {
   list-style: none;
@@ -669,4 +708,20 @@ textarea {
 .vx-script-empty {
   list-style: none;
   padding: 8px;
+}
+
+/* キャラクターの丸いアバター（立ち絵の顔、無ければ色の丸に頭文字） */
+.vx-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.35);
+  user-select: none;
 }

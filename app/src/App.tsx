@@ -3,6 +3,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {setHintsShown, useHintsShown} from './hints';
+import {setThemeMode, useThemeMode, type ThemeMode} from './theme';
 import {modalOpen, onControl, startSpaceGuard} from './keys';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -232,6 +233,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
   const hasSel = useStore(s => s.selectedClipIds.length > 0 || !!s.selectedClipId);
   const busy = useStore(s => !!s.busy);
   const hints = useHintsShown();
+  const themeMode = useThemeMode();
   const canPaste = useStore(s => s.clipboardCount > 0);
   const maxH = Math.max(320, (typeof window === 'undefined' ? 800 : window.innerHeight) - 80);
   const key = (k: string) => <Text type="supporting">{k}</Text>;
@@ -271,6 +273,12 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
       <DropdownMenu button={menu('表示')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
         <WindowMenu />
         <WorkspaceMenu />
+        <DropdownMenuDivider />
+        <DropdownMenuRadioGroup label="画面の明るさ" value={themeMode} onChange={v => setThemeMode(v as ThemeMode)}>
+          <DropdownMenuRadioItem value="dark" label="ダーク" />
+          <DropdownMenuRadioItem value="light" label="ライト" />
+          <DropdownMenuRadioItem value="system" label="OS の設定に合わせる" />
+        </DropdownMenuRadioGroup>
         <DropdownMenuDivider />
         <DropdownMenuCheckboxItem label="項目の説明を表示" description="オンなら、項目にマウスを 3 秒乗せると説明が出ます" value={hints} onChange={v => setHintsShown(v)} />
       </DropdownMenu>
@@ -503,9 +511,11 @@ export function App() {
         const replace = e.key.toLowerCase() === 'h';
         // パネルが出てから（今は隠れていて、まだ作られていないこともある）
         setTimeout(() => {
+          // 台本パネルが「文書で書く」なら一覧へ戻す（探す欄は一覧にある）
+          window.dispatchEvent(new Event('vx-open-search'));
           if (replace) window.dispatchEvent(new Event('vx-open-replace'));
-          document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus();
         }, 80);
+        setTimeout(() => document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus(), 160);
       } else if (e.key === 'Escape' && getState().previewFull) {
         e.preventDefault();
         void toggleFullscreen();

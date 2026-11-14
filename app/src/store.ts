@@ -792,6 +792,89 @@ export function addLines(items: {characterId: string; text: string}[]): string[]
 }
 
 /**
+ * 台本（文書）モード：書いた台本の行の並びに、タイムラインのセリフを合わせる。
+ * 変わらない行はそのまま（合成済みの音声も残す）、書き直した行は文とキャラクターだけ変え、
+ * 増えた行は前の行のすぐ後ろへ入れて後ろを押し出し、消えた行は消して詰める。
+ * 書き直した行と増えた行の ID を返す（合成し直す対象）
+ */
+export function applyScript(items: {characterId: string; text: string}[], mergeKey = 'script-doc'): string[] {
+  const touched: string[] = [];
+  commit(p0 => {
+    const old = p0.clips.filter((c): c is VoiceClip => c.type === 'voice').sort((a, b) => a.start - b.start || a.trackId.localeCompare(b.trackId));
+    const k = (ch: string, t: string) => `${ch}\u0000${t}`;
+    const a = old.map(c => k(c.characterId, c.text));
+    const b = items.map(x => k(x.characterId, x.text));
+    // 最長共通部分列で「変わらない行」を決める
+    const n = a.length;
+    const m = b.length;
+    const dp: Uint32Array[] = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const pairs: [number, number][] = [];
+    for (let i = 0, j = 0; i < n && j < m;) {
+      if (a[i] === b[j]) {
+        pairs.push([i, j]);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    pairs.push([n, m]);
+    const updates = new Map<string, {characterId: string; text: string}>();
+    const inserts: {after: string | null; items: {characterId: string; text: string}[]}[] = [];
+    const del = new Set<string>();
+    let pi = 0;
+    let pj = 0;
+    let anchor: string | null = null;
+    for (const [i, j] of pairs) {
+      const os = old.slice(pi, i);
+      const ns = items.slice(pj, j);
+      const both = Math.min(os.length, ns.length);
+      for (let x = 0; x < both; x++) {
+        updates.set(os[x].id, ns[x]);
+        anchor = os[x].id;
+      }
+      for (const c of os.slice(both)) del.add(c.id);
+      if (ns.length > both) inserts.push({after: anchor, items: ns.slice(both)});
+      if (i < n) anchor = old[i].id;
+      pi = i + 1;
+      pj = j + 1;
+    }
+    if (!updates.size && !inserts.length && !del.size) return p0;
+    let p: Project = {
+      ...p0,
+      clips: p0.clips.map(c => {
+        const u = c.type === 'voice' ? updates.get(c.id) : undefined;
+        if (!u || c.type !== 'voice') return c;
+        touched.push(c.id);
+        const sameChar = u.characterId === c.characterId;
+        return {...c, text: u.text, characterId: u.characterId, subtitle: null, audio: null, ...(sameChar ? {} : {presetId: null})};
+      }),
+    };
+    for (const ins of inserts) {
+      const prev = ins.after ? p.clips.find(c => c.id === ins.after) : undefined;
+      let t = prev ? prev.start + prev.duration : (old.find(c => !del.has(c.id))?.start ?? 0);
+      // 先頭へ入れるときは、いま先頭の行の位置から
+      if (!prev && old.length) t = Math.min(t, old[0].start);
+      const at = t;
+      const added: VoiceClip[] = [];
+      for (const it of ins.items) {
+        const r = layerFor(p, it.characterId);
+        p = r.p;
+        const id = newId('c');
+        const c = newVoiceClip(p, id, r.trackId, t, it.characterId, it.text);
+        added.push(c);
+        touched.push(id);
+        t += c.duration;
+      }
+      const moved = rippleFrom(p, at, t - at);
+      p = {...moved, clips: [...moved.clips, ...added]};
+    }
+    return del.size ? rippleDelete(p, del) : p;
+  }, mergeKey);
+  return touched;
+}
+
+/**
  * アイテムの長さを変え、同じトラックの後ろを動かす（直前のすぐ後ろにあったものは付いてくる、
  * 離して置いたものは重なるときだけ押し出す）
  */
