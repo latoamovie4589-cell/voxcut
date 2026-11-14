@@ -52,8 +52,8 @@ import {addMedia, getNotify, synthesize} from '../actions';
 import './timeline.css';
 
 const RULER_H = 26;
-/** トラックの高さ */
-const LAYER_H = 32;
+/** レイヤーの高さ（YMM4 と同じくらいに細め。プレビューを広く取れるように） */
+const LAYER_H = 26;
 const HEADER_W = 224;
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 40;
@@ -558,17 +558,17 @@ export function Timeline() {
         if (overlapped) {
           ctx.save();
           ctx.beginPath();
-          ctx.rect(x, y, cw, 4);
+          ctx.rect(x, y, cw, 3);
           ctx.clip();
           ctx.fillStyle = pal.warn;
-          ctx.fillRect(x, y, cw, 4);
+          ctx.fillRect(x, y, cw, 3);
           ctx.fillStyle = pal.text;
           for (let sx = x - 4; sx < x + cw; sx += 8) {
             ctx.beginPath();
-            ctx.moveTo(sx, y + 4);
+            ctx.moveTo(sx, y + 3);
             ctx.lineTo(sx + 4, y);
             ctx.lineTo(sx + 7, y);
-            ctx.lineTo(sx + 3, y + 4);
+            ctx.lineTo(sx + 3, y + 3);
             ctx.fill();
           }
           ctx.restore();
@@ -633,7 +633,7 @@ export function Timeline() {
           const bw = ctx.measureText(badge.text).width + 10;
           ctx.fillStyle = pal.bg;
           ctx.beginPath();
-          ctx.roundRect(labelX - 2, cy - 8.5, bw, 17, 3);
+          ctx.roundRect(labelX - 2, cy - 7.5, bw, 15, 3);
           ctx.fill();
           ctx.strokeStyle = badge.color;
           ctx.lineWidth = 1;
