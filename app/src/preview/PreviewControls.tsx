@@ -149,9 +149,10 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
               isLabelHidden
               size="md"
               variant="ghost"
-              width={104}
+              width={120}
               value={zoom === 'fit' ? 'fit' : String(zoom)}
               options={ZOOMS}
+              renderValue={o => `表示：${o.label}`}
               onChange={v => setState({previewZoom: v === 'fit' ? 'fit' : Number(v)})}
             />
             <Selector
@@ -159,9 +160,10 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
               isLabelHidden
               size="md"
               variant="ghost"
-              width={128}
+              width={120}
               value={String(quality)}
               options={QUALITIES}
+              renderValue={o => `画質：${(o.label ?? '').replace('フル画質', 'フル').replace(' 画質', '')}`}
               onChange={v => setState({previewQuality: Number(v) as 1 | 0.5 | 0.25})}
             />
             <ToggleButton

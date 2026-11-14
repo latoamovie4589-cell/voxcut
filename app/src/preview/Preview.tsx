@@ -95,8 +95,12 @@ type Gesture = {
   y: number;
   dist: number;
   moved: boolean;
+  /** 1 回のドラッグを 1 つの「元に戻す」にまとめる目印 */
+  id: number;
 };
 const HANDLE = 10;
+/** 中央・端に吸着する距離（画面の px） */
+const SNAP = 6;
 
 const corners = (r: Rect): [number, number][] => [
   [r.x, r.y],
@@ -246,6 +250,10 @@ export function Preview() {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const overrideRef = useRef<{key: string; transform: Transform} | null>(null);
+  // 動かしている間に出す、吸着した線（画面の中央・端）。画面上の位置
+  const guidesRef = useRef<{v: number[]; h: number[]}>({v: [], h: []});
+  // 動かしている間もプロパティの X・Y を追従させる（1 コマに 1 回だけ書き込む）
+  const liveRef = useRef(0);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -491,6 +499,29 @@ export function Preview() {
       if (sel && !isPlaying) {
         o.translate(cr.left - wr.left, cr.top - wr.top);
         const r = sel.rect;
+        // 吸着した線（中央・端）
+        const gd = guidesRef.current;
+        if (gestureRef.current && (gd.v.length || gd.h.length)) {
+          o.save();
+          o.strokeStyle = '#FF2D95';
+          o.lineWidth = 1;
+          o.setLineDash([4, 3]);
+          const vw = cr.width;
+          const vh = cr.height;
+          for (const gx of gd.v) {
+            o.beginPath();
+            o.moveTo(gx + 0.5, 0);
+            o.lineTo(gx + 0.5, vh);
+            o.stroke();
+          }
+          for (const gy of gd.h) {
+            o.beginPath();
+            o.moveTo(0, gy + 0.5);
+            o.lineTo(vw, gy + 0.5);
+            o.stroke();
+          }
+          o.restore();
+        }
         o.strokeStyle = '#0A84FF';
         o.lineWidth = 1.5;
         o.strokeRect(r.x, r.y, r.w, r.h);
@@ -522,6 +553,7 @@ export function Preview() {
         y: pt.y,
         dist: distToCenter(sel.rect, pt),
         moved: false,
+        id: Date.now(),
       };
       (e.target as Element).setPointerCapture(e.pointerId);
       return;
@@ -537,6 +569,7 @@ export function Preview() {
       y: pt.y,
       dist: 0,
       moved: false,
+      id: Date.now(),
     };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
@@ -554,12 +587,42 @@ export function Preview() {
     g.moved = true;
     const sc = scaleRef.current || 1;
     const t0 = g.target.transform;
+    let dx = pt.x - g.x;
+    let dy = pt.y - g.y;
+    guidesRef.current = {v: [], h: []};
+    if (g.mode === 'move' && !e.altKey) {
+      // 画面の中央・端に吸着する（Alt を押している間はしない）
+      const cv = canvasRef.current!.getBoundingClientRect();
+      const r = g.target.rect;
+      const snap = (lo: number, size: number, d: number, span: number) => {
+        let best: {d: number; at: number} | null = null;
+        for (const [edge, at] of [
+          [lo + size / 2, span / 2],
+          [lo, 0],
+          [lo + size, span],
+        ] as const) {
+          const diff = at - (edge + d);
+          if (Math.abs(diff) <= SNAP && (!best || Math.abs(diff) < Math.abs(best.d))) best = {d: diff, at};
+        }
+        return best;
+      };
+      const sx = snap(r.x, r.w, dx, cv.width);
+      const sy = snap(r.y, r.h, dy, cv.height);
+      if (sx) {
+        dx += sx.d;
+        guidesRef.current.v.push(sx.at);
+      }
+      if (sy) {
+        dy += sy.d;
+        guidesRef.current.h.push(sy.at);
+      }
+    }
     const next =
       g.mode === 'move'
         ? {
             ...t0,
-            x: Math.round(t0.x + (pt.x - g.x) / sc),
-            y: Math.round(t0.y + (pt.y - g.y) / sc),
+            x: Math.round(t0.x + dx / sc),
+            y: Math.round(t0.y + dy / sc),
           }
         : {
             ...t0,
@@ -567,13 +630,23 @@ export function Preview() {
           };
     overrideRef.current = {key: g.target.key, transform: next};
     setTick(x => x + 1);
+    if (!liveRef.current)
+      liveRef.current = requestAnimationFrame(() => {
+        liveRef.current = 0;
+        const ov = overrideRef.current;
+        const g2 = gestureRef.current;
+        if (ov && g2) commitTransform(g2.target, ov.transform, `drag:${g2.target.key}:${g2.id}`);
+      });
   };
 
   const onPointerUp = () => {
     const g = gestureRef.current;
     const ov = overrideRef.current;
     gestureRef.current = null;
-    if (g?.moved && ov) commitTransform(g.target, ov.transform);
+    cancelAnimationFrame(liveRef.current);
+    liveRef.current = 0;
+    guidesRef.current = {v: [], h: []};
+    if (g?.moved && ov) commitTransform(g.target, ov.transform, `drag:${g.target.key}:${g.id}`);
     overrideRef.current = null;
     setTick(x => x + 1);
   };

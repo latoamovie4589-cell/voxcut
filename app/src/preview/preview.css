@@ -13,9 +13,10 @@
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 16px;
+  padding: 10px;
   overflow: hidden;
-  background: var(--color-background-muted);
+  /* ダークでは黒い映像と見分けられるよう、周りを少し明るい灰色に */
+  background: light-dark(var(--color-background-muted), #2c2c2e);
 }
 /* 倍率を上げたときははみ出した分をスクロールで見る */
 .vx-preview[data-zoomed] {
@@ -24,7 +25,8 @@
 }
 .vx-preview-canvas {
   display: block;
-  box-shadow: 0 0 0 0.5px var(--color-border);
+  /* ダークでも黒い映像と周りの地の境目が分かるよう、ダークでは少し明るい縁を付ける */
+  box-shadow: 0 0 0 1px light-dark(var(--color-border), rgb(255 255 255 / 0.22));
   outline: none;
 }
 .vx-preview-canvas:focus-visible {
