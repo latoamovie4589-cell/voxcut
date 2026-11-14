@@ -561,6 +561,12 @@ textarea {
   padding: 8px 12px 0;
   background: var(--color-background);
 }
+.vx-quickbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  padding-bottom: 8px;
+}
 .vx-tabsummary {
   padding: 12px 16px 0;
 }
