@@ -988,6 +988,38 @@ export function Timeline() {
         // ほかの表示と同じ 時:分:秒:フレーム
         ctx.fillText(framesToTimecode(f, fps), x + 4, RULER_H / 2);
       }
+      // マーカー（目盛りの下の辺に旗。名前は、次のマーカーまでの幅に収まる分だけ）
+      const marks = (p.markers ?? []).filter(mk => mk.frame >= f0 - 400 / z && mk.frame <= f1);
+      marks.forEach((mk, i) => {
+        const x = Math.round(X(mk.frame));
+        ctx.fillStyle = pal.accent;
+        ctx.beginPath();
+        ctx.moveTo(x - 5, RULER_H - 11);
+        ctx.lineTo(x + 5, RULER_H - 11);
+        ctx.lineTo(x + 5, RULER_H - 5);
+        ctx.lineTo(x, RULER_H);
+        ctx.lineTo(x - 5, RULER_H - 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 0.35;
+        ctx.fillRect(x - 0.5, RULER_H, 1, h - RULER_H);
+        ctx.globalAlpha = 1;
+        const room = (marks[i + 1] ? X(marks[i + 1].frame) : w) - x - 16;
+        if (mk.name && room > 28) {
+          ctx.font = `600 11px ${FONT}`;
+          let label = mk.name;
+          while (label.length > 1 && ctx.measureText(label).width > Math.min(room, 160)) label = label.slice(0, -1);
+          if (label !== mk.name) label = `${label.slice(0, -1)}…`;
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = pal.bg;
+          ctx.globalAlpha = 0.9;
+          ctx.fillRect(x + 7, RULER_H - 14, tw + 6, 13);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = pal.accent;
+          ctx.fillText(label, x + 10, RULER_H - 7);
+          ctx.font = `12px ${FONT}`;
+        }
+      });
 
       // スナップ線
       if (drag?.snappedAt != null) {
@@ -1314,8 +1346,10 @@ export function Timeline() {
     scrollRef.current?.focus({preventScroll: true});
     const h = hitTest(e.clientX, e.clientY);
     if (h.ruler || !h.clip) {
+      // 目盛りのマーカーの近くを押したら、ちょうどその位置へ
+      const near = h.ruler ? (getState().project!.markers ?? []).find(mk => Math.abs(mk.frame - h.frame) * getState().zoom <= 7) : undefined;
       setState({
-        playhead: Math.max(0, Math.round(h.frame)),
+        playhead: near ? near.frame : Math.max(0, Math.round(h.frame)),
         selectedClipId: h.ruler ? getState().selectedClipId : null,
       });
       if (h.ruler) (e.target as Element).setPointerCapture(e.pointerId);
