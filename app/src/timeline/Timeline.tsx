@@ -173,7 +173,7 @@ export function describeClip(p: Project, c: Clip, synthErrors: Record<string, st
   if (c.type === 'voice') {
     const ch = p.characters.find(x => x.id === c.characterId)?.name ?? '?';
     const st = synthErrors[c.id] ? '合成に失敗' : c.audio ? '合成済み' : '未合成';
-    return `セリフ、${ch}「${c.text}」、${where}、${st}${overlappingLines(p).has(c.id) ? '\n⚠ ほかのキャラクターのセリフと時間が重なっています（声が同時に鳴ります）。わざとでなければ、どちらかを横にずらしてください' : ''}`;
+    return `セリフ、${ch}「${c.text}」、${where}、${st}${overlappingLines(p).has(c.id) ? '\n⚠ ほかのセリフと時間が重なっています（声が同時に鳴ります）。わざとでなければ、どちらかを横にずらしてください' : ''}`;
   }
   if (c.type === 'caption') {
     const v = p.clips.find(x => x.id === c.voiceId);
@@ -943,9 +943,7 @@ export function Timeline() {
                     : '重なるので空いているレイヤーへ（Ctrl で挿入）';
               // レイヤーは逃がせても、ほかのキャラクターのセリフと時間が重なるなら、それも先に伝える
               const me = p.clips.find(c => c.id === drag.clipId);
-              const clash =
-                me?.type === 'voice' &&
-                p.clips.some(c => c.type === 'voice' && c.id !== me.id && c.characterId !== me.characterId && c.start < drag.start + drag.duration && drag.start < c.start + c.duration);
+              const clash = me?.type === 'voice' && p.clips.some(c => c.type === 'voice' && c.id !== me.id && c.start < drag.start + drag.duration && drag.start < c.start + c.duration);
               const msg = clash ? `${msg0}・ほかのセリフと時間が重なります` : msg0;
               tag(di >= 0 ? di : ti, ix + 6, msg, pal.text2);
             }
@@ -1131,10 +1129,21 @@ export function Timeline() {
   }, []);
   useEffect(() => () => cancelAnimationFrame(glideRef.current?.raf ?? 0), []);
 
+  /** 自分でスクロール・ドラッグしている間と、その後 2 秒は追従しない */
+  const followHoldUntil = useRef(0);
+  const holdFollow = () => {
+    followHoldUntil.current = performance.now() + 2000;
+    const g = glideRef.current;
+    if (g) {
+      cancelAnimationFrame(g.raf);
+      glideRef.current = null;
+    }
+  };
+
   // 再生中は再生位置が見えるようにスクロールを追従：端まで来たらページごと送るが、跳ばずに短く滑らせる
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || !getState().isPlaying) return;
+    if (!el || !getState().isPlaying || performance.now() < followHoldUntil.current) return;
     const x = playhead * zoom;
     const g = glideRef.current;
     const left = g ? g.to : el.scrollLeft;
@@ -1160,7 +1169,8 @@ export function Timeline() {
     const ti = rows.findIndex(t => t.id === c.trackId);
     const ty = tops[ti];
     const visibleH = el.clientHeight - RULER_H;
-    if (ty < el.scrollTop || ty + LAYER_H > el.scrollTop + visibleH) el.scrollTop = Math.max(0, ty - 8);
+    // 縦も、横と同じく跳ばずに送る
+    if (ty < el.scrollTop || ty + LAYER_H > el.scrollTop + visibleH) el.scrollTo({top: Math.max(0, ty - 8), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
     draw();
   }, [revealSeq, draw]);
 
@@ -1190,6 +1200,8 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // 自分でスクロールし始めたら、送り途中の動きを止め、再生中の追従もしばらく休む（引き戻さない）
+      holdFollow();
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       zoomAround(Math.exp(-e.deltaY * 0.002), e.clientX - el.getBoundingClientRect().left);
@@ -1505,7 +1517,7 @@ export function Timeline() {
         const p2 = getState().project!;
         const after = overlappingLines(p2);
         const timeClash = [d.clipId, ...d.group].some(id => after.has(id) && !before.has(id));
-        const clash = '。ほかのキャラクターのセリフと時間が重なっています（声が同時に鳴ります。「⚠ 重なり」の札）';
+        const clash = '。ほかのセリフと時間が重なっています（声が同時に鳴ります。「⚠ 重なり」の札）';
         if (r.kind === 'blocked') getNotify()('重なるので動かせませんでした。Ctrl を押しながら落とすと、挿入して後ろを押し出します', 'info');
         else if (r.kind === 'relocated' && r.trackId) getNotify()(`重なるので「${trackCode(p2, r.trackId)}」へ置きました${timeClash ? clash : ''}`, 'info');
         else if (timeClash) getNotify()(`置きました${clash}`, 'info');
