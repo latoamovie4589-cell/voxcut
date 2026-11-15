@@ -1,7 +1,7 @@
 //! FFmpeg での書き出し。引数の組み立て（テスト可能な純粋関数）と、実行・進捗の読み取り。
 
 use crate::lipsync;
-use crate::model::{ClipBody, Ease, Effect, Look, MediaKind, Project, ShapeClip, TextClip, Transform};
+use crate::model::{ClipBody, Ease, Effect, Look, MediaKind, MotionKind, Project, ShapeClip, TextClip, Transform};
 use crate::{Error, Result};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,8 @@ pub struct ExportOptions {
     pub item_sequences: std::collections::HashMap<String, PathBuf>,
     /// PSD 立ち絵の、状態ごとの画像（キャラクター id → 状態の番号 → PNG のパス）。画面側で合成して渡す
     pub portrait_frames: std::collections::HashMap<String, std::collections::HashMap<usize, PathBuf>>,
+    /// 静止画を 1 枚だけ書き出すときの時刻（秒）。音は作らない
+    pub still_at: Option<f64>,
 }
 
 impl ExportOptions {
@@ -41,6 +43,7 @@ impl ExportOptions {
             item_images: Default::default(),
             item_sequences: Default::default(),
             portrait_frames: Default::default(),
+            still_at: None,
         }
     }
 }
@@ -618,6 +621,29 @@ pub fn build_args(
     } else {
         fc.push(format!("[{last_v}]null{resize}[vout]"));
     }
+    // 静止画：その時刻の 1 枚だけ。音は混ぜずに捨てる
+    if let Some(at) = opt.still_at {
+        for l in &audio_labels {
+            fc.push(format!("[{l}]anullsink"));
+        }
+        args.extend([
+            "-filter_complex".into(),
+            fc.join(";"),
+            "-map".into(),
+            "[vout]".into(),
+            "-ss".into(),
+            format!("{:.3}", at.clamp(0.0, (total_s - 1.0 / v.fps as f64).max(0.0))),
+            "-frames:v".into(),
+            "1".into(),
+            "-update".into(),
+            "1".into(),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+            opt.out.to_string_lossy().into_owned(),
+        ]);
+        return Ok(args);
+    }
     // 音声（なければ無音）
     if audio_labels.is_empty() {
         fc.push(format!("anullsrc=r={}:cl=stereo,atrim=0:{total_s:.3}[aout]", v.sample_rate));
@@ -757,6 +783,18 @@ fn tween(a: f64, b: f64, e: Ease, t: &str, dur: f64) -> String {
     format!("({a:.4}+({d:.4})*{e})", d = b - a, e = ease_expr(e, &p))
 }
 
+/// 始まり a →（途中 m = (通る割合, 値)）→ 終わり b。区間ごとに e の動き方を掛ける
+fn tween3(a: f64, m: Option<(f64, f64)>, b: f64, e: Ease, t: &str, dur: f64) -> String {
+    let Some((at, mv)) = m else { return tween(a, b, e, t, dur) };
+    if (a - mv).abs() < 1e-9 && (mv - b).abs() < 1e-9 {
+        return format!("{a:.4}");
+    }
+    let p = format!("clip({t}/{d:.4},0,1)", d = dur.max(1e-3));
+    let p1 = format!("clip({p}/{at:.4},0,1)");
+    let p2 = format!("clip(({p}-{at:.4})/{r:.4},0,1)", r = 1.0 - at);
+    format!("if(lt({p},{at:.4}),{a:.4}+({d1:.4})*{e1},{mv:.4}+({d2:.4})*{e2})", d1 = mv - a, d2 = b - mv, e1 = ease_expr(e, &p1), e2 = ease_expr(e, &p2))
+}
+
 /// 画像・動画・テキスト・図形を重ねるフィルター（入力 idx の映像を last_v に重ね、新しいラベルを返す）。
 /// 順番：色の効果 → 回転 → ぼかし → 不透明度 → フェード → 大きさ（大きさが変わるのは最後にして、
 /// 大きさの変化に対応しないフィルターを通さない）→ 時刻をずらす → 位置（揺れを含む）で重ねる。
@@ -785,6 +823,46 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
     let e = to.map(|a| a.ease).unwrap_or_default();
     let (sx, sy, ss, so, sr) = (t.x, t.y, t.scale, t.opacity.clamp(0.0, 1.0), look.rotation);
     let (ex, ey, es, eo, er) = to.map(|a| (a.to.x, a.to.y, a.to.scale, a.to.opacity.clamp(0.0, 1.0), a.rotation)).unwrap_or((sx, sy, ss, so, sr));
+    // 途中の状態（あれば 始まり → 途中 → 終わり）
+    let mid = to.and_then(|a| a.mid.as_ref());
+    let at = mid.map(|m| m.at.clamp(0.01, 0.99));
+    let via = |pick: &dyn Fn(&crate::model::AnimMid) -> f64| mid.map(|m| (at.unwrap(), pick(m)));
+    let (mx, my, ms, mo, mr) = (via(&|m| m.transform.x), via(&|m| m.transform.y), via(&|m| m.transform.scale), via(&|m| m.transform.opacity.clamp(0.0, 1.0)), via(&|m| m.rotation));
+    let moving = |a: f64, m: Option<(f64, f64)>, b: f64| (a - b).abs() > 1e-9 || m.is_some_and(|(_, v)| (a - v).abs() > 1e-9);
+    // 登場・退場（滑り込む向きのずれと、大きさの倍率）
+    let fpsf = fps as f64;
+    let enter = look.enter.as_ref().filter(|m| m.frames > 0).map(|m| (m.kind, (m.frames as f64 / fpsf).min(dur.max(1e-3))));
+    let exit = look.exit.as_ref().filter(|m| m.frames > 0).map(|m| (m.kind, (m.frames as f64 / fpsf).min(dur.max(1e-3))));
+    // 登場の残り（1 → 0。だんだん遅く）と、退場の進み（0 → 1。だんだん速く）。lt はアイテムの頭からの秒の式
+    let enter_k = |lt: &str, d: f64| format!("pow(1-clip({lt}/{d:.4},0,1),2)");
+    let exit_k = |lt: &str, d: f64| format!("pow(clip(({lt}-{s:.4})/{d:.4},0,1),2)", s = (dur - d).max(0.0));
+    let slide = |lt: &str, horizontal: bool| -> String {
+        let mut out = String::new();
+        let dim = if horizontal { "W" } else { "H" };
+        let sign = |k: MotionKind| match (k, horizontal) {
+            (MotionKind::SlideLeft, true) | (MotionKind::SlideUp, false) => Some("-"),
+            (MotionKind::SlideRight, true) | (MotionKind::SlideDown, false) => Some("+"),
+            _ => None,
+        };
+        if let Some((k, d)) = enter {
+            if let Some(sg) = sign(k) {
+                out.push_str(&format!("{sg}{dim}*{}", enter_k(lt, d)));
+            }
+        }
+        if let Some((k, d)) = exit {
+            if let Some(sg) = sign(k) {
+                out.push_str(&format!("{sg}{dim}*{}", exit_k(lt, d)));
+            }
+        }
+        out
+    };
+    let mut zoom = String::new();
+    if let Some((MotionKind::Zoom, d)) = enter {
+        zoom.push_str(&format!("*(1-{})", enter_k("t", d)));
+    }
+    if let Some((MotionKind::Zoom, d)) = exit {
+        zoom.push_str(&format!("*(1-{})", exit_k("t", d)));
+    }
     let mut chain: Vec<String> = vec![format!("fps={fps}"), "format=rgba".into()];
     let mut shake = (0.0, 0.0);
     let mut blur = 0.0f64;
@@ -811,15 +889,15 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
             }
         }
     }
-    if sr.abs() > 1e-9 || er.abs() > 1e-9 {
-        chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween(sr, er, e, "t", dur)));
+    if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.is_some_and(|(_, v)| v.abs() > 1e-9) {
+        chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween3(sr, mr, er, e, "t", dur)));
     }
     if blur > 0.0 {
         // 半径は画面上の px。この時点では元の大きさなので、始まりの大きさで割る
         chain.push(format!("gblur=sigma={:.3}", blur / ss.max(0.01)));
     }
-    if (so - eo).abs() > 1e-9 {
-        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween(so, eo, e, "T", dur)));
+    if moving(so, mo, eo) {
+        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween3(so, mo, eo, e, "T", dur)));
     } else if so < 1.0 {
         chain.push(format!("colorchannelmixer=aa={so:.3}"));
     }
@@ -830,8 +908,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
         let d = look.fade_out as f64 / fps as f64;
         chain.push(format!("fade=t=out:st={:.3}:d={d:.3}:alpha=1", (dur - d).max(0.0)));
     }
-    if (ss - es).abs() > 1e-9 {
-        let k = tween(ss, es, e, "t", dur);
+    if moving(ss, ms, es) || !zoom.is_empty() {
+        let k = format!("{}{zoom}", tween3(ss, ms, es, e, "t", dur));
         chain.push(format!("scale=w='max(1,iw*{k})':h='max(1,ih*{k})':eval=frame"));
     } else {
         chain.push(format!("scale=iw*{ss:.4}:ih*{ss:.4}"));
@@ -839,8 +917,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
     chain.push(format!("setpts=PTS-STARTPTS+{start:.3}/TB"));
     fc.push(format!("[{idx}:v]{}[{src_l}]", chain.join(",")));
     let lt = format!("(t-{start:.3})");
-    let mut x = format!("(W-w)/2+{}", tween(sx, ex, e, &lt, dur));
-    let mut y = format!("(H-h)/2+{}", tween(sy, ey, e, &lt, dur));
+    let mut x = format!("(W-w)/2+{}{}", tween3(sx, mx, ex, e, &lt, dur), slide(&lt, true));
+    let mut y = format!("(H-h)/2+{}{}", tween3(sy, my, ey, e, &lt, dur), slide(&lt, false));
     if shake.0 > 0.0 {
         x.push_str(&format!("+{a:.3}*sin(2*PI*{f:.4}*t)", a = shake.0, f = shake.1));
         y.push_str(&format!("+{a:.3}*cos(2*PI*{f:.4}*t*1.37)", a = shake.0, f = shake.1));
@@ -1272,9 +1350,11 @@ mod tests {
         let mut p = Project::sample();
         let look = Look {
             rotation: 10.0,
-            anim: Some(Anim { to: Transform { x: 100.0, y: 0.0, scale: 2.0, opacity: 0.5 }, rotation: 90.0, ease: Ease::InOut }),
+            anim: Some(Anim { to: Transform { x: 100.0, y: 0.0, scale: 2.0, opacity: 0.5 }, rotation: 90.0, ease: Ease::InOut, mid: None }),
             fade_in: 15,
             fade_out: 0,
+            enter: None,
+            exit: None,
             effects: vec![Effect::Blur { radius: 4.0 }, Effect::Shake { amount: 5.0, speed: 2.0 }, Effect::Mono, Effect::Color { brightness: 1.2, contrast: 1.0, saturation: 1.0 }],
         };
         p.clips.push(Clip {
@@ -1371,9 +1451,11 @@ mod tests {
                 transform: Transform { x: -50.0, y: 0.0, scale: 0.5, opacity: 1.0 },
                 look: Look {
                     rotation: 0.0,
-                    anim: Some(Anim { to: Transform { x: 50.0, y: 10.0, scale: 1.5, opacity: 0.3 }, rotation: 180.0, ease: Ease::Out }),
+                    anim: Some(Anim { to: Transform { x: 50.0, y: 10.0, scale: 1.5, opacity: 0.3 }, rotation: 180.0, ease: Ease::Out, mid: None }),
                     fade_in: 5,
                     fade_out: 5,
+                    enter: None,
+                    exit: None,
                     effects: vec![
                         Effect::Blur { radius: 1.5 },
                         Effect::Shake { amount: 3.0, speed: 4.0 },
@@ -1390,6 +1472,63 @@ mod tests {
         opt.item_images.insert("t1".into(), png.clone());
         let w = wav.clone();
         let args = build_args(&p, &move |_: &str| Some(w.clone()), &[], &[], &opt).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    }
+
+    /// 途中の状態・登場・退場の式と、静止画の書き出し（FFmpeg があれば実際に 1 枚書く）
+    #[test]
+    fn mid_point_enter_exit_and_still() {
+        use crate::model::{Anim, AnimMid, Clip, Ease, Look, Motion, MotionKind, TextClip};
+        let mut p = Project::sample();
+        p.video.width = 320;
+        p.video.height = 180;
+        p.clips.retain(|c| c.as_voice().is_none());
+        p.clips.push(Clip {
+            id: "t1".into(),
+            track_id: "V6".into(),
+            start: 0,
+            duration: 60,
+            link_id: None,
+            body: ClipBody::Text(TextClip {
+                text: "x".into(),
+                transform: Transform::default(),
+                look: Look {
+                    anim: Some(Anim {
+                        to: Transform { x: 100.0, ..Default::default() },
+                        rotation: 0.0,
+                        ease: Ease::Linear,
+                        mid: Some(AnimMid { at: 0.5, transform: Transform { x: -50.0, y: 40.0, scale: 1.5, opacity: 1.0 }, rotation: 0.0 }),
+                    }),
+                    enter: Some(Motion { kind: MotionKind::SlideLeft, frames: 10 }),
+                    exit: Some(Motion { kind: MotionKind::Zoom, frames: 10 }),
+                    ..Default::default()
+                },
+                ..serde_json::from_str(r##"{"text":"","fontFamily":"a","fontSize":10,"color":"#fff","outlineColor":"#000","outlineWidth":0}"##).unwrap()
+            }),
+        });
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("t.png");
+        let out = d.path().join("still.png");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        opt.item_images.insert("t1".into(), png.clone());
+        opt.still_at = Some(1.0);
+        let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+        let g = args.join(" ");
+        // 途中を通る式（前半・後半）、左から入るずれ、退場で小さくなる倍率
+        assert!(g.contains("if(lt(clip((t-0.000)/2.0000,0,1),0.5000),0.0000+(-50.0000)*"), "{g}");
+        assert!(g.contains("-W*pow(1-clip((t-0.000)/0.3333,0,1),2)"), "{g}");
+        assert!(g.contains("*(1-pow(clip((t-1.6667)/0.3333,0,1),2))"), "{g}");
+        assert!(g.contains("-frames:v 1") && !g.contains("[aout]"), "{g}");
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red@0.8:s=120x60,format=rgba", "-frames:v", "1", png.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success());
         let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         assert!(std::fs::metadata(&out).unwrap().len() > 0);

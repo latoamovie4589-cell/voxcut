@@ -23,6 +23,19 @@ pub struct Project {
     pub characters: Vec<Character>,
     pub tracks: Vec<Track>,
     pub clips: Vec<Clip>,
+    /// マーカー（時刻に付ける目印。YouTube のチャプターにも使う）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+}
+
+/// タイムラインの目印
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Marker {
+    pub id: String,
+    pub frame: Frame,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -580,6 +593,32 @@ pub struct Look {
     pub fade_out: Frame,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
+    /// 登場のしかた（アイテムの頭で、画面の外から滑り込む・大きくなって出る）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<Motion>,
+    /// 退場のしかた（アイテムの終わりで、画面の外へ出ていく・小さくなって消える）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Motion>,
+}
+
+/// 登場・退場の動き
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Motion {
+    pub kind: MotionKind,
+    /// 掛ける長さ（フレーム）
+    pub frames: Frame,
+}
+
+/// 登場・退場の種類。slide は「その方向から入る／その方向へ出る」
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MotionKind {
+    SlideLeft,
+    SlideRight,
+    SlideUp,
+    SlideDown,
+    Zoom,
 }
 
 impl Look {
@@ -596,6 +635,20 @@ pub struct Anim {
     pub rotation: f64,
     #[serde(default)]
     pub ease: Ease,
+    /// 途中の状態（始まり → 途中 → 終わりの順に動く。区間ごとに ease を掛ける）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mid: Option<AnimMid>,
+}
+
+/// アニメーションの途中の状態
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimMid {
+    /// 通る時点（アイテムの長さに対する割合 0〜1）
+    pub at: f64,
+    pub transform: Transform,
+    #[serde(default)]
+    pub rotation: f64,
 }
 
 /// 動き方（直線・だんだん速く・だんだん遅く・加速して減速）
@@ -843,6 +896,7 @@ impl Project {
             // YMM4 と同じくレイヤー 1〜6。番号の大きいほど手前に描く
             tracks: (1..=6).map(|n| Track::new(format!("V{n}"), TrackKind::Video)).collect(),
             clips: vec![],
+            markers: vec![],
         }
     }
 
