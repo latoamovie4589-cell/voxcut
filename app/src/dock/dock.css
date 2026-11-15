@@ -63,9 +63,9 @@
   background: var(--color-background-surface);
   box-shadow: inset 0 0 0 1px var(--color-border);
 }
-/* 最後に触った枠（Premiere と同じく青い枠で示す） */
-.vx-dock-group[data-focused] {
-  box-shadow: inset 0 0 0 1px var(--color-accent);
+/* 最後に触った枠：全体を囲まず、見出しの上の辺に細い紫の線だけ（目立ちすぎないように） */
+.vx-dock-group[data-focused] > .vx-dock-header {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--color-accent) 70%, transparent);
 }
 .vx-dock-header {
   flex: none;

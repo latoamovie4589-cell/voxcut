@@ -56,7 +56,10 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 function fitShares() {
   const w = typeof window === 'undefined' ? 1440 : window.innerWidth;
   const h = typeof window === 'undefined' ? 900 : window.innerHeight - 48;
-  return {tl: clamp(300 / Math.max(1, h), 0.34, 0.56), side: clamp(360 / Math.max(1, w), 0.22, 0.32)};
+  // 低い画面（ノート PC の 720p など）では、プレビューが小さくなりすぎないようタイムラインを少し低く・右の列を少し細く
+  const tlPx = h < 760 ? 262 : 300;
+  const sidePx = w <= 1366 ? 330 : 360;
+  return {tl: clamp(tlPx / Math.max(1, h), 0.34, 0.56), side: clamp(sidePx / Math.max(1, w), 0.22, 0.32)};
 }
 
 export const PRESETS: {id: string; name: string; make: () => DockNode}[] = [
