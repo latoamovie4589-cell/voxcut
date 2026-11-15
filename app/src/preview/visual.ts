@@ -27,23 +27,46 @@ export interface VisualState {
 /**
  * その時点の見た目。local は アイテムの頭からのフレーム、dur はアイテムの長さ（フレーム）、abs はプロジェクトの頭からの秒
  */
-export function visualAt(t: Transform, look: Look | undefined, local: number, dur: number, fps: number, abs: number): VisualState {
+export function visualAt(t: Transform, look: Look | undefined, local: number, dur: number, fps: number, abs: number, frame?: [number, number]): VisualState {
   const l = look;
   const d = dur / fps;
-  const e = l?.anim ? ease(l.anim.ease, local / fps / Math.max(1e-3, d)) : 0;
-  const to = l?.anim?.to;
-  const mix = (a: number, b: number | undefined) => (b === undefined ? a : a + (b - a) * e);
-  const tr: Transform = {
-    x: mix(t.x, to?.x),
-    y: mix(t.y, to?.y),
-    scale: mix(t.scale, to?.scale),
-    opacity: mix(Math.min(1, Math.max(0, t.opacity)), to ? Math.min(1, Math.max(0, to.opacity)) : undefined),
+  const an = l?.anim;
+  const p = Math.min(1, Math.max(0, local / fps / Math.max(1e-3, d)));
+  const mid = an?.mid;
+  const at = mid ? Math.min(0.99, Math.max(0.01, mid.at)) : 0;
+  // 始まり a →（途中 m）→ 終わり b。区間ごとに動き方を掛ける（書き出しの tween3 と同じ）
+  const mix = (a: number, m: number | undefined, b: number | undefined) => {
+    if (!an || b === undefined) return a;
+    if (m === undefined) return a + (b - a) * ease(an.ease, p);
+    return p < at ? a + (m - a) * ease(an.ease, p / at) : m + (b - m) * ease(an.ease, (p - at) / (1 - at));
   };
-  const rotation = mix(l?.rotation ?? 0, l?.anim ? l.anim.rotation : undefined);
+  const c01 = (v: number) => Math.min(1, Math.max(0, v));
+  const to = an?.to;
+  const tr: Transform = {
+    x: mix(t.x, mid?.transform.x, to?.x),
+    y: mix(t.y, mid?.transform.y, to?.y),
+    scale: mix(t.scale, mid?.transform.scale, to?.scale),
+    opacity: mix(c01(t.opacity), mid ? c01(mid.transform.opacity) : undefined, to ? c01(to.opacity) : undefined),
+  };
+  const rotation = mix(l?.rotation ?? 0, mid?.rotation, an ? an.rotation : undefined);
   let alpha = tr.opacity;
   const sec = local / fps;
   if (l?.fadeIn) alpha *= Math.min(1, sec / (l.fadeIn / fps));
   if (l?.fadeOut) alpha *= Math.min(1, Math.max(0, (d - sec) / (l.fadeOut / fps)));
+  // 登場（残り 1 → 0。だんだん遅く）と退場（進み 0 → 1。だんだん速く）
+  const [fw, fh] = frame ?? [1920, 1080];
+  const apply = (m: Look['enter'], k: (len: number) => number) => {
+    if (!m || m.frames <= 0) return;
+    const len = Math.min(m.frames / fps, Math.max(1e-3, d));
+    const v = k(len);
+    if (m.kind === 'slideLeft') tr.x -= fw * v;
+    else if (m.kind === 'slideRight') tr.x += fw * v;
+    else if (m.kind === 'slideUp') tr.y -= fh * v;
+    else if (m.kind === 'slideDown') tr.y += fh * v;
+    else tr.scale *= 1 - v;
+  };
+  apply(l?.enter, len => (1 - c01(sec / len)) ** 2);
+  apply(l?.exit, len => c01((sec - Math.max(0, d - len)) / len) ** 2);
   const filters: string[] = [];
   let blur = 0;
   for (const fx of l?.effects ?? []) {

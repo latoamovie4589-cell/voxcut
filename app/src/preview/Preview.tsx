@@ -375,7 +375,7 @@ export function Preview() {
       for (const c of p.clips) {
         if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
         // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
-        const look = (key: string, tr: Transform) => visualAt(tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps);
+        const look = (key: string, tr: Transform) => visualAt(tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
         // 波・渦巻き（元の大きさで掛ける。時刻はアイテムの頭から）
         const warp = (img: CanvasImageSource, size: [number, number]) => distort(img, size, c.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, c.transform.scale));
         if (c.type === 'text' || c.type === 'shape') {
@@ -452,7 +452,7 @@ export function Preview() {
           const key = `s:${v.id}`;
           const tr = tf(key, sc.transform);
           const warped = distort(img, [img.width, img.height], sc.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
-          const rect = drawVisual(ctx, warped, [img.width, img.height], visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps), w, h, scale);
+          const rect = drawVisual(ctx, warped, [img.width, img.height], visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]), w, h, scale);
           if (!locked.has(c.trackId)) targets.push({key, kind: 'subtitle', id: v.id, selectId: c.id, rect, transform: tr});
           continue;
         }
