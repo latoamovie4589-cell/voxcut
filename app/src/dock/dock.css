@@ -97,7 +97,7 @@
   border: 0;
   background: none;
   font: inherit;
-  font-size: var(--font-size-sm, 13px);
+  font-size: 13px;
   color: var(--color-text-secondary);
   cursor: default;
   touch-action: none;

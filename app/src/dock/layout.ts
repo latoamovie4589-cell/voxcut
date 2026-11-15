@@ -11,7 +11,7 @@ export type PanelId = (typeof PANEL_IDS)[number];
 export const PANEL_TITLE: Record<PanelId, string> = {
   characters: 'キャラクター',
   script: '台本',
-  engines: '音声合成ソフト',
+  engines: '合成ソフト', // 右の列に 4 つのタブが収まるよう短く（設定の画面では「音声合成ソフト」）
   preview: 'プレビュー',
   timeline: 'タイムライン',
   inspector: 'プロパティ',
@@ -57,8 +57,9 @@ function fitShares() {
   const w = typeof window === 'undefined' ? 1440 : window.innerWidth;
   const h = typeof window === 'undefined' ? 900 : window.innerHeight - 48;
   // 低い画面（ノート PC の 720p など）では、プレビューが小さくなりすぎないようタイムラインを少し低く・右の列を少し細く
-  const tlPx = h < 760 ? 262 : 300;
-  const sidePx = w <= 1366 ? 330 : 360;
+  // 720p ではレイヤーが 5 行ほど見える高さ（プレビューは高さで決まるので、横の余白は右の列を細くして詰める）
+  const tlPx = h < 760 ? 284 : 300;
+  const sidePx = w < 1100 ? 290 : w <= 1366 ? 320 : 360;
   return {tl: clamp(tlPx / Math.max(1, h), 0.34, 0.56), side: clamp(sidePx / Math.max(1, w), 0.22, 0.32)};
 }
 
