@@ -102,3 +102,6 @@ FFmpeg を同梱するため、インストーラーはおよそ 80〜100MB に�
 - **VoiSona Talk**：エンドポイント名と JSON のフィールド名（`core/src/tts/voisona.rs` の `api` モジュール）を、アプリ内の Talk API Reference と照合する
 - **A.I.VOICE**：プリセット一覧のプロパティ名（`VoicePresetNames`）。A.I.VOICE2 で同じ API が使えるか
 - **VOICEPEAK**：`--speed` / `--pitch` / `-e` の値の範囲。多重起動できないので直列で呼んでいる
+- **音声合成ソフトの自動起動**：セリフを足したときに VOICEVOX・VoiSona Talk が止まっていれば起動する（`core/src/tts/voicevox.rs` の `launch_candidates`、`voisona.rs` の `launch`）。インストール先の候補（`%LOCALAPPDATA%\Programs\VOICEVOX\vv-engine\run.exe` など）が実際の場所と合っているか。合わなければ起動せず、今までどおり「起動してください」と出る
+- **素材を集める**：`collect_media` が Windows のパス（日本語のフォルダ名・別ドライブ）でコピーとパスの書き換えを正しく行うか
+- **静止画の書き出し**：再生位置が後ろのほど時間がかかる（頭からその位置まで描く）。長い動画での待ち時間
