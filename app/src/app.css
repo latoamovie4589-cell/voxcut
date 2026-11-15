@@ -601,14 +601,14 @@ textarea {
 }
 /* 選ばれている切り替え（一覧／文書など）は、ダークでも溝より明るい面にする（沈んで見えないように） */
 .astryx-segmented-control .astryx-segmented-control-item[data-selected='selected'] {
-  background-color: light-dark(#ffffff, #6e6e73);
+  background-color: light-dark(#ffffff, #504c61);
   color: light-dark(#1c1c1e, #ffffff);
   box-shadow:
     inset 0 0 0 1px light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.16)),
     0 1px 2px rgb(0 0 0 / 0.25);
 }
 .astryx-segmented-control {
-  background-color: light-dark(#e5e5ea, #2c2c2e);
+  background-color: light-dark(#e4e1ee, #100f15);
 }
 .vx-project-name {
   min-width: 0;
@@ -1092,4 +1092,27 @@ dialog.astryx-dialog[open] {
   .vx-scriptbar {
     padding-block: 4px;
   }
+}
+
+/* ── 全体の調子 ─────────────────────────────────────────────
+   机（body の色）の上にパネルが載る。見出しのバーは机と同じ色にして、パネルだけが面として見えるようにする */
+.astryx-layout-header {
+  background: var(--color-background-body);
+}
+/* スクロールバーは細く、面になじむ色に（OS 既定の太い灰色の棒を出さない） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: light-dark(rgb(52 46 84 / 0.28), rgb(200 194 230 / 0.24)) transparent;
+}
+/* 文字を選んだときの色もアクセントに */
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 38%, transparent);
+}
+/* キーの表示は等幅をやめ、画面と同じ書体で（数字の幅だけそろえる） */
+.vx-kbd {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
 }

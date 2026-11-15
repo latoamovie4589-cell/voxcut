@@ -373,7 +373,7 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
   const synthTip = pending ? `未合成のセリフ ${pending} 行をすべて合成` : 'すべて合成済みです';
   const exportTip = empty ? 'タイムラインが空です。セリフを入れると書き出せます' : '動画を書き出す';
   return (
-    <LayoutHeader hasDivider padding={0}>
+    <LayoutHeader padding={0}>
       <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1} paddingBlock={1}>
         <HStack gap={1} vAlign="center">
           {/* アプリの印（声の波形をかたどった VoxCut のマーク） */}
