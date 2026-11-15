@@ -2,7 +2,6 @@
 // fps はアイテムの長さがコマ数で決まっているので、まだ何も置いていないときだけ変えられる
 
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
-import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
@@ -41,26 +40,14 @@ export function ProjectSettingsDialog() {
           }}
           width="100%"
         />
-        {/* 置いたあとは変えられないので、押せそうな欄ではなく、値と理由だけを出す */}
-        {fpsLocked ? (
-          <VStack gap={1}>
-            <Text type="label">1 秒のコマ数（fps）</Text>
-            <Text hasTabularNumbers>{v.fps} fps</Text>
-            <Banner
-              status="info"
-              title="fps は、セリフや素材を置く前に決めます"
-              description="置いたあとに変えると、アイテムの長さがずれてしまうため、いまは変えられません。別の fps にしたいときは、新しいプロジェクトで最初に決めてください。"
-            />
-          </VStack>
-        ) : (
-          <Selector
-            label="1 秒のコマ数（fps）"
-            value={String(v.fps)}
-            options={(FPS.includes(v.fps) ? FPS : [v.fps, ...FPS]).map(f => ({value: String(f), label: `${f} fps`}))}
-            onChange={val => updateVideo({fps: Number(val)})}
-            width="100%"
-          />
-        )}
+        <Selector
+          label="1 秒のコマ数（fps）"
+          description={fpsLocked ? '置いてあるアイテムの位置と長さは、同じ時間になるよう数え直します（元に戻すで戻せます）' : undefined}
+          value={String(v.fps)}
+          options={(FPS.includes(v.fps) ? FPS : [v.fps, ...FPS]).map(f => ({value: String(f), label: `${f} fps`}))}
+          onChange={val => updateVideo({fps: Number(val)})}
+          width="100%"
+        />
         <HStack gap={2} vAlign="center">
           <Text type="label">背景の色</Text>
           <input

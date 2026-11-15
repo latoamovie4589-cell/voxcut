@@ -20,8 +20,9 @@ import {Avatar} from './Avatar';
 import {captionLayerFor, framesToTimecode, lineOf, overlappingLines, trackCode} from '../model';
 
 const MODES: {value: InputMode; short: string; label: string; description: string}[] = [
-  {value: 'normal', short: '通常', label: '通常', description: '再生位置に入れるだけ'},
-  {value: 'append', short: '追記', label: '追記', description: '入れたセリフの末尾まで進む（続けて打てる）'},
+  // 名前は動きをそのまま言う（「追記」だと「最後に足す」と読めてしまうため）。YMM4 での呼び名は説明に添える
+  {value: 'normal', short: 'その場に', label: 'その場に入れる', description: '再生位置に入れる。再生位置は動かさない（YMM4 の「通常」）'},
+  {value: 'append', short: '続けて', label: '続けて入れる', description: '再生位置に入れて、そのセリフの後ろへ進む。次のセリフが続く（YMM4 の「追記」）'},
   {value: 'join', short: '連結', label: '連結', description: '同じレイヤーの直前のセリフを延ばして、すき間なくつなぐ'},
 ];
 

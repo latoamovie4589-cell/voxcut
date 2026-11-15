@@ -1,6 +1,6 @@
 // 設定：音声合成ソフトの場所（ユーザーが選ぶ）・VoiSona の接続情報・FFmpeg の場所。
 
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
@@ -46,9 +46,16 @@ function ExeField({label, exeName, value, onChange, note}: {label: string; exeNa
 
 export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean; onOpenChange: (o: boolean) => void; notify: Notify}) {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
+  /** 開いたときの設定（変えていなければ、閉じるときに何もしない） */
+  const orig = useRef('');
   useEffect(() => {
     if (!isOpen) return;
-    void api.then(a => a.getConfig()).then(setCfg);
+    void api
+      .then(a => a.getConfig())
+      .then(c => {
+        orig.current = JSON.stringify(c);
+        setCfg(c);
+      });
   }, [isOpen]);
   if (!cfg) return null;
   const e = cfg.engines;
@@ -57,21 +64,28 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
   // A.I.VOICE は AIVoiceEditor.exe を選んでもらい、そのフォルダを覚える
   const aivoiceExe = e.aivoiceDir ? `${e.aivoiceDir}${sep(e.aivoiceDir)}AIVoiceEditor.exe` : '';
 
-  const save = async () => {
+  // ほかの設定画面と同じく、変えたらそのまま使う（「保存」は無い）。閉じるときに書き込んで、つなぎ直す
+  const close = async () => {
+    onOpenChange(false);
+    if (JSON.stringify(cfg) === orig.current) return;
     try {
       await (await api).setConfig(cfg);
-      onOpenChange(false);
-      notify('設定を保存しました。接続を確認しています…');
+      orig.current = JSON.stringify(cfg);
+      notify('設定を変えました。接続を確認しています…');
       void refreshEngines();
     } catch (err) {
       notify(String(err), 'error');
     }
   };
+  const onDialog = (o: boolean) => {
+    if (!o) void close();
+    else onOpenChange(true);
+  };
 
   return (
-    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} width={560} maxHeight="92dvh" purpose="form">
-      <DialogHeader title="音声合成ソフトの設定" onOpenChange={onOpenChange} />
-      {/* 窓が小さくても「保存」が隠れないよう、中身だけをスクロールさせる */}
+    <Dialog isOpen={isOpen} onOpenChange={onDialog} width={560} maxHeight="92dvh" purpose="form">
+      <DialogHeader title="合成ソフトの設定" onOpenChange={onDialog} />
+      {/* 窓が小さくても「閉じる」が隠れないよう、中身だけをスクロールさせる */}
       <div style={{maxHeight: 'calc(92dvh - 132px)', overflowY: 'auto', overscrollBehavior: 'contain'}}>
         <VStack gap={4} padding={4}>
           <Text type="supporting">使う音声合成ソフトだけ設定してください。使わないソフトは空のままで構いません。</Text>
@@ -115,8 +129,7 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
       </div>
       <Divider />
       <HStack gap={2} hAlign="end" padding={3}>
-        <Button label="キャンセル" variant="ghost" onClick={() => onOpenChange(false)} />
-        <Button label="保存" variant="primary" clickAction={save} />
+        <Button label="閉じる" variant="primary" onClick={() => void close()} />
       </HStack>
     </Dialog>
   );

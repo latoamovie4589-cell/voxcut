@@ -136,11 +136,16 @@ export function Avatar({character, size = 20}: {character: Character | undefined
   };
   return (
     <span className="vx-avatar" style={style} aria-hidden>
-      {/* 立ち絵が無ければ、どのキャラクターも同じ形の人の形（色で見分ける） */}
+      {/* 立ち絵が無ければ、立ち絵の顔アイコンと同じ調子の簡単な顔（髪の色がキャラクターの色） */}
       {!url && (
-        <svg viewBox="0 0 24 24" width="80%" height="80%" style={{alignSelf: 'end'}}>
-          <circle cx="12" cy="8" r="5" fill="currentColor" />
-          <path d="M2 24c0-6 4.5-9.5 10-9.5S22 18 22 24z" fill="currentColor" />
+        <svg viewBox="0 0 24 24" width="100%" height="100%">
+          <circle cx="12" cy="14" r="8.4" fill="#F8D9C4" />
+          <path d="M3.2 14.5C3 8.6 7 4.6 12 4.6s9 4 8.8 9.9c-1.6-3.2-4.6-4.9-8.8-4.1-4.2-.8-7.2.9-8.8 4.1z" fill="currentColor" />
+          <circle cx="9.3" cy="15" r="1.05" fill="#2B2B3A" />
+          <circle cx="14.7" cy="15" r="1.05" fill="#2B2B3A" />
+          <ellipse cx="7.6" cy="17.4" rx="1.4" ry="0.8" fill="#F4A6A0" opacity="0.7" />
+          <ellipse cx="16.4" cy="17.4" rx="1.4" ry="0.8" fill="#F4A6A0" opacity="0.7" />
+          <path d="M10.9 18.3q1.1.8 2.2 0" stroke="#B5645C" strokeWidth="0.7" fill="none" strokeLinecap="round" />
         </svg>
       )}
     </span>
