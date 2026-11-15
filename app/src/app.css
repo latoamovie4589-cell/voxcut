@@ -1069,3 +1069,27 @@ dialog.astryx-dialog[open] {
   animation-duration: 200ms !important;
   animation-timing-function: cubic-bezier(0.2, 0, 0, 1) !important;
 }
+
+/* スライダーの値の欄は同じ幅に（値の文字数が違っても、スライダーの右端がそろう） */
+.astryx-slider > span:not([class*='astryx-']) {
+  min-width: 68px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 低い画面（720p など）：帯を少し薄くして、プレビューとタイムラインに高さを回す */
+@media (max-height: 760px) {
+  .vx-dock-header {
+    height: 26px;
+  }
+  .vx-preview-controls,
+  .vx-timeline-toolbar {
+    height: 34px;
+  }
+  .vx-preview {
+    padding: 2px;
+  }
+  .vx-scriptbar {
+    padding-block: 4px;
+  }
+}

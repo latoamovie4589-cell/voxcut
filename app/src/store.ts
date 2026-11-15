@@ -37,6 +37,7 @@ import {
   newId,
   newLayer,
   plainLook,
+  type Look,
   projectDuration,
   reflowAll,
   synthKey,
@@ -339,10 +340,42 @@ export function setLayerSize(layerSize: 'small' | 'medium' | 'large') {
  * まだ何も置いていないときだけ変えられる（置いたあとに変えると長さが変わってしまうため）
  */
 export function updateVideo(patch: Partial<Project['video']>) {
+  const before = state.project?.video.fps;
   commit(p => {
-    if (patch.fps !== undefined && patch.fps !== p.video.fps && p.clips.length) return p;
-    return {...p, video: {...p.video, ...patch}};
+    const next = {...p, video: {...p.video, ...patch}};
+    // fps を変えるときは、置いてあるアイテムの時刻・長さも同じ「時間」になるよう数え直す
+    return patch.fps !== undefined && patch.fps !== p.video.fps && p.clips.length ? rescaleFrames(next, p.video.fps, patch.fps) : next;
   });
+  const after = state.project?.video.fps;
+  if (before && after && before !== after) setState(s => ({playhead: Math.round((s.playhead * after) / before)}));
+}
+
+/** fps を from → to に変えたとき、フレームで持っている値（位置・長さ・間・フェードなど）を同じ時間になるよう直す */
+function rescaleFrames(p: Project, from: number, to: number): Project {
+  const r = to / from;
+  const f = (v: number) => Math.round(v * r);
+  const look = <T extends {look?: Look}>(c: T): T => (c.look ? {...c, look: {...c.look, fadeIn: f(c.look.fadeIn), fadeOut: f(c.look.fadeOut)}} : c);
+  return {
+    ...p,
+    characters: p.characters.map(c => (c.gapAfter != null ? {...c, gapAfter: f(c.gapAfter)} : c)),
+    clips: p.clips.map(c0 => {
+      // 終わりの時刻を丸めてから長さを出す（隣り合うアイテムの間にすき間・重なりを作らない）
+      const start = f(c0.start);
+      const base = {...c0, start, duration: Math.max(1, f(c0.start + c0.duration) - start)};
+      if (base.type === 'voice') {
+        const fx = base.audioFx;
+        const sc = base.subtitleCustom;
+        return {
+          ...base,
+          gapAfter: f(base.gapAfter),
+          audioFx: fx ? {...fx, fadeIn: f(fx.fadeIn), fadeOut: f(fx.fadeOut), startOffset: f(fx.startOffset)} : fx,
+          subtitleCustom: sc && sc.interval ? {...sc, interval: Math.max(1, f(sc.interval))} : sc,
+        };
+      }
+      if (base.type === 'media') return look({...base, inPoint: f(base.inPoint)});
+      return 'look' in base ? look(base as typeof base & {look?: Look}) : base;
+    }) as Clip[],
+  };
 }
 
 /** 履歴に残さない置き換え（合成結果の反映など） */
