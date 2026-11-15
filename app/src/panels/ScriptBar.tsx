@@ -124,11 +124,14 @@ export function ScriptBar({notify}: {notify: Notify}) {
           onChange={v => setState({selectedCharacterId: v})}
         />
       ) : (
-        <div className="vx-scriptbar-char" aria-label="話すキャラクター">
+        <div className="vx-scriptbar-char" aria-label={`話すキャラクター：${project.characters[0]?.name ?? 'なし'}`} title={project.characters[0]?.name}>
           <Avatar character={project.characters[0]} size={20} />
-          <Text type="label" maxLines={1}>
-            {project.characters[0]?.name ?? 'キャラクターなし'}
-          </Text>
+          {/* 狭いときは顔だけ（名前は乗せると出る）。入力欄に幅を回す */}
+          {!compact && (
+            <Text type="label" maxLines={1}>
+              {project.characters[0]?.name ?? 'キャラクターなし'}
+            </Text>
+          )}
         </div>
       )}
       {presets.length > 0 && (
@@ -235,7 +238,9 @@ export function ScriptBar({notify}: {notify: Notify}) {
           size="sm"
           placeholder={
             !current
-              ? 'まずキャラクターを作ってください（上の「キャラクター」）'
+              ? compact
+                ? '先にキャラクターを作成'
+                : 'まずキャラクターを作ってください（上の「キャラクター」）'
               : compact
                 ? presetName
                   ? `${presetName}：セリフを入力`

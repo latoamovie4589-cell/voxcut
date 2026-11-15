@@ -12,7 +12,10 @@ import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {CharactersPanel} from './Sidebar';
 import {CharacterSubtitleTab, CharacterVoiceTab, ColorSwatchInput, PortraitSection} from '../inspector/Inspector';
-import {getState, mergeCharacterAsPreset, setState, updateCharacter, useStore} from '../store';
+import {EmptyState} from '@astryxdesign/core/EmptyState';
+import {Icon} from '@astryxdesign/core/Icon';
+import {UserPlus} from 'lucide-react';
+import {addCharacter, getState, mergeCharacterAsPreset, setState, updateCharacter, useStore} from '../store';
 import {Heading} from '@astryxdesign/core/Heading';
 import {loadVoices} from '../actions';
 import {layerLabel, type Character, type EngineId} from '../model';
@@ -142,6 +145,13 @@ export function CharacterDialog() {
                 {tab === 'portrait' && <PortraitSection character={ch} />}
               </div>
             </>
+          )}
+          {/* まだ誰もいないときは、右側にも最初の 1 人を作る入口を出す */}
+          {!ch && (
+            <VStack padding={6} gap={3} hAlign="center" vAlign="center" height="100%">
+              <EmptyState icon={<Icon icon={UserPlus} size="lg" color="secondary" />} title="まだキャラクターがいません" description="話す人を 1 人作ると、声・字幕・立ち絵をここで決められます" />
+              <Button label="最初のキャラクターを作る" variant="primary" icon={<Icon icon={UserPlus} />} onClick={() => setState({dialogCharacterId: addCharacter()})} />
+            </VStack>
           )}
         </div>
       </div>

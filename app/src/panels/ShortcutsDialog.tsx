@@ -1,8 +1,8 @@
 // キーボードショートカットの一覧（メニューか「?」キーで開く）
 
+import {Fragment} from 'react';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
 import {Heading, Text} from '@astryxdesign/core/Text';
-import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {setState, useStore} from '../store';
 
 const isMac = navigator.platform.toLowerCase().includes('mac');
@@ -85,22 +85,25 @@ export function ShortcutsDialog() {
   return (
     <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={560} maxHeight="88dvh" purpose="info">
       <DialogHeader title="キーボードショートカット" onOpenChange={o => !o && close()} />
-      <div style={{maxHeight: 'calc(88dvh - 72px)', overflowY: 'auto'}}>
-        <VStack gap={4} padding={4}>
+      {/* キーの列は一番長いキーに合わせる（全部の組で同じ幅）。下はまだ続くことが分かるよう薄くする */}
+      <div className="vx-shortcuts-scroll">
+        <div className="vx-shortcuts">
           {GROUPS.map(([title, rows]) => (
-            <VStack key={title} gap={2}>
-              <Heading level={3}>{title}</Heading>
+            <Fragment key={title}>
+              <div className="vx-shortcuts-head">
+                <Heading level={3}>{title}</Heading>
+              </div>
               {rows.map(([key, what]) => (
-                <HStack key={key} gap={3} vAlign="center">
-                  <div style={{width: 150, flexShrink: 0}}>
+                <Fragment key={key}>
+                  <div>
                     <kbd className="vx-kbd">{key}</kbd>
                   </div>
                   <Text>{what}</Text>
-                </HStack>
+                </Fragment>
               ))}
-            </VStack>
+            </Fragment>
           ))}
-        </VStack>
+        </div>
       </div>
     </Dialog>
   );

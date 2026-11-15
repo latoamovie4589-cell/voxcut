@@ -8,7 +8,11 @@ import {useStore} from '../store';
 /** 作ったアバターの画像（キャラクター id と立ち絵の指定ごと） */
 const cache = new Map<string, Promise<string | null>>();
 
-/** 絵の、透明でないところの上の端と左右（顔は上のほうにあるので、そこを丸く切り抜く） */
+/**
+ * 立ち絵から顔のあたりを正方形に切り抜く。
+ * 透明でないところの高さ H から頭の大きさ（立ち絵ではおよそ H の 1/6〜1/7）を見積もり、
+ * 上の端から頭 1 つ分の行で、絵のある横位置の真ん中を顔の中心にする（髪のてっぺんではなく目と口が入るように）
+ */
 function faceCrop(src: CanvasImageSource & {width: number; height: number}, size: number): string | null {
   const w = src.width;
   const h = src.height;
@@ -19,26 +23,64 @@ function faceCrop(src: CanvasImageSource & {width: number; height: number}, size
   const px = probe.getContext('2d', {willReadFrequently: true})!;
   px.drawImage(src, 0, 0);
   const data = px.getImageData(0, 0, w, h).data;
+  const solid = (x: number, y: number) => data[(y * w + x) * 4 + 3] > 24;
   let top = h;
+  let bottom = 0;
   let left = w;
   let right = 0;
   for (let y = 0; y < h; y += 2)
     for (let x = 0; x < w; x += 2)
-      if (data[(y * w + x) * 4 + 3] > 24) {
+      if (solid(x, y)) {
         if (y < top) top = y;
+        if (y > bottom) bottom = y;
         if (x < left) left = x;
         if (x > right) right = x;
       }
   if (top >= h) return null;
-  // 横幅のおよそ 6 割を一辺にした正方形を、上の端から少し下げて取る（頭のてっぺんから顎のあたり）
-  const side = Math.max(8, Math.min(h - top, (right - left) * 0.62));
-  const cx = (left + right) / 2;
+  const tall = bottom - top;
+  // 縦長の立ち絵なら頭 1 つ分、横長・顔だけの絵なら絵全体
+  const portraitLike = tall > (right - left) * 1.3;
+  // 頭の高さ：上から 1 行ずつ絵の幅を見て、いったん広がった幅が細くなる所（首）まで。見つからなければ全体の 1/6 ほど
+  const rowWidth = (y: number) => {
+    let l = -1;
+    let r = -1;
+    for (let x = left; x <= right; x += 2)
+      if (solid(x, y)) {
+        if (l < 0) l = x;
+        r = x;
+      }
+    return l < 0 ? 0 : r - l;
+  };
+  let neck = 0;
+  let peak = 0;
+  for (let y = top; y < top + tall * 0.6; y += 2) {
+    const wy = rowWidth(y);
+    if (wy > peak) peak = wy;
+    else if (peak > 0 && y - top > tall * 0.06 && wy < peak * 0.62) {
+      neck = y - top;
+      break;
+    }
+  }
+  const head = portraitLike ? Math.max(16, neck || tall * 0.17) : Math.min(tall, right - left);
+  // 頭の行の、絵のある横位置の中心（体が傾いていても顔を追う）
+  let sx = 0;
+  let n = 0;
+  for (let y = top; y < Math.min(h, top + head); y += 2)
+    for (let x = left; x <= right; x += 2)
+      if (solid(x, y)) {
+        sx += x;
+        n++;
+      }
+  const cx = n ? sx / n : (left + right) / 2;
+  // 正方形の一辺は頭の高さ。首が見つかったなら頭全体が入る。見積もりなら上の髪を少し切る
+  const side = portraitLike ? (neck ? head * 1.05 : head * 1.15) : head;
+  const y0 = portraitLike ? top + (neck ? -head * 0.02 : head * 0.12) : top;
   const out = document.createElement('canvas');
   out.width = size;
   out.height = size;
   const o = out.getContext('2d')!;
   o.imageSmoothingQuality = 'high';
-  o.drawImage(probe, cx - side / 2, top + side * 0.04, side, side, 0, 0, size, size);
+  o.drawImage(probe, cx - side / 2, y0, side, side, 0, 0, size, size);
   return out.toDataURL('image/png');
 }
 
@@ -86,7 +128,13 @@ export function Avatar({character, size = 20}: {character: Character | undefined
   const style: React.CSSProperties = {width: size, height: size, borderColor: color, background: url ? `${color} url(${url}) center / cover` : color, fontSize: Math.round(size * 0.5)};
   return (
     <span className="vx-avatar" style={style} aria-hidden>
-      {!url && (character?.name ?? '?').slice(0, 1)}
+      {/* 立ち絵が無ければ、どのキャラクターも同じ形の人の形（色で見分ける） */}
+      {!url && (
+        <svg viewBox="0 0 24 24" width="80%" height="80%" style={{alignSelf: 'end'}}>
+          <circle cx="12" cy="8" r="5" fill="currentColor" />
+          <path d="M2 24c0-6 4.5-9.5 10-9.5S22 18 22 24z" fill="currentColor" />
+        </svg>
+      )}
     </span>
   );
 }

@@ -41,15 +41,22 @@ export function ProjectSettingsDialog() {
           }}
           width="100%"
         />
-        <Selector
-          label="1 秒のコマ数（fps）"
-          value={String(v.fps)}
-          isDisabled={fpsLocked}
-          options={(FPS.includes(v.fps) ? FPS : [v.fps, ...FPS]).map(f => ({value: String(f), label: `${f} fps`}))}
-          onChange={val => updateVideo({fps: Number(val)})}
-          width="100%"
-        />
-        {fpsLocked && <Banner status="info" title="fps は、セリフや素材を置く前に決めます" description="置いたあとに変えると、アイテムの長さが変わってしまうためです。" />}
+        {/* 置いたあとは変えられないので、押せそうな欄ではなく、値と理由だけを出す */}
+        {fpsLocked ? (
+          <VStack gap={1}>
+            <Text type="label">1 秒のコマ数（fps）</Text>
+            <Text hasTabularNumbers>{v.fps} fps</Text>
+            <Banner status="info" title="fps は、セリフや素材を置く前に決めます" description="置いたあとに変えると、アイテムの長さが変わってしまうためです。" />
+          </VStack>
+        ) : (
+          <Selector
+            label="1 秒のコマ数（fps）"
+            value={String(v.fps)}
+            options={(FPS.includes(v.fps) ? FPS : [v.fps, ...FPS]).map(f => ({value: String(f), label: `${f} fps`}))}
+            onChange={val => updateVideo({fps: Number(val)})}
+            width="100%"
+          />
+        )}
         <HStack gap={2} vAlign="center">
           <Text type="label">背景の色</Text>
           <input

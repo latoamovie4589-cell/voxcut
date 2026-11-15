@@ -1,6 +1,7 @@
 // 台本モード：台本を文書のように「名前：セリフ」で 1 行ずつ書くと、タイムラインにセリフが並ぶ。
 // 書き直した行・増えた行は、改行したとき・欄から離れたときに合成する（打っている途中は並べるだけ）。
-// 名前の無い行は、すぐ上の行と同じキャラクター。知らない名前があれば、キャラクターを作るか聞く
+// 名前の無い行は、すぐ上の行と同じキャラクター。知らない名前があれば、キャラクターを作るか聞く。
+// 名前はキャラクターの色で見せる（欄の後ろに同じ文字を重ねて色だけ付ける）
 
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {Banner} from '@astryxdesign/core/Banner';
@@ -9,12 +10,21 @@ import {Text} from '@astryxdesign/core/Text';
 import {VStack} from '@astryxdesign/core/Layout';
 import {getNotify, synthesize} from '../actions';
 import type {Character, Project, VoiceClip} from '../model';
-import {parseScript} from '../script';
-import {addCharacter, applyScript, getState, setState, updateCharacter, useStore} from '../store';
+import {parseScript, type ScriptLine} from '../script';
+import {addCharacter, applyScript, getState, redo, setState, undo, updateCharacter, useStore} from '../store';
 
-const IDLE_MS = 1200;
+const IDLE_MS = 1500;
 
 const norm = (t: string) => t.replace(/\s/g, '');
+
+/** 「茜：」のように名前だけ打った行（セリフはこれから）。書きかけなので並べない */
+const nameOnly = (l: ScriptLine) => !l.name && /^[^\s:：「」]{1,20}[:：]$/.test(l.text.trim());
+
+/** 台本の文から、並べる行（書きかけの名前だけの行は除く） */
+const docLines = (text: string) => parseScript(text).filter(l => !nameOnly(l));
+
+/** タブを替えて戻っても、まだ並べられていない書きかけを残す（知らない名前があるときなど） */
+let keptDraft: string | null = null;
 
 /** プロジェクトのセリフを、台本の文に */
 function docOf(p: Project): {text: string; ids: string[]} {
@@ -26,14 +36,16 @@ function docOf(p: Project): {text: string; ids: string[]} {
   };
 }
 
+const findChar = (chars: Character[], name: string) => chars.find(c => c.name === name || norm(c.name) === norm(name));
+
 /** 台本の文を、キャラクターを割り当てた行に。知らない名前は unknown に */
 function readDoc(text: string, chars: Character[], fallback: string): {items: {characterId: string; text: string}[]; unknown: string[]} {
   const items: {characterId: string; text: string}[] = [];
   const unknown = new Set<string>();
   let last = fallback;
-  for (const l of parseScript(text)) {
+  for (const l of docLines(text)) {
     if (l.name) {
-      const ch = chars.find(c => c.name === l.name || norm(c.name) === norm(l.name!));
+      const ch = findChar(chars, l.name);
       if (!ch) {
         unknown.add(l.name);
         continue;
@@ -45,24 +57,72 @@ function readDoc(text: string, chars: Character[], fallback: string): {items: {c
   return {items, unknown: [...unknown]};
 }
 
+/** 欄の後ろに重ねる、名前に色を付けた同じ文字 */
+function Highlight({text, chars}: {text: string; chars: Character[]}) {
+  const rows = text.split('\n');
+  return (
+    <>
+      {rows.map((row, i) => {
+        const m = row.match(/^(\s*)(【[^】]{1,20}】|[^\s:：「」【】]{1,20}(?=[:：「『]))/);
+        const name = m ? m[2].replace(/^【|】$/g, '') : null;
+        const ch = name ? findChar(chars, name) : undefined;
+        return (
+          <span key={i}>
+            {m ? (
+              <>
+                {m[1]}
+                <span className="vx-doc-name" data-unknown={ch ? undefined : true} style={ch ? {color: ch.color, background: `${ch.color}24`} : undefined}>
+                  {m[2]}
+                </span>
+                {row.slice(m[0].length)}
+              </>
+            ) : (
+              row
+            )}
+            {i < rows.length - 1 ? '\n' : ''}
+          </span>
+        );
+      })}
+      {/* 最後が改行のとき、欄と同じ高さにする */}
+      {'\n'}
+    </>
+  );
+}
+
 export function ScriptDoc() {
   const project = useStore(s => s.project);
   const selectedChar = useStore(s => s.selectedCharacterId);
   const doc = useMemo(() => (project ? docOf(project) : {text: '', ids: []}), [project]);
-  const [draft, setDraft] = useState<string | null>(null); // 書いている途中（欄にいる間）だけ持つ
-  const [unknown, setUnknown] = useState<string[]>([]);
+  // 欄にいる間と、並べられない書きかけがある間だけ持つ。それ以外はタイムラインの内容をそのまま出す
+  const [draft, setDraftState] = useState<string | null>(() => keptDraft);
+  // 戻ってきたとき、残っていた書きかけの知らない名前をもう一度知らせる
+  const [unknown, setUnknown] = useState<string[]>(() => {
+    const p = getState().project;
+    return keptDraft && p ? readDoc(keptDraft, p.characters, '').unknown : [];
+  });
   const timer = useRef<number | undefined>(undefined);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const backRef = useRef<HTMLDivElement>(null);
+  const draftRef = useRef<string | null>(draft);
+  /** 最後にタイムラインへ並べた文（これと同じなら、書きかけは無い） */
+  const appliedRef = useRef<string | null>(null);
   const text = draft ?? doc.text;
-  const draftRef = useRef<string | null>(null);
-  draftRef.current = draft;
+
+  const setDraft = (v: string | null) => {
+    draftRef.current = v;
+    setDraftState(v);
+  };
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  // 欄から離れたまま残った書きかけ（知らない名前）を、タブを替えても失わない
+  useEffect(() => {
+    keptDraft = unknown.length ? draft : null;
+  }, [draft, unknown]);
 
   if (!project) return null;
   const fallback = selectedChar ?? project.characters[0]?.id ?? '';
 
-  /** 書いた台本をタイムラインへ。synth なら、変わった行を合成する */
+  /** 書いた台本をタイムラインへ。synth なら、変わった行を合成する。並べられたら true */
   const apply = (src: string, synth: boolean): boolean => {
     window.clearTimeout(timer.current);
     const p = getState().project;
@@ -72,6 +132,7 @@ export function ScriptDoc() {
     // 知らない名前があるうちは並べない（その行を消してしまわないように）。書いた文は欄に残す
     if (r.unknown.length) return false;
     const ids = applyScript(r.items);
+    appliedRef.current = src;
     if (synth) {
       // 前に並べただけの行も、まだ合成していなければ一緒に
       const now = getState().project;
@@ -82,8 +143,10 @@ export function ScriptDoc() {
     return true;
   };
 
+  /** 並べていない書きかけが無いか */
+  const clean = () => draftRef.current === null || draftRef.current === doc.text || draftRef.current === appliedRef.current;
+
   const onChange = (v: string) => {
-    draftRef.current = v;
     setDraft(v);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => apply(v, false), IDLE_MS);
@@ -93,11 +156,10 @@ export function ScriptDoc() {
   const followCaret = () => {
     const el = ref.current;
     if (!el || unknown.length) return;
-    const row = el.value.slice(0, el.selectionStart).split('\n').length - 1;
-    // 空行・コメントを除いた行番号に直す
-    const before = el.value.split('\n').slice(0, row + 1);
-    const idx = parseScript(before.join('\n')).length - 1;
-    if (parseScript(el.value).length !== doc.ids.length) return; // まだ並べていない書きかけがある
+    if (docLines(el.value).length !== doc.ids.length) return; // まだ並べていない書きかけがある
+    const before = el.value.slice(0, el.selectionStart).split('\n');
+    // 空行・コメント・名前だけの行を除いた行番号に直す
+    const idx = Math.max(0, docLines(before.join('\n')).length - 1);
     const id = doc.ids[idx];
     const c = id && getState().project?.clips.find(x => x.id === id);
     if (c && getState().selectedClipId !== id) setState(s => ({selectedClipId: id, playhead: c.start, revealSeq: s.revealSeq + 1}));
@@ -110,9 +172,9 @@ export function ScriptDoc() {
       updateCharacter(id, {name});
     }
     setState({selectedCharacterId: prevSel});
-    getNotify()(`キャラクターを ${unknown.length} 人作りました。声は「キャラクター」タブで選べます`);
+    getNotify()(`キャラクターを ${unknown.length} 人作りました。声は「キャラクター」で選べます`);
     const src = draftRef.current ?? doc.text;
-    if (apply(src, true)) setDraft(null);
+    if (apply(src, true) && document.activeElement !== ref.current) setDraft(null);
   };
 
   return (
@@ -126,31 +188,53 @@ export function ScriptDoc() {
           endContent={<Button label="キャラクターを作る" size="sm" onClick={createMissing} />}
         />
       )}
-      <textarea
-        ref={ref}
-        className="vx-script-doc"
-        aria-label="台本（名前：セリフ を 1 行ずつ）"
-        spellCheck={false}
-        placeholder={`${project.characters[0]?.name ?? 'ナレーター'}：こんにちは。\n${project.characters[1]?.name ?? project.characters[0]?.name ?? 'アシスタント'}：よろしくお願いします。`}
-        value={text}
-        onFocus={() => setDraft(d => d ?? doc.text)}
-        onChange={e => onChange(e.target.value)}
-        onBlur={() => {
-          // 並べられた（知らない名前が無い）ら、欄はタイムラインの内容に戻す
-          if (draft === null || draft === doc.text || apply(draft, true)) setDraft(null);
-        }}
-        onKeyDown={e => {
-          // ショートカット（Space で再生など）に取られないように
-          e.stopPropagation();
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey) {
-            // 改行の直後に、書き終えた行を並べて合成
-            const el = e.currentTarget;
-            window.setTimeout(() => apply(el.value, true), 0);
-          }
-        }}
-        onKeyUp={followCaret}
-        onClick={followCaret}
-      />
+      <div className="vx-script-doc-wrap">
+        <div ref={backRef} className="vx-script-doc vx-script-doc-back" aria-hidden>
+          <Highlight text={text} chars={project.characters} />
+        </div>
+        <textarea
+          ref={ref}
+          className="vx-script-doc vx-script-doc-input"
+          aria-label="台本（名前：セリフ を 1 行ずつ）"
+          spellCheck={false}
+          placeholder={`${project.characters[0]?.name ?? 'ナレーター'}：こんにちは。\n${project.characters[1]?.name ?? project.characters[0]?.name ?? 'アシスタント'}：よろしくお願いします。`}
+          value={text}
+          onScroll={e => {
+            if (backRef.current) backRef.current.scrollTop = e.currentTarget.scrollTop;
+          }}
+          onFocus={() => {
+            if (draftRef.current === null) setDraft(doc.text);
+          }}
+          onChange={e => onChange(e.target.value)}
+          onBlur={() => {
+            // 並べられた（知らない名前が無い）ら、欄はタイムラインの内容に戻す
+            if (clean() || apply(draftRef.current!, true)) setDraft(null);
+          }}
+          onKeyDown={e => {
+            const mod = e.ctrlKey || e.metaKey;
+            const k = e.key.toLowerCase();
+            // 探す・置き換える（Ctrl+F / Ctrl+H）と保存はアプリのショートカットへ。ほかは欄の中だけで使う（Space で再生などに取られないように）
+            if (mod && (k === 'f' || k === 'h' || k === 's')) return;
+            e.stopPropagation();
+            // 書きかけが無ければ、Ctrl+Z / Ctrl+Y はタイムラインの元に戻す・やり直す（1 文字ずつではなく）
+            if (mod && (k === 'z' || k === 'y') && clean()) {
+              e.preventDefault();
+              if (k === 'y' || e.shiftKey) redo();
+              else undo();
+              appliedRef.current = null;
+              setDraft(null);
+              return;
+            }
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey) {
+              // 改行の直後に、書き終えた行を並べて合成
+              const el = e.currentTarget;
+              window.setTimeout(() => apply(el.value, true), 0);
+            }
+          }}
+          onKeyUp={followCaret}
+          onClick={followCaret}
+        />
+      </div>
     </VStack>
   );
 }

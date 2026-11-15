@@ -21,6 +21,8 @@ import {framesToTimecode} from '../model';
 import {reorderLine, replaceInLines, setState, updateClip, useStore} from '../store';
 
 type View = 'list' | 'doc';
+/** 文書から一覧へ切り替えた直後の Ctrl+H：一覧ができたときに置き換えの欄を開く */
+let replaceOnMount = false;
 const VIEW_KEY = 'voxcut.scriptView';
 function readView(): View {
   try {
@@ -33,6 +35,8 @@ function readView(): View {
 /** 台本パネル：一覧と文書（台本モード）を切り替える */
 export function ScriptList() {
   const [view, setView] = useState<View>(readView);
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const change = (v: View) => {
     setView(v);
     try {
@@ -44,11 +48,16 @@ export function ScriptList() {
   // Ctrl+F / Ctrl+H は一覧の検索を使うので、一覧へ戻す
   useEffect(() => {
     const on = () => change('list');
+    const onReplace = () => {
+      // 一覧がまだ無い（文書を出している）ときだけ。一覧が出ていれば一覧が自分で開く
+      if (viewRef.current === 'doc') replaceOnMount = true;
+      change('list');
+    };
     window.addEventListener('vx-open-search', on);
-    window.addEventListener('vx-open-replace', on);
+    window.addEventListener('vx-open-replace', onReplace);
     return () => {
       window.removeEventListener('vx-open-search', on);
-      window.removeEventListener('vx-open-replace', on);
+      window.removeEventListener('vx-open-replace', onReplace);
     };
   }, []);
   return (
@@ -74,10 +83,15 @@ function ScriptLines() {
   const listRef = useRef<HTMLOListElement>(null);
   // 探す・置き換える（Ctrl+F でここへ）
   const [query, setQuery] = useState('');
-  const [replacing, setReplacing] = useState(false);
+  const [replacing, setReplacing] = useState(() => {
+    const r = replaceOnMount;
+    replaceOnMount = false;
+    return r;
+  });
   const [to, setTo] = useState('');
   // Ctrl+H（App から）：置き換えの欄を開く
   useEffect(() => {
+    replaceOnMount = false;
     const on = () => setReplacing(true);
     window.addEventListener('vx-open-replace', on);
     return () => window.removeEventListener('vx-open-replace', on);
@@ -152,7 +166,14 @@ function ScriptLines() {
           {q ? `${hits.length} / ${lines.length} 行` : `${lines.length} 行`}
         </Text>
         <HStack gap={0}>
-          <Button label="貼り付け…" size="sm" variant="ghost" icon={<Icon icon={ClipboardPaste} />} tooltip="「名前：セリフ」の台本をまとめて追加" onClick={() => setState({pasteOpen: true})} />
+          <IconButton
+            label="台本を貼り付け…"
+            tooltip="台本を貼り付け（「名前：セリフ」をまとめて追加）"
+            size="sm"
+            variant="ghost"
+            icon={<Icon icon={ClipboardPaste} />}
+            onClick={() => setState({pasteOpen: true})}
+          />
           {lines.length > 0 && <IconButton label="台本を写す" tooltip="台本を文として写す（Word やメモ帳に貼れます）" size="sm" variant="ghost" icon={<Icon icon={Copy} />} onClick={copyAll} />}
           {lines.length > 0 && (
             <IconButton
@@ -187,7 +208,7 @@ function ScriptLines() {
       <VStack gap={2} padding={2}>
         {header}
         <VStack padding={2}>
-          <Text type="supporting">まだセリフがありません。下の入力欄に打って Enter で追加するか、「貼り付け…」で台本をまとめて入れられます。</Text>
+          <Text type="supporting">まだセリフがありません。下の入力欄に打って Enter で追加するか、右上の貼り付けボタンで台本をまとめて入れられます。</Text>
         </VStack>
       </VStack>
     );
