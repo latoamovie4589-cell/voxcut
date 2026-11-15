@@ -86,6 +86,13 @@ impl AppState {
         self.engines.read().unwrap().clone()
     }
 
+    /// 自分で起動した音声合成ソフトを終える（アプリを閉じるとき）
+    pub fn shutdown_engines(&self) {
+        for e in self.engines() {
+            e.shutdown();
+        }
+    }
+
     fn ffmpeg(&self) -> PathBuf {
         if let Some(p) = &self.config.read().unwrap().ffmpeg_path {
             return p.clone();
@@ -317,6 +324,103 @@ pub async fn engine_status(state: State<'_, AppState>) -> CmdResult<Vec<EngineSt
     .await
 }
 
+/// 音声合成ソフトを起動する（起動を始めたら true）。使えるようになったかは engine_status で確かめる
+#[tauri::command]
+pub async fn launch_engine(state: State<'_, AppState>, engine: EngineId) -> CmdResult<bool> {
+    let e = state.engines().into_iter().find(|e| e.id() == engine).ok_or("エンジンがありません")?;
+    blocking(move || e.launch().map_err(err)).await
+}
+
+/// 素材（動画・画像・音声・立ち絵）をプロジェクトの隣の「<名前>の素材」フォルダへ集めて、パスを相対パスに書き換える。
+/// 元のファイルは動かさない（コピーする）。見つからない素材はそのままにする
+#[tauri::command]
+pub async fn collect_media(app: AppHandle, mut project: Project, project_path: PathBuf) -> CmdResult<CollectOutcome> {
+    let out = blocking(move || {
+        let base = project_path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let stem = project_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+        let folder = format!("{stem}の素材");
+        let dir = base.join(&folder);
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        // 元の場所 → 集めた先の名前（同じファイルは 1 回だけコピーする）
+        let mut done: std::collections::HashMap<PathBuf, String> = Default::default();
+        let mut used: std::collections::HashSet<String> = Default::default();
+        let mut copied = 0usize;
+        let mut collect = |s: &mut String| -> CmdResult<()> {
+            if s.is_empty() {
+                return Ok(());
+            }
+            let src = if Path::new(s.as_str()).is_relative() { base.join(s.as_str()) } else { PathBuf::from(s.as_str()) };
+            if !src.is_file() {
+                return Ok(());
+            }
+            // すでに素材フォルダの中にあるものは、相対パスにするだけ
+            if src.parent() == Some(dir.as_path()) {
+                if let Some(name) = src.file_name() {
+                    let name = name.to_string_lossy().into_owned();
+                    used.insert(name.to_lowercase());
+                    *s = format!("{folder}/{name}");
+                }
+                return Ok(());
+            }
+            if let Some(name) = done.get(&src) {
+                *s = format!("{folder}/{name}");
+                return Ok(());
+            }
+            let file_stem = src.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            let ext = src.extension().map(|x| format!(".{}", x.to_string_lossy())).unwrap_or_default();
+            let mut name = format!("{file_stem}{ext}");
+            let mut n = 2;
+            // 同じ名前の別のファイルは、番号を付けて分ける
+            while used.contains(&name.to_lowercase()) || dir.join(&name).exists() {
+                name = format!("{file_stem}_{n}{ext}");
+                n += 1;
+            }
+            std::fs::copy(&src, dir.join(&name)).map_err(|e| format!("{} をコピーできませんでした: {e}", src.display()))?;
+            used.insert(name.to_lowercase());
+            done.insert(src, name.clone());
+            copied += 1;
+            *s = format!("{folder}/{name}");
+            Ok(())
+        };
+        for c in &mut project.clips {
+            if let voxcut_core::model::ClipBody::Media(m) = &mut c.body {
+                collect(&mut m.src)?;
+            }
+        }
+        for ch in &mut project.characters {
+            let Some(pt) = ch.portrait.as_mut() else { continue };
+            collect(&mut pt.base)?;
+            for s in pt.eyes.iter_mut().chain(pt.mouth.iter_mut()).flatten() {
+                collect(s)?;
+            }
+            for e in &mut pt.expressions {
+                if let Some(b) = e.base.as_mut() {
+                    collect(b)?;
+                }
+                for s in e.eyes.iter_mut().chain(e.mouth.iter_mut()).flatten() {
+                    collect(s)?;
+                }
+            }
+            if let Some(psd) = pt.psd.as_mut() {
+                collect(&mut psd.src)?;
+            }
+        }
+        Ok((project, copied, dir))
+    })
+    .await?;
+    let (project, copied, dir) = out;
+    let _ = app.asset_protocol_scope().allow_directory(&dir, true);
+    Ok(CollectOutcome { project, copied, dir: dir.to_string_lossy().into_owned() })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectOutcome {
+    project: Project,
+    copied: usize,
+    dir: String,
+}
+
 #[tauri::command]
 pub async fn list_voices(state: State<'_, AppState>, engine: EngineId) -> CmdResult<Vec<VoiceInfo>> {
     let e = state.engines().into_iter().find(|e| e.id() == engine).ok_or("エンジンがありません")?;
@@ -476,12 +580,16 @@ pub async fn export_video(
         let emit = |stage, ratio| {
             let _ = app.emit("export-progress", ExportProgress { stage, ratio });
         };
-        emit("synth", 0.0);
-        let (todo, mut ready) = jobs::plan(&project, &cache, None, &dict);
-        ready.extend(jobs::run(todo, &engines, &cache, &|p| emit("synth", p.done as f64 / p.total.max(1) as f64)));
-        let failed = jobs::apply(&mut project, ready);
-        if let Some((id, e)) = failed.first() {
-            return Err(format!("セリフ {id} を合成できませんでした: {e}"));
+        // 静止画は音を使わないので、合成を待たない
+        let still = options.still_frame.map(|f| project.video.frames_to_secs(f.max(0)));
+        if still.is_none() {
+            emit("synth", 0.0);
+            let (todo, mut ready) = jobs::plan(&project, &cache, None, &dict);
+            ready.extend(jobs::run(todo, &engines, &cache, &|p| emit("synth", p.done as f64 / p.total.max(1) as f64)));
+            let failed = jobs::apply(&mut project, ready);
+            if let Some((id, e)) = failed.first() {
+                return Err(format!("セリフ {id} を合成できませんでした: {e}"));
+            }
         }
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(voxcut_core::Error::Cancelled.to_string());
@@ -508,13 +616,20 @@ pub async fn export_video(
         }
         opt.out_height = options.height;
         opt.encoder = options.encoder.unwrap_or_default();
+        opt.still_at = still;
+        // 静止画では音のないプロジェクトとして組み立てる（まだ合成していないセリフがあっても書き出せるように）
+        let silent = still.map(|_| {
+            let mut q = project.clone();
+            q.tracks.iter_mut().for_each(|t| t.muted = true);
+            q
+        });
         let lookup = |id: &str| {
             project.clips.iter().find(|c| c.id == id).and_then(|c| c.as_voice()).and_then(|v| v.audio.as_ref()).and_then(|a| cache.get(&a.cache_key))
         };
-        let total = project.video.frames_to_secs(project.duration());
+        let total = still.map(|t| t.max(0.04)).unwrap_or_else(|| project.video.frames_to_secs(project.duration()));
         let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
         let run = |opt: &ExportOptions| -> CmdResult<()> {
-            let mut args = render::build_args(&project, &lookup, &portraits, &captions, opt).map_err(err)?;
+            let mut args = render::build_args(silent.as_ref().unwrap_or(&project), &lookup, &portraits, &captions, opt).map_err(err)?;
             render::externalize_filter(&mut args, &work.join("graph.txt"), new_syntax, 6000).map_err(err)?;
             render::run_cancellable(&args, &ffmpeg, total, &mut |x| emit("encode", x), Some(&cancel)).map_err(err)
         };
@@ -539,6 +654,8 @@ pub struct ExportRequest {
     crf: Option<u8>,
     height: Option<u32>,
     encoder: Option<Encoder>,
+    /// 静止画を 1 枚だけ書き出すときのフレーム（出力は .png / .jpg）
+    still_frame: Option<voxcut_core::model::Frame>,
     /// テキスト・図形アイテムの画像（クリップ id → PNG のパス）
     #[serde(default)]
     item_images: std::collections::HashMap<String, PathBuf>,

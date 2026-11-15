@@ -27,6 +27,10 @@ fn main() {
         // メインウィンドウを閉じたら、切り離したパネルのウィンドウも閉じてアプリを終える
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                // 自分で起動した VOICEVOX のエンジンを残さない
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    state.shutdown_engines();
+                }
                 window.app_handle().exit(0);
             }
         })
@@ -39,6 +43,8 @@ fn main() {
             commands::set_config,
             commands::engine_status,
             commands::list_voices,
+            commands::launch_engine,
+            commands::collect_media,
             commands::synthesize,
             commands::waveform,
             commands::audio_path,
