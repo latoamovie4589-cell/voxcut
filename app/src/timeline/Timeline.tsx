@@ -15,7 +15,29 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
-import {Ellipsis, Rows3, Eye, EyeOff, ImagePlus, Link2, PersonStanding, Lock, LockOpen, Maximize2, Plus, ZoomIn, ZoomOut, Shapes, Type} from 'lucide-react';
+import {
+  Circle,
+  Minus,
+  RectangleHorizontal,
+  Square,
+  Star,
+  Triangle,
+  Ellipsis,
+  Rows3,
+  Eye,
+  EyeOff,
+  ImagePlus,
+  Link2,
+  PersonStanding,
+  Lock,
+  LockOpen,
+  Maximize2,
+  Plus,
+  ZoomIn,
+  ZoomOut,
+  Shapes,
+  Type,
+} from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
 import {
@@ -260,6 +282,7 @@ function TrackHeader({track}: {track: Track}) {
       onContextMenuCapture={() => headerRef.current?.querySelector<HTMLElement>('button[aria-haspopup]')?.focus({preventScroll: true})}
       className="vx-track-header"
       style={{height: LAYER_H}}
+      data-tall={LAYER_H >= 30 || undefined}
       data-muted={track.hidden || undefined}
       onAuxClick={e => {
         if (e.button === 1) toggleOut();
@@ -364,7 +387,10 @@ function StartCard() {
   );
   return (
     <section className="vx-start" aria-label="最初の 3 手順">
-      <h2 className="vx-start-head">最初の 3 手順</h2>
+      <div className="vx-start-top">
+        <h2 className="vx-start-head">最初の 3 手順</h2>
+        <Button label="サンプルを開いて見る" size="sm" variant="ghost" onClick={() => void import('../actions').then(m => m.newProjectAction(m.getNotify(), true))} />
+      </div>
       <ol className="vx-start-list">
         {step(
           chars > 0,
@@ -387,10 +413,26 @@ function StartCard() {
         {step(false, 2, 'セリフを打って Enter', '下の入力欄に打つと、声と字幕がタイムラインに並びます（台本をまとめて貼っても入ります）')}
         {step(false, 3, '書き出す', '右上の「動画を書き出す…」から。音声だけ・字幕だけも書き出せます')}
       </ol>
-      <Button label="サンプルを開いて見る" size="sm" variant="ghost" onClick={() => void import('../actions').then(m => m.newProjectAction(m.getNotify(), true))} />
     </section>
   );
 }
+
+/** ピークの一番大きい値（波形の高さを揃えるため。行ごとに一度だけ数える） */
+const peakMaxCache = new WeakMap<ArrayLike<number>, number>();
+function peakMax(pk: ArrayLike<number>): number {
+  let m = peakMaxCache.get(pk);
+  if (m === undefined) {
+    m = 0;
+    for (let i = 0; i < pk.length; i++) m = Math.max(m, Math.abs(pk[i]));
+    // ほとんど無音なら揃えない（雑音を大きく見せない）
+    m = Math.max(m, 16);
+    peakMaxCache.set(pk, m);
+  }
+  return m;
+}
+
+/** 図形メニューの絵（ツールバーと同じく、項目にも形を出す） */
+const SHAPE_ICON: Record<ShapeKind, typeof Square> = {rect: RectangleHorizontal, roundRect: Square, ellipse: Circle, triangle: Triangle, line: Minus, star: Star};
 
 /** メニューの右端に出すショートカット */
 const MOD = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl+';
@@ -636,8 +678,9 @@ export function Timeline() {
         if (isSel) {
           ctx.beginPath();
           ctx.roundRect(x - 2.5, y - 2.5, cw + 5, ch + 5, 4);
+          // 選んだアイテムはアクセントの紫の 2px 枠（未合成の破線・重なりの黄色と見分けられるように）
           ctx.lineWidth = 2;
-          ctx.strokeStyle = pal.text;
+          ctx.strokeStyle = pal.accent;
           ctx.stroke();
         } else if (c.linkId && selLinks.has(c.linkId)) {
           // 選んだクリップとリンクしている相手（片方だけ選んだとき）は破線で示す
@@ -654,7 +697,7 @@ export function Timeline() {
         ctx.roundRect(x, y, cw, ch, 3);
         ctx.save();
         const hovered = hoverRef.current?.clipId === c.id && !dragRef.current;
-        ctx.globalAlpha *= isSel ? 0.34 : (unsynth ? 0.1 : 0.2) + (hovered ? 0.12 : 0);
+        ctx.globalAlpha *= isSel ? 0.46 : (unsynth ? 0.1 : 0.2) + (hovered ? 0.12 : 0);
         ctx.fillStyle = color;
         ctx.fill();
         ctx.restore();
@@ -720,6 +763,8 @@ export function Timeline() {
             const rv = revealRef.current.get(c.id);
             const upTo = rv === undefined ? cw : cw * easeOut(Math.min(1, (now - rv) / 320));
             const perFrame = 100 / fps; // ピークは 100 個/秒
+            // 小さい声でも形が見えるよう、その行で一番大きい山が波形の高さいっぱいになるように揃える
+            const norm = peakMax(pk);
             ctx.fillStyle = color;
             // 名前の文字と重なっても読めるよう、波形は薄く（文字には縁取りも付ける）
             ctx.globalAlpha *= tall ? 0.55 : 0.35;
@@ -727,8 +772,8 @@ export function Timeline() {
               // 再生開始位置で飛ばした頭は描かない
               const i = Math.floor((px / z + startOffsetOf(c)) * perFrame) * 2;
               if (i + 1 >= pk.length) break;
-              const lo = (pk[i] / 127) * amp;
-              const hi = (pk[i + 1] / 127) * amp;
+              const lo = (pk[i] / norm) * amp;
+              const hi = (pk[i + 1] / norm) * amp;
               ctx.fillRect(x + px, mid - hi, 1, Math.max(1, hi - lo));
             }
             ctx.globalAlpha = (track.hidden ? 0.4 : 1) * fade;
@@ -1038,7 +1083,11 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el || !getState().isPlaying) return;
     const x = playhead * zoom;
-    if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - 40) el.scrollLeft = Math.max(0, x - 80);
+    // 端まで来たらページごと送るが、跳ばずに短く滑らせる（再生位置を見失わないように）
+    if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - 40) {
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      el.scrollTo({left: Math.max(0, x - 80), behavior: reduce ? 'auto' : 'smooth'});
+    }
   }, [playhead, zoom]);
 
   // 選択を見せる：追加した行・キーボードで選んだクリップ・台本から選んだ行が画面外ならスクロール
@@ -1237,20 +1286,30 @@ export function Timeline() {
   // ドラッグ中に端（40px 以内）へ寄せたら、近いほど速く横にスクロールする
   const lastMoveRef = useRef<React.PointerEvent | null>(null);
   const scrollRaf = useRef(0);
+  const scrollTickAt = useRef(0);
   const autoScroll = () => {
     if (scrollRaf.current) return;
-    const tick = () => {
+    const tick = (now: number) => {
       scrollRaf.current = 0;
+      // 進む量は経過時間で決める（マウスを細かく動かしても速くならない）。1 コマ 60fps 換算
+      const dt = scrollTickAt.current ? Math.min(50, now - scrollTickAt.current) : 16.7;
+      scrollTickAt.current = now;
       const el = scrollRef.current;
       const m = lastMoveRef.current;
       if (!el || !m || !dragRef.current) return;
       const r = el.getBoundingClientRect();
       const left = r.left + HEADER_W_IN_SCROLL;
       const v = m.clientX < left + EDGE_SCROLL ? -(left + EDGE_SCROLL - m.clientX) : m.clientX > r.right - EDGE_SCROLL ? m.clientX - (r.right - EDGE_SCROLL) : 0;
-      if (!v) return;
+      if (!v) {
+        scrollTickAt.current = 0;
+        return;
+      }
       const before = el.scrollLeft;
-      el.scrollLeft = Math.max(0, before + Math.sign(v) * Math.min(16, Math.abs(v) / 3 + 2));
-      if (el.scrollLeft === before) return;
+      el.scrollLeft = Math.max(0, before + Math.sign(v) * Math.min(16, Math.abs(v) / 3 + 2) * (dt / 16.7));
+      if (el.scrollLeft === before) {
+        scrollTickAt.current = 0;
+        return;
+      }
       onPointerMove(m);
     };
     scrollRaf.current = requestAnimationFrame(tick);
@@ -1600,7 +1659,7 @@ export function Timeline() {
         <Button label="テキスト" size="sm" variant="ghost" icon={<Icon icon={Type} />} isIconOnly={compact} tooltip="テキストを再生位置に追加" onClick={() => addVisualItem('text')} />
         <DropdownMenu button={{label: '図形', size: 'sm', variant: 'ghost', icon: <Icon icon={Shapes} />, isIconOnly: compact, tooltip: '図形を再生位置に追加'}} menuWidth={160}>
           {(Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => (
-            <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} onClick={() => addVisualItem('shape', k)} />
+            <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
           ))}
         </DropdownMenu>
         {compact ? (

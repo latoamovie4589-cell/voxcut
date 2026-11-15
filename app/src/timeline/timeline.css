@@ -52,6 +52,14 @@
   border-bottom: 0.5px solid var(--color-border);
   box-sizing: border-box;
 }
+/* 高い行では、アイテムの名前（上）と同じ高さにレイヤー名とボタンをそろえる */
+.vx-track-header[data-tall] {
+  align-items: flex-start;
+  padding-top: 2px;
+}
+.vx-track-header[data-tall] .vx-track-name {
+  height: 24px;
+}
 .vx-track-header[data-muted] > :not(:last-child) {
   opacity: 0.55;
 }
@@ -144,16 +152,21 @@
   padding: 0;
 }
 
-/* 空のプロジェクトの「最初の 3 手順」（タイムラインの上に重ねる） */
+/* 空のプロジェクトの「最初の 3 手順」。レイヤー名の列とルーラーにはかぶせず、
+   アイテムを置く場所の真ん中に出す（上下左右を決めて margin:auto で中央。transform は動きに使う） */
 .vx-start {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  left: 236px; /* レイヤー名の列 224px ＋ 余白 */
+  right: 12px;
+  top: 34px; /* ルーラー 26px ＋ 余白 */
+  bottom: 8px;
+  margin: auto;
+  height: fit-content;
   z-index: 3;
-  width: min(720px, calc(100% - 32px));
-  max-height: calc(100% - 16px);
+  max-width: 760px;
+  max-height: calc(100% - 42px);
   overflow: auto;
+  container-type: inline-size;
   padding: 12px 16px;
   border-radius: 12px;
   background: var(--color-background-surface);
@@ -162,13 +175,42 @@
     0 8px 28px rgb(0 0 0 / 0.16);
   animation: vx-pop-in 160ms ease-out;
 }
-.vx-start-head {
+.vx-start-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin: 0 0 10px;
+}
+.vx-start-head {
+  margin: 0;
   font-size: 15px;
   font-weight: 700;
 }
+/* 狭いときは説明を省き、手順の名前だけ並べる */
+@container (max-width: 560px) {
+  .vx-start .vx-start-list {
+    grid-template-columns: 1.5fr 1fr 1fr;
+    gap: 8px;
+  }
+  .vx-start .vx-start-step {
+    grid-template-columns: 20px 1fr;
+    gap: 6px;
+  }
+  .vx-start .vx-start-num {
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+  }
+  .vx-start .vx-start-title {
+    font-size: 12px;
+  }
+  .vx-start .vx-start-step:not(:first-child) .vx-start-body {
+    display: none;
+  }
+}
 .vx-start-list {
-  margin: 0 0 8px;
+  margin: 0;
   padding: 0;
   list-style: none;
   display: grid;
