@@ -2,8 +2,8 @@
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project, VoiceClip} from './model';
-import {ENGINE_LABEL, effectiveVoice, isSpeakerMissing, reflowAll, synthKey} from './model';
-import {addCharacterFrom, addMediaClips, getState, replaceProject, setState} from './store';
+import {ENGINE_LABEL, effectiveVoice, framesToTimecode, isSpeakerMissing, projectDuration, reflowAll, synthKey} from './model';
+import {addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -297,6 +297,47 @@ export function whenSynthIdle(): Promise<void> {
   });
 }
 
+/** 起動を試して駄目だったソフト（しばらくは試し直さない）→ いつ諦めたか */
+const gaveUp = new Map<EngineId, number>();
+/** 合成の途中でつながらなくなった行（ソフトを起動し直して、1 回だけやり直す） */
+const relaunched = new Set<string>();
+let recheckEngines = false;
+
+/**
+ * 使うソフトが起動していなければ起動して、使えるようになるまで待つ（YMM4 と同じく、セリフを足すだけで合成まで進む）。
+ * 起動できないソフト（場所が分からない・設定がまだ）は何もしない。その行は今までどおり、理由を付けて失敗になる
+ */
+async function ensureEngines(notify: Notify, need: EngineId[]): Promise<void> {
+  const known = getState().engines;
+  const now = Date.now();
+  const targets = need.filter(e => (recheckEngines || known.find(x => x.engine === e)?.status.state !== 'ready') && now - (gaveUp.get(e) ?? -Infinity) > 30_000);
+  recheckEngines = false;
+  if (!targets.length) return;
+  const a = await api;
+  let st = await a.engineStatus().catch(() => null);
+  if (!st) return;
+  setState({engines: st});
+  const started: EngineId[] = [];
+  for (const e of targets) {
+    if (st.find(x => x.engine === e)?.status.state !== 'notRunning') continue;
+    if (await a.launchEngine(e).catch(() => false)) started.push(e);
+    else gaveUp.set(e, Date.now());
+  }
+  if (!started.length) return;
+  const names = started.map(e => ENGINE_LABEL[e]).join('・');
+  notify(`${names} を起動しています。使えるようになりしだい、合成を始めます`, 'info', 'launch');
+  const isReady = (e: EngineId) => st!.find(x => x.engine === e)?.status.state === 'ready';
+  // 立ち上がりは遅いことがある（初回は 1 分近く）ので、長めに待つ
+  for (let i = 0; i < 60 && !started.every(isReady); i++) {
+    await new Promise(r => window.setTimeout(r, 1500));
+    st = (await a.engineStatus().catch(() => null)) ?? st;
+  }
+  clearNotice('launch');
+  for (const e of started) if (!isReady(e)) gaveUp.set(e, Date.now());
+  // 話者の一覧も取り直す
+  await refreshEngines();
+}
+
 async function pump(notify: Notify) {
   if (pumping) return;
   pumping = true;
@@ -305,6 +346,17 @@ async function pump(notify: Notify) {
   let firstError = '';
   try {
     while (queue.length) {
+      // 使うソフトが止まっていたら、先に起動する
+      {
+        const p0 = getState().project;
+        const need = new Set<EngineId>();
+        for (const id of queue.slice(0, BATCH)) {
+          const c = p0?.clips.find(x => x.id === id);
+          const ch = c?.type === 'voice' ? p0?.characters.find(x => x.id === c.characterId) : undefined;
+          if (ch) need.add(ch.voice.engine);
+        }
+        if (need.size) await ensureEngines(notify, [...need]);
+      }
       const batch = queue.splice(0, BATCH);
       const sent = getState().project;
       if (!sent) break;
@@ -355,6 +407,15 @@ async function pump(notify: Notify) {
           prev.forEach(forget);
         }
       }
+      // 途中でソフトが閉じられてつながらなくなった行は、起動し直してから 1 回だけやり直す
+      for (const id of Object.keys(errors)) {
+        if (!/接続できません|起動してください/.test(errors[id]) || relaunched.has(id)) continue;
+        relaunched.add(id);
+        delete errors[id];
+        again.push(id);
+        recheckEngines = true;
+      }
+      for (const id of ok.keys()) relaunched.delete(id);
       failedCount += Object.keys(errors).length;
       if (!firstError) firstError = Object.values(errors)[0] ?? '';
       setState(st => {
@@ -378,6 +439,7 @@ async function pump(notify: Notify) {
     if (failedCount) notify(`${failedCount} 行のセリフを合成できませんでした：${firstError}`, 'error', 'synth');
     // 取り消しや反映の途中で残った待ちがあれば、もう一度回す
     if (queue.length) void pump(notify);
+    else relaunched.clear();
   }
 }
 
@@ -492,8 +554,122 @@ async function loadProject(project: Project, path: string | null, dirty: boolean
   // プロジェクトのフォルダ外にある素材・立ち絵もプレビューで読めるようにする
   const paths = absolutePaths(project);
   if (paths.length) await a.allowPaths(paths);
-  setState(s => ({project, projectPath: path, dirty, past: [], future: [], selectedClipId: null, playhead: 0, proxies: {}, media: {}, synthErrors: {}, openSeq: s.openSeq + 1}));
+  setState(s => ({project, projectPath: path, dirty, past: [], future: [], selectedClipId: null, playhead: 0, proxies: {}, media: {}, synthErrors: {}, missingMedia: [], openSeq: s.openSeq + 1}));
   ensureAllProxies();
+  // 動かした・消した素材があれば知らせる
+  void checkMedia().then(missing => {
+    if (missing.length)
+      notifyRef?.(`素材が ${missing.length} 個見つかりません（${baseName(missing[0])}${missing.length > 1 ? ' など' : ''}）`, 'error', 'missing-media', {
+        label: '場所を選び直す',
+        onClick: () => setState({mediaOpen: true}),
+      });
+  });
+}
+
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+const dirName = (path: string) => path.replace(/[\\/][^\\/]*$/, '');
+
+/** プロジェクトが使っている素材・立ち絵のファイル（書いてあるパスのまま。重複なし） */
+export function mediaPaths(project: Project): string[] {
+  const list = [
+    ...project.clips.flatMap(c => (c.type === 'media' ? [c.src] : [])),
+    ...project.characters.flatMap(c => (c.portrait ? [...portraitFiles(c.portrait), c.portrait.psd?.src ?? null] : [])),
+  ].filter((x): x is string => !!x);
+  return [...new Set(list)];
+}
+
+/** 見つからない素材を調べて、状態に入れる */
+export async function checkMedia(): Promise<string[]> {
+  const s = getState();
+  if (!s.project) return [];
+  const a = await api;
+  const paths = mediaPaths(s.project);
+  const stamps = await Promise.all(paths.map(path => a.fileStamp(path, s.projectPath).catch(() => null)));
+  const missing = paths.filter((_, i) => stamps[i] === null);
+  if (getState().project === s.project) setState({missingMedia: missing});
+  return missing;
+}
+
+/**
+ * 見つからない素材の今の場所を選ぶ。同じフォルダにほかの見つからない素材（同じ名前）があれば、それもまとめてつなぎ直す。
+ * つなぎ直した数を返す（やめたら 0）
+ */
+export async function relinkMedia(old: string): Promise<number> {
+  const a = await api;
+  const picked = await a.pickRelink(old);
+  if (!picked) return 0;
+  const map: Record<string, string> = {[old]: picked};
+  const dir = dirName(picked);
+  const sep = picked.includes('\\') ? '\\' : '/';
+  const others = getState().missingMedia.filter(m => m !== old);
+  if (others.length) {
+    const candidates = others.map(m => `${dir}${sep}${baseName(m)}`);
+    await a.allowPaths(candidates);
+    const stamps = await Promise.all(candidates.map(c => a.fileStamp(c, null).catch(() => null)));
+    others.forEach((m, i) => {
+      if (stamps[i] !== null) map[m] = candidates[i];
+    });
+  }
+  relinkPaths(map);
+  ensureAllProxies();
+  await checkMedia();
+  if (!getState().missingMedia.length) clearNotice('missing-media');
+  return Object.keys(map).length;
+}
+
+/** 素材をプロジェクトの隣のフォルダへ集める（コピー）。PC を移すとき・人に渡すときに、プロジェクトとそのフォルダだけ持っていけばよくなる */
+export async function collectMediaAction(notify: Notify): Promise<void> {
+  const s = getState();
+  if (!s.project || !s.projectPath) return;
+  const a = await api;
+  setState({busy: {label: '素材を集めています', ratio: null}});
+  try {
+    const r = await a.collectMedia(s.project, s.projectPath);
+    const before = getState().project;
+    // 集めている間に編集していたら、素材のパスだけを書き換える
+    if (before === s.project) commit(() => r.project);
+    else {
+      const map: Record<string, string> = {};
+      const from = mediaPaths(s.project);
+      const to = mediaPaths(r.project);
+      if (from.length === to.length) from.forEach((f, i) => (map[f] = to[i]));
+      relinkPaths(map);
+    }
+    await checkMedia();
+    notify(r.copied ? `${r.copied} 個の素材を「${baseName(r.dir)}」へコピーしました。プロジェクトを保存すると確定します` : `素材はもう「${baseName(r.dir)}」に集まっています`, 'info');
+  } catch (e) {
+    notify(friendlyError(e), 'error');
+  } finally {
+    setState({busy: null});
+  }
+}
+
+/** 再生位置の画面を、画像 1 枚で書き出す（サムネイル用）。書き出しと同じ絵になる */
+export async function exportStill(notify: Notify): Promise<void> {
+  const s = getState();
+  if (!s.project || s.busy) return;
+  const a = await api;
+  const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : s.project.name || 'image';
+  const out = await a.pickSavePath('image', `${base}_${framesToTimecode(s.playhead, s.project.video.fps).replace(/:/g, '-')}.png`);
+  if (!out) return;
+  stop();
+  setState({busy: {label: '画像を書き出しています', ratio: null}});
+  try {
+    let portraitFrames: ExportRequest['portraitFrames'];
+    if (s.project.characters.some(c => c.portrait?.visible && c.portrait.psd)) {
+      const {bakePsdFrames} = await import('./psd/portrait');
+      portraitFrames = await bakePsdFrames(s.project, s.projectPath, () => {});
+    }
+    const {bakeItemImages} = await import('./preview/visual');
+    const itemImages = await bakeItemImages(s.project);
+    const last = Math.max(0, projectDuration(s.project) - 1);
+    await a.exportVideo(s.project, s.projectPath, out, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: Math.min(s.playhead, last)});
+    notify(`画像を書き出しました：${baseName(out)}`, 'info', 'still', {label: '場所を開く', onClick: () => void a.revealInFolder(out)});
+  } catch (e) {
+    notify(friendlyError(e), 'error');
+  } finally {
+    setState({busy: null});
+  }
 }
 
 export async function openProject(notify: Notify, given?: string) {

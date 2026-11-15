@@ -1116,3 +1116,21 @@ dialog.astryx-dialog[open] {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
 }
+
+/* 概要欄に貼る文章（そのまま選んで写せる） */
+.vx-description {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  border-radius: 8px;
+  background: var(--color-background-muted);
+  border: 1px solid var(--color-border-default);
+  user-select: text;
+}

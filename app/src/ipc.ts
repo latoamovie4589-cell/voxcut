@@ -25,6 +25,8 @@ export interface ExportRequest {
   portraitFrames?: Record<string, Record<number, string>>;
   /** テキスト・図形アイテムの画像（クリップ id → PNG のパス） */
   itemImages?: Record<string, string>;
+  /** 静止画を 1 枚だけ書き出すときのフレーム（出力は .png / .jpg） */
+  stillFrame?: number;
 }
 
 /** x264 は CPU、nvenc は NVIDIA、qsv は Intel、amf は AMD */
@@ -92,7 +94,7 @@ export interface Api {
   onSynthProgress(cb: (p: SynthProgress) => void): Promise<Unlisten>;
   onExportProgress(cb: (p: ExportProgress) => void): Promise<Unlisten>;
   pickOpenPath(): Promise<string | null>;
-  pickSavePath(kind: 'project' | 'video' | 'audio' | 'subtitle', suggested: string): Promise<string | null>;
+  pickSavePath(kind: 'project' | 'video' | 'audio' | 'subtitle' | 'image', suggested: string): Promise<string | null>;
   /** 素材・立ち絵のファイルを選ぶ */
   pickMedia(kind: 'media' | 'image', multiple: boolean): Promise<string[]>;
   /** 実行ファイル（.exe）を選ぶ */
@@ -131,6 +133,12 @@ export interface Api {
   writePortraitPng(name: string, png: Uint8Array): Promise<string>;
   /** キャッシュにある PSD 立ち絵の画像のパス（無ければ null） */
   portraitPngPath(name: string): Promise<string | null>;
+  /** 音声合成ソフトを起動する（起動を始めたら true。場所が分からない・起動の要らないソフトは false） */
+  launchEngine(engine: EngineId): Promise<boolean>;
+  /** 素材をプロジェクトの隣のフォルダへ集めて、パスを書き換えたプロジェクトを返す */
+  collectMedia(project: Project, projectPath: string): Promise<{project: Project; copied: number; dir: string}>;
+  /** 素材の場所を選び直す（今の名前を見せて、同じ種類のファイルを選ぶ） */
+  pickRelink(current: string): Promise<string | null>;
 }
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'avif'];
@@ -209,7 +217,9 @@ async function tauriApi(): Promise<Api> {
               ? {name: 'WAV（音声）', extensions: ['wav']}
               : kind === 'subtitle'
                 ? {name: 'SRT（字幕）', extensions: ['srt']}
-                : {name: 'MP4', extensions: ['mp4']},
+                : kind === 'image'
+                  ? {name: '画像（PNG・JPEG）', extensions: ['png', 'jpg']}
+                  : {name: 'MP4', extensions: ['mp4']},
         ],
       });
       if (r) lastSaveDir[kind === 'project' ? 'project' : 'video'] = r.replace(/[\\/][^\\/]*$/, '');
@@ -238,6 +248,25 @@ async function tauriApi(): Promise<Api> {
     fileStamp: (path, projectPath) => invoke<string | null>('file_stamp', {path: resolvePath(path, projectPath)}),
     writePortraitPng: (name, png) => invoke<string>('write_portrait_png', png, {headers: {'x-name': name}}),
     portraitPngPath: name => invoke<string | null>('portrait_png_path', {name}),
+    launchEngine: engine => invoke<boolean>('launch_engine', {engine}),
+    collectMedia: (project, projectPath) => invoke('collect_media', {project, projectPath}),
+    pickRelink: async current => {
+      const name = current.split(/[\\/]/).pop() ?? current;
+      const ext = (/\.([^.]+)$/.exec(name)?.[1] ?? '').toLowerCase();
+      const r = await dialog.open({
+        title: `「${name}」の今の場所を選ぶ`,
+        filters: ext
+          ? [
+              {name: `${name} と同じ種類`, extensions: [ext]},
+              {name: 'すべて', extensions: ['*']},
+            ]
+          : [],
+      });
+      if (typeof r !== 'string') return null;
+      // 同じフォルダのほかの素材も読めるよう、フォルダごと許可する
+      await invoke('allow_paths', {paths: [r]});
+      return r;
+    },
     probeMedia: (path, projectPath) => invoke('probe_media', {path: resolvePath(path, projectPath ?? null)}),
     mediaUrl: (path, projectPath) => convertFileSrc(resolvePath(path, projectPath)),
     allowPaths: paths => invoke('allow_paths', {paths}),
@@ -414,12 +443,13 @@ function mockApi(): Api {
     setConfig: async c => {
       config = c;
     },
-    engineStatus: async () => [
-      {engine: 'aivoice', status: {state: 'ready', version: '1.4.0'}},
-      {engine: 'voicepeak', status: {state: 'ready', version: null}},
-      {engine: 'voisona', status: {state: 'notRunning', detail: 'VoiSona Talk を起動し、API を有効にしてください'}},
-      {engine: 'voicevox', status: {state: 'ready', version: '0.99.0'}},
-    ],
+    engineStatus: async () =>
+      (globalThis as {__mockEngines?: () => {engine: EngineId; status: EngineStatus}[]}).__mockEngines?.() ?? [
+        {engine: 'aivoice', status: {state: 'ready', version: '1.4.0'}},
+        {engine: 'voicepeak', status: {state: 'ready', version: null}},
+        {engine: 'voisona', status: {state: 'notRunning', detail: 'VoiSona Talk を起動し、API を有効にしてください'}},
+        {engine: 'voicevox', status: {state: 'ready', version: '0.99.0'}},
+      ],
     listVoices: async engine => MOCK_VOICES[engine],
     synthesize: synth,
     waveform: async key => {
@@ -435,8 +465,12 @@ function mockApi(): Api {
       return a;
     },
     audioUrl: async () => null,
-    exportVideo: async project => {
+    exportVideo: async (project, _pp, _out, options) => {
       cancelled = false;
+      if (options?.stillFrame !== undefined) {
+        await sleep(200);
+        return project;
+      }
       const {project: p} = await synth(project);
       for (let i = 0; i <= 40; i++) {
         await sleep(60);
@@ -486,12 +520,18 @@ function mockApi(): Api {
     // ブラウザで確かめるとき：window.__mockPsd に置いた PSD を使う
     pickPsd: async () => (window as unknown as {__mockPsd?: string}).__mockPsd ?? null,
     readPsd: async path => (await fetch(path)).arrayBuffer(),
-    fileStamp: async () => 'mock',
+    fileStamp: async path => ((globalThis as {__mockMissing?: string[]}).__mockMissing?.includes(path) ? null : 'mock'),
     writePortraitPng: async (name, png) => {
       mockPngs.set(name, png);
       return `/mock-cache/${name}.png`;
     },
     portraitPngPath: async name => (mockPngs.has(name) ? `/mock-cache/${name}.png` : null),
+    launchEngine: async engine => {
+      const m = (globalThis as {__mockLaunch?: (e: EngineId) => boolean}).__mockLaunch;
+      return m ? m(engine) : false;
+    },
+    collectMedia: async project => ({project, copied: 0, dir: '素材'}),
+    pickRelink: async () => (globalThis as {__mockRelink?: string}).__mockRelink ?? null,
     probeMedia: async path =>
       path.endsWith('.mp4') ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360} : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
     mediaUrl: path => path,

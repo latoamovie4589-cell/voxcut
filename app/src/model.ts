@@ -308,11 +308,30 @@ export interface Look {
   fadeIn: Frame;
   fadeOut: Frame;
   effects?: Effect[];
+  /** 登場のしかた（アイテムの頭で、画面の外から滑り込む・大きくなって出る） */
+  enter?: Motion | null;
+  /** 退場のしかた（アイテムの終わりで、画面の外へ出ていく・小さくなって消える） */
+  exit?: Motion | null;
+}
+/** 登場・退場の動き。slide は「その方向から入る／その方向へ出る」 */
+export type MotionKind = 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom';
+export interface Motion {
+  kind: MotionKind;
+  /** 掛ける長さ（フレーム） */
+  frames: Frame;
 }
 export interface Anim {
   to: Transform;
   rotation: number;
   ease: Ease;
+  /** 途中の状態（始まり → 途中 → 終わりの順に動く。区間ごとに ease を掛ける） */
+  mid?: AnimMid | null;
+}
+export interface AnimMid {
+  /** 通る時点（アイテムの長さに対する割合 0〜1） */
+  at: number;
+  transform: Transform;
+  rotation: number;
 }
 export type Ease = 'linear' | 'in' | 'out' | 'inOut';
 export type Effect =
@@ -463,6 +482,14 @@ export interface Project {
   characters: Character[];
   tracks: Track[];
   clips: Clip[];
+  /** マーカー（時刻に付ける目印。YouTube のチャプターにも使う） */
+  markers?: Marker[];
+}
+
+export interface Marker {
+  id: string;
+  frame: Frame;
+  name: string;
 }
 
 export interface VoiceInfo {

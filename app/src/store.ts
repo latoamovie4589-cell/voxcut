@@ -10,11 +10,13 @@ import type {
   Clip,
   EngineId,
   EngineStatus,
+  Marker,
   MediaClip,
   Portrait,
   Project,
   ShapeKind,
   Track,
+  VisualClip,
   VoiceClip,
   VoiceInfo,
   VoiceParams,
@@ -137,6 +139,12 @@ export interface State {
   /** 台本の貼り付け画面に最初に入れておく文（セリフ入力欄に複数行を貼ったとき） */
   pasteText: string;
   dictionaryOpen: boolean;
+  /** 「マーカーと概要欄」「テンプレート」「素材の場所と整理」の画面を開いているか */
+  descriptionOpen: boolean;
+  templatesOpen: boolean;
+  mediaOpen: boolean;
+  /** 見つからない素材（プロジェクトに書いてあるパスのまま） */
+  missingMedia: string[];
   /** キーボードショートカットの一覧を開いているか */
   shortcutsOpen: boolean;
   /** ファイルをドラッグして画面の上にいるか */
@@ -193,6 +201,10 @@ let state: State = {
   clipboardCount: 0,
   pasteText: '',
   dictionaryOpen: false,
+  descriptionOpen: false,
+  templatesOpen: false,
+  mediaOpen: false,
+  missingMedia: [],
   shortcutsOpen: false,
   dropActive: false,
   selectedClipIds: [],
@@ -354,9 +366,12 @@ export function updateVideo(patch: Partial<Project['video']>) {
 function rescaleFrames(p: Project, from: number, to: number): Project {
   const r = to / from;
   const f = (v: number) => Math.round(v * r);
-  const look = <T extends {look?: Look}>(c: T): T => (c.look ? {...c, look: {...c.look, fadeIn: f(c.look.fadeIn), fadeOut: f(c.look.fadeOut)}} : c);
+  const motion = <M extends {frames: number} | null | undefined>(m: M): M => (m ? {...m, frames: Math.max(1, f(m.frames))} : m);
+  const look = <T extends {look?: Look}>(c: T): T =>
+    c.look ? {...c, look: {...c.look, fadeIn: f(c.look.fadeIn), fadeOut: f(c.look.fadeOut), enter: motion(c.look.enter), exit: motion(c.look.exit)}} : c;
   return {
     ...p,
+    markers: p.markers?.map(m => ({...m, frame: f(m.frame)})),
     characters: p.characters.map(c => (c.gapAfter != null ? {...c, gapAfter: f(c.gapAfter)} : c)),
     clips: p.clips.map(c0 => {
       // 終わりの時刻を丸めてから長さを出す（隣り合うアイテムの間にすき間・重なりを作らない）
@@ -1274,6 +1289,84 @@ export function addVisualItem(kind: 'text' | 'shape', shape: ShapeKind = 'rect')
   });
   setState(s => ({selectedClipId: id, revealSeq: s.revealSeq + 1}));
   return id;
+}
+
+/** テンプレートのアイテム（テキスト・図形・画像・動画）を、再生位置の空いているレイヤーに置く */
+export function insertItemTemplate(data: VisualClip): string | null {
+  const p = state.project;
+  if (!p) return null;
+  const id = newId(data.type === 'text' ? 'tx' : data.type === 'shape' ? 'sh' : 'm');
+  const at = state.playhead;
+  const duration = Math.max(1, data.duration);
+  const busy = (t: Track) => p.clips.some(c => c.trackId === t.id && c.start < at + duration && at < c.start + c.duration);
+  const forLines = (t: Track) => isLineTrack(p, t.id) || charactersOnTrack(p, t.id).length > 0;
+  let track = videoTracks(p).find(t => !t.locked && !busy(t) && !forLines(t));
+  commit(pr => {
+    let tracks = pr.tracks;
+    if (!track) {
+      track = newLayer(newId('V'), 'video');
+      tracks = [...tracks, track];
+    }
+    const clip = {...structuredClone(data), id, trackId: track.id, start: at, duration, linkId: null} as Clip;
+    return resolveOverlaps({...pr, tracks, clips: [...pr.clips, clip]}, track.id, id);
+  });
+  setState(s => ({selectedClipId: id, selectedClipIds: [id], revealSeq: s.revealSeq + 1}));
+  return id;
+}
+
+// ───────────── マーカー ─────────────
+
+/** 再生位置（か指定のフレーム）にマーカーを付ける。同じ位置にもうあれば、それを返す */
+export function addMarker(frame: number = state.playhead): string | null {
+  const p = state.project;
+  if (!p) return null;
+  const f = Math.max(0, Math.round(frame));
+  const same = (p.markers ?? []).find(m => m.frame === f);
+  if (same) return same.id;
+  const id = newId('mk');
+  commit(pr => {
+    const list = pr.markers ?? [];
+    return {...pr, markers: [...list, {id, frame: f, name: `場面 ${list.length + 1}`}].sort((a, b) => a.frame - b.frame)};
+  });
+  return id;
+}
+
+export function updateMarker(id: string, patch: Partial<Pick<Marker, 'name' | 'frame'>>) {
+  commit(p => ({...p, markers: (p.markers ?? []).map(m => (m.id === id ? {...m, ...patch} : m)).sort((a, b) => a.frame - b.frame)}), `marker:${id}:${Object.keys(patch).sort().join(',')}`);
+}
+
+export function removeMarker(id: string) {
+  commit(p => ({...p, markers: (p.markers ?? []).filter(m => m.id !== id)}));
+}
+
+/** 素材・立ち絵のパスを書き換える（場所を選び直したとき） */
+export function relinkPaths(map: Record<string, string>) {
+  const r = <T extends string | null>(v: T): T => (v && map[v] !== undefined ? (map[v] as T) : v);
+  const three = (a: [string | null, string | null, string | null]): [string | null, string | null, string | null] => [r(a[0]), r(a[1]), r(a[2])];
+  commit(p => ({
+    ...p,
+    clips: p.clips.map(c => (c.type === 'media' && map[c.src] !== undefined ? {...c, src: map[c.src]} : c)),
+    characters: p.characters.map(ch => {
+      const pt = ch.portrait;
+      if (!pt) return ch;
+      return {
+        ...ch,
+        portrait: {
+          ...pt,
+          base: r(pt.base),
+          eyes: three(pt.eyes),
+          mouth: three(pt.mouth),
+          expressions: (pt.expressions ?? []).map(e => ({...e, base: r(e.base), eyes: three(e.eyes), mouth: three(e.mouth)})),
+          psd: pt.psd ? {...pt.psd, src: r(pt.psd.src)} : pt.psd,
+        },
+      };
+    }),
+  }));
+  // 読み直す（前の場所で失敗したプレビューを捨てる）
+  setState(s => ({
+    proxies: Object.fromEntries(Object.entries(s.proxies).filter(([k]) => map[k] === undefined)),
+    media: Object.fromEntries(Object.entries(s.media).filter(([k]) => map[k] === undefined)),
+  }));
 }
 
 /**

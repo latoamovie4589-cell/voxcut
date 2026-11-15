@@ -15,6 +15,7 @@ import {useToast} from '@astryxdesign/core/Toast';
 import {AudioWaveform, AudioLines, Redo2, Save, TriangleAlert, Undo2, Upload, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {
+  addMarker,
   copySelection,
   cutSelection,
   deleteClips,
@@ -31,10 +32,13 @@ import {
   undo,
   useStore,
 } from './store';
-import {boot, cancelSynthesis, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {boot, cancelSynthesis, exportStill, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {CharacterDialog} from './panels/CharacterDialog';
 import {closeFloating, startHost} from './sync';
 import {ExportDialog} from './panels/ExportDialog';
+import {DescriptionDialog} from './panels/DescriptionDialog';
+import {TemplatesDialog} from './panels/TemplatesDialog';
+import {MediaDialog} from './panels/MediaDialog';
 import {PasteScriptDialog} from './panels/PasteScriptDialog';
 import {DictionaryDialog} from './panels/DictionaryDialog';
 import {ShortcutsDialog} from './panels/ShortcutsDialog';
@@ -45,7 +49,7 @@ import {Preview} from './preview/Preview';
 import {jumpTo, jumpToEdit, shuttleBackward, shuttleForward, step, stop, toggle} from './preview/playback';
 import {Inspector} from './inspector/Inspector';
 import {CharactersPanel, EnginesPanel, useEngineProblems} from './panels/Sidebar';
-import {ENGINE_LABEL} from './model';
+import {ENGINE_LABEL, framesToTimecode} from './model';
 import {ScriptList} from './panels/ScriptList';
 import {WorkspaceDialog} from './panels/WorkspaceDialog';
 import {Dock, type Registry} from './dock/Dock';
@@ -269,6 +273,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
   const recent = useStore(s => s.recent);
   const hasSel = useStore(s => s.selectedClipIds.length > 0 || !!s.selectedClipId);
   const busy = useStore(s => !!s.busy);
+  const empty = useStore(s => !s.project?.clips.length);
   const hints = useHintsShown();
   const themeMode = useThemeMode();
   const canPaste = useStore(s => s.clipboardCount > 0);
@@ -291,6 +296,9 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="名前を付けて保存…" endContent={key(isMac ? '⇧⌘S' : 'Ctrl+Shift+S')} onClick={() => void saveProject(notify, true)} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
+        <DropdownMenuItem label="この場面を画像で書き出す…" description="再生位置の画面を 1 枚の画像に（サムネイル用）" isDisabled={busy || empty} onClick={() => void exportStill(notify)} />
+        <DropdownMenuItem label="マーカーと概要欄…" description="チャプターと声のクレジットを、貼れる文章に" onClick={() => setState({descriptionOpen: true})} />
+        <DropdownMenuItem label="素材の場所と整理…" description="見つからない素材をつなぎ直す・1 つのフォルダに集める" onClick={() => setState({mediaOpen: true})} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="プロジェクトの設定…" description="動画の大きさ（縦長のショートも）・fps・背景色" onClick={() => setState({projectSettingsOpen: true})} />
         <DropdownMenuItem label="合成ソフトの設定…" onClick={openSettings} />
@@ -306,6 +314,8 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="削除" isDisabled={!hasSel} endContent={key('Delete')} onClick={() => deleteClips(editableSelection().map(c => c.id))} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="すべて選択" endContent={key(`${mod}A`)} onClick={() => selectAllClips()} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="再生位置にマーカーを付ける" endContent={key('M')} onClick={() => markHere(notify)} />
       </DropdownMenu>
       <DropdownMenu button={menu('表示')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
         <WindowMenu />
@@ -324,6 +334,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuDivider />
         <DropdownMenuItem label="台本読み込み…" description="txt・csv・tsv の台本からセリフを追加" onClick={() => setState({pasteOpen: true})} />
         <DropdownMenuItem label="単語の読み（辞書）…" onClick={() => setState({dictionaryOpen: true})} />
+        <DropdownMenuItem label="テンプレート…" description="アイテム・字幕の見た目・立ち絵の配置を使い回す" onClick={() => setState({templatesOpen: true})} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="未合成のセリフをすべて合成" isDisabled={busy} onClick={() => void synthesize(notify)} />
         <DropdownMenuItem label="音声合成ソフトの接続を確認" onClick={() => void refreshEngines()} />
@@ -335,6 +346,18 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
       </DropdownMenu>
     </HStack>
   );
+}
+
+/** 再生位置にマーカーを付けて、名前を付ける画面へ行けるようにする */
+function markHere(notify: Notify) {
+  const s = getState();
+  if (!s.project) return;
+  const had = (s.project.markers ?? []).some(x => x.frame === s.playhead);
+  addMarker();
+  notify(had ? 'この位置にはもうマーカーがあります' : `${framesToTimecode(s.playhead, s.project.video.fps)} にマーカーを付けました`, 'info', 'marker', {
+    label: '名前を付ける',
+    onClick: () => setState({descriptionOpen: true}),
+  });
 }
 
 /** 元に戻す・やり直すをしたとき、ボタンの下に何が変わったかを少しだけ出す */
@@ -678,6 +701,10 @@ export function App() {
       } else if (!inPanel && (e.key === 'Home' || e.key === 'End')) {
         e.preventDefault();
         jumpTo(e.key === 'Home' ? 'start' : 'end');
+      } else if (!m && !e.altKey && e.key.toLowerCase() === 'm') {
+        // M：再生位置にマーカー
+        e.preventDefault();
+        markHere(notify);
       } else if (e.key.toLowerCase() === 's' && getState().selectedClipId) {
         if (!splitClip(getState().selectedClipId!, getState().playhead)) notify('素材を再生位置で分けられます（セリフは分けられません）');
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && getState().selectedClipIds.length) {
@@ -738,6 +765,9 @@ export function App() {
         </div>
       )}
       <DictionaryDialog notify={notify} />
+      <DescriptionDialog />
+      <TemplatesDialog notify={notify} />
+      <MediaDialog notify={notify} />
       <WorkspaceDialog />
       <CharacterDialog />
     </Section>
