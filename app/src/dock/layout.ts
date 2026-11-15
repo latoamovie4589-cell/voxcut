@@ -58,8 +58,9 @@ function fitShares() {
   const h = typeof window === 'undefined' ? 900 : window.innerHeight - 48;
   // 低い画面（ノート PC の 720p など）では、プレビューが小さくなりすぎないようタイムラインを少し低く・右の列を少し細く
   // 720p ではレイヤーが 5 行ほど見える高さ（プレビューは高さで決まるので、横の余白は右の列を細くして詰める）
-  const tlPx = h < 760 ? 284 : 300;
-  const sidePx = w < 1100 ? 290 : w <= 1366 ? 320 : 360;
+  // 高い画面では余りをタイムラインにも回す（主な作業場所なので、画面の高さの 4 割ほど）
+  const tlPx = h < 760 ? 290 : Math.round(h * 0.4);
+  const sidePx = w < 1100 ? 264 : w <= 1366 ? 320 : 360;
   return {tl: clamp(tlPx / Math.max(1, h), 0.34, 0.56), side: clamp(sidePx / Math.max(1, w), 0.22, 0.32)};
 }
 
