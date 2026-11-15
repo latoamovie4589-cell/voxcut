@@ -26,6 +26,7 @@ import {
   ENGINE_LABEL,
   captionOf,
   framesToTimecode,
+  projectDuration,
   isPlainLineAudio,
   isPlainLinePortrait,
   plainLineAudio,
@@ -246,7 +247,7 @@ function LineBasics({clip, notify}: {clip: VoiceClip; notify: Notify}) {
   const fps = project.video.fps;
   return (
     <>
-      <Section title="セリフ">
+      <Section title="話す人と文">
         <Selector
           label="キャラクター"
           value={clip.characterId}
@@ -273,6 +274,8 @@ function LineBasics({clip, notify}: {clip: VoiceClip; notify: Notify}) {
             onClick={() => void synthesize(notify, [clip.id])}
           />
           {/* 失敗の多くはソフトが起動していない・場所が違うため。その場で直しに行けるように */}
+          {/* 声が選ばれていない・入っていないなら声を選びに、それ以外の失敗はソフトの設定へ */}
+          {error && /声|話者/.test(error) && <Button label="声を選ぶ…" variant="secondary" onClick={() => setState({characterDialogOpen: true, dialogCharacterId: clip.characterId})} />}
           {error && <Button label="音声合成ソフトの設定" variant="secondary" icon={<Icon icon={Settings} />} onClick={() => setState({settingsOpen: true})} />}
           <Button label="削除" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => deleteClip(clip.id)} />
         </HStack>
@@ -1354,13 +1357,44 @@ export function Inspector({notify}: {notify: Notify}) {
   const ch = project.characters.find(c => c.id === selectedCharacterId);
   if (ch) return <CharacterInspector key={ch.id} character={ch} />;
   return (
-    <VStack padding={6}>
+    <VStack padding={4} gap={4}>
       <EmptyState
         isCompact
         icon={<Icon icon={MousePointerClick} size="lg" color="secondary" />}
         title="何も選ばれていません"
         description="タイムラインのアイテムか、「キャラクター」タブの人物を選ぶと設定が出ます"
       />
+      <ProjectSummary project={project} notify={notify} />
     </VStack>
+  );
+}
+
+/** 何も選んでいないときに出す、プロジェクトのあらまし（長さ・大きさ・セリフの数・未合成） */
+function ProjectSummary({project, notify}: {project: Project; notify: Notify}) {
+  const synthStatus = useStore(s => s.synthStatus);
+  const errors = useStore(s => s.synthErrors);
+  const lines = project.clips.filter((c): c is VoiceClip => c.type === 'voice');
+  const pending = lines.filter(c => !c.audio && c.text.trim() && !synthStatus[c.id]).length;
+  const failed = lines.filter(c => errors[c.id]).length;
+  const v = project.video;
+  const row = (k: string, val: React.ReactNode) => (
+    <HStack gap={2} hAlign="between" vAlign="center">
+      <Text type="supporting">{k}</Text>
+      <Text hasTabularNumbers>{val}</Text>
+    </HStack>
+  );
+  return (
+    <Section title="このプロジェクト">
+      {row('長さ', framesToTimecode(projectDuration(project), v.fps))}
+      {row('大きさ', `${v.width}×${v.height}・${v.fps} fps`)}
+      {row('キャラクター', `${project.characters.length} 人`)}
+      {row('セリフ', `${lines.length} 行`)}
+      {row('未合成', `${pending} 行`)}
+      {failed > 0 && row('合成できなかった行', `${failed} 行`)}
+      <HStack gap={2} wrap="wrap">
+        {pending > 0 && <Button label={`未合成の ${pending} 行を合成`} size="sm" icon={<Icon icon={AudioLines} />} onClick={() => void synthesize(notify)} />}
+        <Button label="プロジェクトの設定…" size="sm" variant="secondary" onClick={() => setState({projectSettingsOpen: true})} />
+      </HStack>
+    </Section>
   );
 }
