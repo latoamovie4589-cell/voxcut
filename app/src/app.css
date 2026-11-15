@@ -600,8 +600,15 @@ textarea {
   background: var(--color-text-accent);
 }
 /* 選ばれている切り替え（一覧／文書など）は、ダークでも溝より明るい面にする（沈んで見えないように） */
-.astryx-segmented-control-item[data-selected='selected'] {
-  background-color: light-dark(#ffffff, #48484a);
+.astryx-segmented-control .astryx-segmented-control-item[data-selected='selected'] {
+  background-color: light-dark(#ffffff, #6e6e73);
+  color: light-dark(#1c1c1e, #ffffff);
+  box-shadow:
+    inset 0 0 0 1px light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.16)),
+    0 1px 2px rgb(0 0 0 / 0.25);
+}
+.astryx-segmented-control {
+  background-color: light-dark(#e5e5ea, #2c2c2e);
 }
 .vx-project-name {
   min-width: 0;
@@ -863,6 +870,11 @@ dialog:not([open])::backdrop {
 [data-astryx-layer-root][popover]:not(:popover-open) {
   opacity: 0;
 }
+/* 閉じる途中で、部品の「出る動き」がもう一度始まって跳ねないように（閉じるときは薄くなるだけ） */
+[data-astryx-layer-root][popover]:not(:popover-open) > .astryx-popover,
+[data-astryx-layer-root][popover]:not(:popover-open) * {
+  animation: none !important;
+}
 @media (prefers-reduced-motion: reduce) {
   dialog,
   dialog::backdrop,
@@ -885,19 +897,26 @@ dialog:not([open])::backdrop {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 .vx-shortcuts {
+  columns: 2 340px;
+  column-gap: 32px;
+  padding: 16px 20px 32px;
+}
+.vx-shortcuts-group {
+  break-inside: avoid;
+  margin-bottom: 18px;
+}
+.vx-shortcuts-group dl {
   display: grid;
   grid-template-columns: fit-content(150px) 1fr;
-  column-gap: 16px;
-  row-gap: 8px;
+  column-gap: 14px;
+  row-gap: 6px;
   align-items: center;
-  padding: 16px 16px 32px;
+  margin: 8px 0 0;
 }
-.vx-shortcuts-head {
-  grid-column: 1 / -1;
-  margin-top: 8px;
-}
-.vx-shortcuts-head:first-child {
-  margin-top: 0;
+.vx-shortcuts-group dt,
+.vx-shortcuts-group dd {
+  margin: 0;
+  font-size: 13px;
 }
 
 /* 元に戻す・やり直すの知らせ（ボタンのすぐ下に少しだけ） */
@@ -921,22 +940,11 @@ dialog:not([open])::backdrop {
   box-shadow:
     0 0 0 1px var(--color-border),
     0 4px 12px rgb(0 0 0 / 0.18);
-  /* 出るときも消えるときも短く（1.4 秒の表示の頭と終わり 120ms ほど） */
-  animation: vx-flash-life 1400ms linear forwards;
+  animation: vx-pop-in 120ms ease-out;
+  transition: opacity 120ms ease-in;
 }
-@keyframes vx-flash-life {
-  0% {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
-  9%,
-  91% {
-    opacity: 1;
-    transform: none;
-  }
-  100% {
-    opacity: 0;
-  }
+.vx-history-flash[data-leaving] {
+  opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .vx-history-flash {
@@ -951,7 +959,7 @@ dialog:not([open])::backdrop {
   gap: 8px;
   width: 100%;
   min-height: 28px;
-  padding: 2px 6px;
+  padding: 2px 6px 2px 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -992,13 +1000,21 @@ dialog:not([open])::backdrop {
   white-space: normal;
 }
 
-/* 合成が終わった直後：帯を伸ばしきってから、少し待って薄く消える */
-.vx-synth-run[data-finished] {
-  animation: vx-synth-done 900ms ease-in forwards;
+/* 合成が終わった直後：同じ場所・同じ幅のまま、帯を伸ばしきって少し待ってから薄く消える */
+.vx-synth-run {
+  min-width: 168px;
+}
+.vx-synth-wrap[data-finished] {
+  animation: vx-synth-done 1100ms ease-in forwards;
+}
+.vx-synth-wrap[data-finished] .vx-synth-stop {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-in;
 }
 @keyframes vx-synth-done {
   0%,
-  75% {
+  78% {
     opacity: 1;
   }
   100% {
@@ -1006,7 +1022,50 @@ dialog:not([open])::backdrop {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vx-synth-run[data-finished] {
+  .vx-synth-wrap[data-finished] {
     animation: none;
   }
+}
+
+/* 入力欄で知らない名前を打ったときの問い（欄の上に出す。作る／そのまま入れる／やめる） */
+.vx-bar-ask {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  background: var(--color-background-popover);
+  box-shadow:
+    0 0 0 1px var(--color-border),
+    0 6px 18px rgb(0 0 0 / 0.22);
+  animation: vx-pop-up 120ms ease-out;
+}
+.vx-bar-ask-sub {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx-bar-ask {
+    animation: none;
+  }
+}
+
+.vx-synth-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+/* ダイアログの開く動きを短く（閉じる 120ms と釣り合うように。部品の既定は約 0.4 秒で重い） */
+dialog.astryx-dialog[open] {
+  animation-duration: 200ms !important;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1) !important;
 }

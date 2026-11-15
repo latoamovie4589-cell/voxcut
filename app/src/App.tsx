@@ -1,6 +1,6 @@
 // 画面全体：上＝ヘッダー、中＝パネル（Premiere Pro と同じく、タブをドラッグして自由に組み替えられる）、下＝セリフ入力。
 
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {setHintsShown, useHintsShown} from './hints';
 import {setThemeMode, useThemeMode, type ThemeMode} from './theme';
@@ -71,10 +71,10 @@ function SynthStatus() {
   const failed = Object.keys(errors);
   const busy = useStore(s => s.busy);
   const run = useStore(s => s.synthRun);
-  // 終わったら、帯を最後まで伸ばして「合成 n/n」を少し見せてから消す（途中で急に消えないように）
+  // 終わったら、同じ表示のまま帯を最後まで伸ばして「完了」を少し見せてから消す（消えたり幅が跳んだりしないように）
   const lastRun = useRef<typeof run>(null);
   const [finished, setFinished] = useState<{total: number} | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (run) {
       lastRun.current = run;
       setFinished(null);
@@ -84,30 +84,22 @@ function SynthStatus() {
     lastRun.current = null;
     if (!was) return;
     setFinished({total: was.total});
-    const t = window.setTimeout(() => setFinished(null), 900);
+    const t = window.setTimeout(() => setFinished(null), 1100);
     return () => window.clearTimeout(t);
   }, [run]);
-  if (!run && finished) {
-    return (
-      <span className="vx-synth-run" data-finished role="status" aria-live="polite">
-        <span className="vx-synth-run-bar" style={{width: '100%'}} aria-hidden />
-        <span className="vx-synth-run-text">
-          合成 {finished.total}/{finished.total}・完了
-        </span>
-      </span>
-    );
-  }
-  // 合成中：何行のうち何行・残りの目安・取り消し（合成中も編集はそのまま続けられる）
-  if (run) {
-    const per = run.done ? run.workMs / run.done : 0;
-    const left = Math.max(0, run.total - run.done);
+  // 合成中：何行のうち何行・残りの目安・中止（合成中も編集はそのまま続けられる）
+  if (run || finished) {
+    const done = run ? run.done : finished!.total;
+    const total = run ? run.total : finished!.total;
+    const per = run?.done ? run.workMs / run.done : 0;
+    const left = Math.max(0, total - done);
     const eta = per ? Math.max(1, Math.round((left * per) / 1000)) : null;
     return (
-      <HStack gap={1} vAlign="center">
+      <div className="vx-synth-wrap" data-finished={!run || undefined}>
         <span className="vx-synth-run" role="status" aria-live="polite">
-          <span className="vx-synth-run-bar" style={{width: `${(run.done / Math.max(1, run.total)) * 100}%`}} aria-hidden />
+          <span className="vx-synth-run-bar" style={{width: `${(done / Math.max(1, total)) * 100}%`}} aria-hidden />
           {/* 何行かまとめて確定するので、その間も止まって見えないよう、見積もりの時間で次の区切りの手前まで薄く伸ばす */}
-          {left > 0 && (
+          {run && left > 0 && (
             <span
               key={run.done}
               className="vx-synth-run-creep"
@@ -122,12 +114,15 @@ function SynthStatus() {
             />
           )}
           <span className="vx-synth-run-text">
-            合成 {run.done}/{run.total}
-            {eta !== null ? `・残り約 ${eta < 60 ? `${eta} 秒` : `${Math.round(eta / 60)} 分`}` : '・残りを計算中'}
+            合成 {done}/{total}
+            {!run ? '・完了' : eta !== null ? `・残り約 ${eta < 60 ? `${eta} 秒` : `${Math.round(eta / 60)} 分`}` : '・残りを計算中'}
           </span>
         </span>
-        <Button label="合成を中止" size="sm" variant="secondary" tooltip="まだ始めていない行の合成をやめます（合成済みの行はそのまま）" onClick={cancelSynthesis} />
-      </HStack>
+        {/* 終わった後も場所は残す（表示が横へ跳ばないように） */}
+        <span className="vx-synth-stop" aria-hidden={!run || undefined}>
+          <Button label="合成を中止" size="sm" variant="secondary" tooltip="まだ始めていない行の合成をやめます（合成済みの行はそのまま）" isDisabled={!run} onClick={cancelSynthesis} />
+        </span>
+      </div>
     );
   }
   if (busy || (!pending && !failed.length)) return null;
@@ -298,7 +293,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="プロジェクトの設定…" description="動画の大きさ（縦長のショートも）・fps・背景色" onClick={() => setState({projectSettingsOpen: true})} />
-        <DropdownMenuItem label="音声合成ソフトの設定…" onClick={openSettings} />
+        <DropdownMenuItem label="合成ソフトの設定…" onClick={openSettings} />
       </DropdownMenu>
       <DropdownMenu button={menu('編集')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
         <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={key(`${mod}Z`)} onClick={undo} />
@@ -345,16 +340,21 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
 /** 元に戻す・やり直すをしたとき、ボタンの下に何が変わったかを少しだけ出す */
 function HistoryFlash() {
   const flash = useStore(s => s.historyFlash);
-  const [shown, setShown] = useState<number | null>(null);
+  // 続けて押したら、消さずに文だけ替えて出している時間を延ばす（点滅させない）
+  const [phase, setPhase] = useState<'off' | 'on' | 'leaving'>('off');
   useEffect(() => {
     if (!flash) return;
-    setShown(flash.seq);
-    const t = window.setTimeout(() => setShown(null), 1400);
-    return () => window.clearTimeout(t);
+    setPhase('on');
+    const t1 = window.setTimeout(() => setPhase('leaving'), 1280);
+    const t2 = window.setTimeout(() => setPhase('off'), 1420);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [flash]);
-  if (!flash || shown !== flash.seq) return null;
+  if (!flash || phase === 'off') return null;
   return (
-    <span className="vx-history-flash" role="status">
+    <span className="vx-history-flash" data-leaving={phase === 'leaving' || undefined} role="status">
       {flash.text}
     </span>
   );
@@ -413,9 +413,23 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
           )}
           {/* 歯車だけだと「プロジェクトの設定」に見えるので、声の印と名前を付ける（狭いときは印だけ） */}
           {narrow ? (
-            <IconButton label="音声合成ソフト" tooltip="音声合成ソフトの設定（つなぎ先・話者の一覧）" variant="ghost" size="sm" icon={<Icon icon={AudioWaveform} />} onClick={openSettings} />
+            <IconButton
+              label="合成ソフトの設定"
+              tooltip="音声合成ソフト（VOICEVOX など）の設定：つなぎ先・話者の一覧"
+              variant="ghost"
+              size="sm"
+              icon={<Icon icon={AudioWaveform} />}
+              onClick={openSettings}
+            />
           ) : (
-            <Button label="音声合成ソフト" tooltip="音声合成ソフトの設定（つなぎ先・話者の一覧）" variant="ghost" size="sm" icon={<Icon icon={AudioWaveform} />} onClick={openSettings} />
+            <Button
+              label="合成ソフトの設定"
+              tooltip="音声合成ソフト（VOICEVOX など）の設定：つなぎ先・話者の一覧"
+              variant="ghost"
+              size="sm"
+              icon={<Icon icon={AudioWaveform} />}
+              onClick={openSettings}
+            />
           )}
           <div className="vx-toolbar-sep" aria-hidden />
           <span className="vx-project-name">
@@ -442,7 +456,15 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
           {narrow ? (
             <IconButton label="すべて合成" tooltip={synthTip} size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy || !pending} onClick={() => void synthesize(notify)} />
           ) : (
-            <Button label="すべて合成" tooltip={synthTip} size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy || !pending} onClick={() => void synthesize(notify)} />
+            <Button
+              label="すべて合成"
+              tooltip={synthTip}
+              size="sm"
+              variant={pending ? 'secondary' : 'ghost'}
+              icon={<Icon icon={AudioLines} />}
+              isDisabled={!!busy || !pending}
+              onClick={() => void synthesize(notify)}
+            />
           )}
           {/* 画面で唯一の主要ボタン（HIG：filled は 1 つ） */}
           <span className="vx-primary-cta">
@@ -482,8 +504,20 @@ export function usePanels(notify: Notify): Registry {
 export function useNotify(): {notify: Notify; dismissers: React.MutableRefObject<Map<string, () => void>>} {
   const showToast = useToast();
   const dismissers = useRef(new Map<string, () => void>());
+  /** 直前に出した知らせ（同じ文を続けて 2 枚出さない） */
+  const last = useRef<{body: unknown; at: number}>({body: null, at: 0});
+  /** いま出ている「お知らせ」（押すボタンの無いもの）。元に戻す・やり直すで状況が変わったら片付ける */
+  const liveInfo = useRef(new Set<() => void>());
+  const historySeq = useStore(s => s.historyFlash?.seq ?? 0);
+  useEffect(() => {
+    for (const d of liveInfo.current) d();
+    liveInfo.current.clear();
+  }, [historySeq]);
   const notify = useCallback<Notify>(
     (body, type = 'info', key, action) => {
+      const now = performance.now();
+      if (typeof body === 'string' && last.current.body === body && now - last.current.at < 1500) return;
+      last.current = {body, at: now};
       if (key) dismissers.current.get(key)?.();
       let dismiss: () => void = () => {};
       const endContent = action ? (
@@ -505,6 +539,11 @@ export function useNotify(): {notify: Notify; dismissers: React.MutableRefObject
         autoHideDuration: type === 'error' ? 10000 : action ? 7000 : 4000,
       });
       if (key) dismissers.current.set(key, dismiss);
+      if (type === 'info' && !action) {
+        liveInfo.current.add(dismiss);
+        // 山のようにためない
+        if (liveInfo.current.size > 12) liveInfo.current.delete(liveInfo.current.values().next().value!);
+      }
     },
     [showToast],
   );

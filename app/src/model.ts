@@ -696,7 +696,7 @@ export const voiceLayerFor = (p: Project, characterId: string) => layerFor(p, ch
 export const captionLayerFor = (p: Project, characterId: string) => layerFor(p, characterId, 'video');
 
 /**
- * ほかのキャラクターのセリフと時間が重なっているセリフ（id）。掛け合いで声と字幕がかぶっているのに気づけるよう、タイムラインで示す。
+ * ほかのセリフ（同じキャラクターのものも含む）と時間が重なっているセリフ（id）。声が同時に鳴る。掛け合いで声と字幕がかぶっているのに気づけるよう、タイムラインで示す。
  * 余韻（セリフの後ろの間）だけが重なっているときは数えない
  */
 export function overlappingLines(p: Project): Set<string> {
@@ -708,7 +708,6 @@ export function overlappingLines(p: Project): Set<string> {
   const out = new Set<string>();
   for (let i = 0; i < lines.length; i++)
     for (let j = i + 1; j < lines.length && lines[j].s < lines[i].e; j++) {
-      if (lines[i].c.characterId === lines[j].c.characterId) continue;
       out.add(lines[i].c.id);
       out.add(lines[j].c.id);
     }

@@ -316,7 +316,9 @@ export function revertMerge(mergeKey: string): boolean {
 function readLayerSize(): 'small' | 'medium' | 'large' {
   try {
     const v = localStorage.getItem('voxcut.layerSize');
-    return v === 'medium' || v === 'large' ? v : 'small';
+    if (v === 'small' || v === 'medium' || v === 'large') return v;
+    // 選んでいなければ、画面が高いときは「中」（名前と波形が分かれて読める）、低いときは「小」（たくさん見える）
+    return window.innerHeight >= 860 ? 'medium' : 'small';
   } catch {
     return 'small';
   }
@@ -545,7 +547,8 @@ export function presetParams(params: VoiceParams): VoiceParams {
   return {...params, emotions: {...params.emotions}, extra: {...(params.extra ?? {})}};
 }
 
-export function addCharacter(): string {
+/** キャラクターを足す。name を渡すと、その名前で作る（同じ名前の話者が入っていれば、その声にする） */
+export function addCharacter(name?: string): string {
   const id = newId('ch');
   // キャラクターの色。アクセントの紫と、知らせの青・赤・黄には似せない
   const palette = ['#30B0C7', '#FF9F0A', '#34C759', '#FF6482', '#A2845E', '#5AC8FA'];
@@ -555,13 +558,24 @@ export function addCharacter(): string {
     const v = ready ? state.voices[ready.engine]![0] : null;
     return v ? {engine: ready!.engine, speaker: v.speaker, params: defaultParams()} : {engine: 'voicepeak', speaker: '', params: defaultParams()};
   };
+  // 名前が話者の名前と合えば、その声で（「ずんだもん」と書いたら ずんだもん の声）
+  const byName = (): Character['voice'] | null => {
+    const key = name?.replace(/\s/g, '');
+    if (!key) return null;
+    for (const e of state.engines) {
+      if (e.status.state !== 'ready') continue;
+      const v = (state.voices[e.engine] ?? []).find(x => x.displayName.replace(/\s/g, '').includes(key));
+      if (v) return {engine: e.engine, speaker: v.speaker, params: defaultParams()};
+    }
+    return null;
+  };
   commit(p => {
     const base = p.characters[0];
     const ch: Character = {
       id,
-      name: `キャラクター ${p.characters.length + 1}`,
+      name: name?.trim() || `キャラクター ${p.characters.length + 1}`,
       color: palette[p.characters.length % palette.length],
-      voice: base ? {...base.voice, params: {...base.voice.params}} : usable(),
+      voice: byName() ?? (base ? {...base.voice, params: {...base.voice.params}} : usable()),
       subtitle: base ? {...base.subtitle} : {fontFamily: 'Yu Gothic UI', fontSize: 56, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 4, position: 'bottom', marginV: 60, animation: 'none'},
       portrait: null,
       // 新しいキャラクターは、ほかのキャラクターのトラックの次のトラックへ（YMM4 と同じく 1 人 1 トラック）
