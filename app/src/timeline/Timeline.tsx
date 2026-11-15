@@ -1060,8 +1060,16 @@ export function Timeline() {
       const o = prev.get(id);
       if (!o) added.push(id);
       else {
-        if (!skip.has(id) && (o.start !== n.start || o.duration !== n.duration || o.trackId !== n.trackId))
-          moved.push([id, {t0: now, kind: 'move', fromStart: o.start, fromDur: o.duration, fromTrack: o.trackId}]);
+        if (!skip.has(id) && (o.start !== n.start || o.duration !== n.duration || o.trackId !== n.trackId)) {
+          // まだ動いている途中なら、いま描かれている位置から続ける（前の行き先へ跳ばない）
+          const cur = animRef.current.get(id);
+          const k = cur?.kind === 'move' ? easeOut(Math.min(1, (now - cur.t0) / ANIM_MS)) : 1;
+          const from =
+            cur?.kind === 'move' && k < 1
+              ? {fromStart: cur.fromStart + (o.start - cur.fromStart) * k, fromDur: cur.fromDur + (o.duration - cur.fromDur) * k, fromTrack: k < 0.5 ? cur.fromTrack : o.trackId}
+              : {fromStart: o.start, fromDur: o.duration, fromTrack: o.trackId};
+          moved.push([id, {t0: now, kind: 'move', ...from}]);
+        }
         if (n.audio && n.audio !== o.audio) revealRef.current.set(id, now);
       }
     }
