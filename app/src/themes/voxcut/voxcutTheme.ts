@@ -13,7 +13,7 @@ export const voxcutTheme = defineTheme({
   extends: neutralTheme,
   // アクセントは 1 色。VoxCut の色として、声・音を思わせるすみれ色（ライト／ダーク）。
   // キャラクターの色（青・橙・緑…）や、エラーの赤・警告の黄と見分けやすい
-  color: {accent: ['#6E56CF', '#9E8CFC']},
+  color: {accent: ['#6E56CF', '#7A5FEA']}, // ダークでも塗りの濃い紫に白い文字（主ボタンが沈まないように）
   typography: {
     // デスクトップアプリなので macOS の本文 13pt を基準にする
     // 本文 14px・補助テキスト 12px 以上（13/1.2 だと補助が 11px を切るため）
