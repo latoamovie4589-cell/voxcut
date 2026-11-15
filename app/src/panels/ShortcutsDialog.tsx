@@ -2,7 +2,7 @@
 
 import {Fragment} from 'react';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
-import {Heading, Text} from '@astryxdesign/core/Text';
+import {Heading} from '@astryxdesign/core/Text';
 import {setState, useStore} from '../store';
 
 const isMac = navigator.platform.toLowerCase().includes('mac');
@@ -88,25 +88,25 @@ export function ShortcutsDialog() {
   const isOpen = useStore(s => s.shortcutsOpen);
   const close = () => setState({shortcutsOpen: false});
   return (
-    <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={560} maxHeight="88dvh" purpose="info">
+    <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={880} maxHeight="88dvh" purpose="info">
       <DialogHeader title="キーボードショートカット" onOpenChange={o => !o && close()} />
-      {/* キーの列は一番長いキーに合わせる（全部の組で同じ幅）。下はまだ続くことが分かるよう薄くする */}
       <div className="vx-shortcuts-scroll">
+        {/* 2 段に組む（1 画面に収まり、キーと説明が離れすぎない）。狭ければ 1 段 */}
         <div className="vx-shortcuts">
           {GROUPS.map(([title, rows]) => (
-            <Fragment key={title}>
-              <div className="vx-shortcuts-head">
-                <Heading level={3}>{title}</Heading>
-              </div>
-              {rows.map(([key, what]) => (
-                <Fragment key={key}>
-                  <div>
-                    <kbd className="vx-kbd">{key}</kbd>
-                  </div>
-                  <Text>{what}</Text>
-                </Fragment>
-              ))}
-            </Fragment>
+            <section key={title} className="vx-shortcuts-group">
+              <Heading level={3}>{title}</Heading>
+              <dl>
+                {rows.map(([key, what]) => (
+                  <Fragment key={key}>
+                    <dt>
+                      <kbd className="vx-kbd">{key}</kbd>
+                    </dt>
+                    <dd>{what}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+            </section>
           ))}
         </div>
       </div>

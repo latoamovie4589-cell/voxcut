@@ -7,7 +7,7 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {Item} from '@astryxdesign/core/Item';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {List} from '@astryxdesign/core/List';
-import {CircleAlert, CircleCheck, CirclePause, Loader, Plus, RefreshCw} from 'lucide-react';
+import {CircleAlert, CircleCheck, CircleOff, Loader, Plus, RefreshCw} from 'lucide-react';
 import {ENGINE_LABEL, isSpeakerMissing, speakerLabel} from '../model';
 import {addCharacter, getState, removeCharacter, setState, useStore} from '../store';
 import {exportCharacterFile, getNotify, importCharacterFile, refreshEngines} from '../actions';
@@ -130,7 +130,7 @@ export function EnginesPanel() {
               }
               startContent={
                 <Icon
-                  icon={checking ? Loader : ok ? CircleCheck : status.state === 'notRunning' ? CirclePause : CircleAlert}
+                  icon={checking ? Loader : ok ? CircleCheck : status.state === 'notRunning' ? CircleOff : CircleAlert}
                   color={checking ? 'secondary' : ok ? 'success' : status.state === 'notRunning' ? 'warning' : 'error'}
                   label={text}
                 />

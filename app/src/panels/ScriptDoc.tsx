@@ -12,7 +12,7 @@ import {VStack} from '@astryxdesign/core/Layout';
 import {getNotify, synthesize} from '../actions';
 import type {Character, Project, VoiceClip} from '../model';
 import {parseScript, type ScriptLine} from '../script';
-import {addCharacter, applyScript, getState, redo, setState, undo, updateCharacter, useStore} from '../store';
+import {addCharacter, applyScript, getState, redo, setState, undo, useStore} from '../store';
 
 const IDLE_MS = 1500;
 
@@ -26,6 +26,9 @@ const docLines = (text: string) => parseScript(text).filter(l => !nameOnly(l));
 
 /** タブを替えて戻っても、まだ並べられていない書きかけを残す（知らない名前があるときなど） */
 let keptDraft: string | null = null;
+
+/** この欄から並べただけで、まだ合成していない行（次に合成するとき一緒に。もとからある未合成の行には手を出さない） */
+const placedOnly = new Set<string>();
 
 /** プロジェクトのセリフを、台本の文に */
 function docOf(p: Project): {text: string; ids: string[]} {
@@ -113,6 +116,8 @@ export function ScriptDoc() {
   const draftRef = useRef<string | null>(draft);
   /** 最後にタイムラインへ並べた文（これと同じなら、書きかけは無い） */
   const appliedRef = useRef<string | null>(null);
+  /** 最後に並べたとき、保留の行（知らない名前）が残っていたか。残っているうちは書きかけとして扱い、欄の文を捨てない */
+  const heldRef = useRef(false);
   const text = draft ?? doc.text;
 
   const setDraft = (v: string | null) => {
@@ -128,7 +133,7 @@ export function ScriptDoc() {
     () => () => {
       window.clearTimeout(timer.current);
       const d = draftRef.current;
-      if (d !== null && d !== appliedRef.current) applyRef.current(d, true);
+      if (d !== null && (d !== appliedRef.current || placedOnly.size)) applyRef.current(d, true);
     },
     [],
   );
@@ -150,12 +155,14 @@ export function ScriptDoc() {
     // 知らない名前の行だけ保留し、ほかの行は並べる。保留の行が残るうちは書いた文を欄に残す
     const ids = applyScript(r.items, `drag:script-doc-${lineKey.current}`);
     appliedRef.current = src;
-    if (synth) lineKey.current++;
+    heldRef.current = r.unknown.length > 0;
+    for (const id of ids) placedOnly.add(id);
     if (synth) {
-      // 前に並べただけの行も、まだ合成していなければ一緒に
+      lineKey.current++;
+      // この欄で書いた・直した行だけ合成する（前に並べただけの行も一緒に。もとからの未合成の行は頼まれていないので作らない）
       const now = getState().project;
-      const pending = now ? now.clips.filter((c): c is VoiceClip => c.type === 'voice' && !c.audio).map(c => c.id) : [];
-      const all = [...new Set([...ids, ...pending])];
+      const all = now ? now.clips.filter((c): c is VoiceClip => c.type === 'voice' && !c.audio && placedOnly.has(c.id)).map(c => c.id) : [];
+      placedOnly.clear();
       if (all.length) void synthesize(getNotify(), all);
     }
     return r.unknown.length === 0;
@@ -163,7 +170,7 @@ export function ScriptDoc() {
   applyRef.current = apply;
 
   /** 並べていない書きかけが無いか */
-  const clean = () => draftRef.current === null || draftRef.current === doc.text || draftRef.current === appliedRef.current;
+  const clean = () => draftRef.current === null || draftRef.current === doc.text || (draftRef.current === appliedRef.current && !heldRef.current);
 
   const onChange = (v: string) => {
     setDraft(v);
@@ -185,14 +192,17 @@ export function ScriptDoc() {
   };
 
   const createMissing = () => {
+    // 押した時点の欄の文を先に押さえる（欄から離れたときの処理で消えないように）
+    const src = ref.current?.value ?? draftRef.current ?? doc.text;
+    const p = getState().project;
+    const names = p ? readDoc(src, p.characters, fallback).unknown : [];
+    if (!names.length) return;
     const prevSel = getState().selectedCharacterId;
-    for (const name of unknown) {
-      const id = addCharacter();
-      updateCharacter(id, {name});
-    }
+    // 作るのと名前を付けるのを 1 つの「元に戻す」に
+    for (const name of names) addCharacter(name);
     setState({selectedCharacterId: prevSel});
-    getNotify()(`キャラクターを ${unknown.length} 人作りました。声は「キャラクター」で選べます`);
-    const src = draftRef.current ?? doc.text;
+    getNotify()(`キャラクターを ${names.length} 人作りました。声は「キャラクター」で選べます`);
+    setDraft(src);
     if (apply(src, true) && document.activeElement !== ref.current) setDraft(null);
   };
 

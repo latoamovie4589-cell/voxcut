@@ -13,7 +13,7 @@ import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {ClipboardPaste, CornerDownLeft, ListEnd, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
-import {addLine, getState, lineInsertPoint, setInputMode, setState, useStore, type InputMode} from '../store';
+import {addCharacter, addLine, getState, redo, undo, lineInsertPoint, setInputMode, setState, useStore, type InputMode} from '../store';
 import {synthesize, type Notify} from '../actions';
 import {play} from '../preview/playback';
 import {Avatar} from './Avatar';
@@ -43,6 +43,8 @@ export function ScriptBar({notify}: {notify: Notify}) {
   const flashTimer = useRef(0);
   /** 知らない名前で一度止めた文（同じ文でもう一度 Enter なら、そのまま入れる） */
   const warnedRef = useRef<string | null>(null);
+  /** 知らない名前で止めたときの問い（その名前のキャラクターを作って入れるか） */
+  const [ask, setAsk] = useState<{name: string; line: string} | null>(null);
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -102,20 +104,33 @@ export function ScriptBar({notify}: {notify: Notify}) {
       } else if (/^[^\s、。！？!?「」]{1,12}$/.test(m2[1]) && warnedRef.current !== t) {
         // 「名前：」の形なのに知らない名前：名前ごと読み上げてしまわないよう、一度止めて知らせる（もう一度 Enter でそのまま入れる）
         warnedRef.current = t;
-        setFlash(`「${m2[1]}」というキャラクターはいません。もう一度 Enter で、名前ごとセリフとして入れます`);
-        window.clearTimeout(flashTimer.current);
-        flashTimer.current = window.setTimeout(() => setFlash(null), 4000);
+        setFlash(null);
+        setAsk({name: m2[1], line: m2[2].trim()});
         return;
       }
     }
     warnedRef.current = null;
+    setAsk(null);
     const id = addLine(who, line, pre);
     setText('');
     void synthesize(notify, [id]).then(() => {
       // 合成で長さが決まってから、ほかのキャラクターのセリフと重なっていないか確かめる
       const p = getState().project;
-      if (p && overlappingLines(p).has(id)) notify('ほかのキャラクターのセリフと時間が重なっています（タイムラインの「⚠ 重なり」の札と、上の辺のしま）。字幕も重なって表示されます', 'info');
+      if (p && overlappingLines(p).has(id)) notify('ほかのセリフと時間が重なっています（タイムラインの「⚠ 重なり」の札と、上の辺のしま）。字幕も重なって表示されます', 'info');
     });
+  };
+
+  /** 知らない名前のキャラクターを作って、その人のセリフとして入れる */
+  const createAndAdd = () => {
+    if (!ask) return;
+    const who = addCharacter(ask.name);
+    const id = addLine(who, ask.line, null);
+    setAsk(null);
+    warnedRef.current = null;
+    setText('');
+    notify(`キャラクター「${ask.name}」を作りました。声は「キャラクター」で選べます`, 'info');
+    void synthesize(notify, [id]);
+    barRef.current?.querySelector('input')?.focus();
   };
 
   return (
@@ -188,6 +203,24 @@ export function ScriptBar({notify}: {notify: Notify}) {
         data-script-input
         data-hint={current ? `Enter で${layer}の ${insertAt} に追加します。Ctrl+↑↓ で話す人を切り替え、Alt+1〜9 で声のプリセット。「名前：セリフ」と打つとその人で入ります` : undefined}
         onKeyDownCapture={e => {
+          const modKey = e.ctrlKey || e.metaKey;
+          const k = e.key.toLowerCase();
+          // 何も打っていないときの Ctrl+Z / Ctrl+Y は、タイムラインの元に戻す・やり直す（入れた行をすぐ取り消せるように）
+          if (modKey && !e.altKey && (k === 'z' || k === 'y') && !text) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (k === 'y' || e.shiftKey) redo();
+            else undo();
+            return;
+          }
+          // Esc：問いを閉じる。何も無ければ欄から出てタイムラインへ（Space で再生などが使える）
+          if (e.key === 'Escape' && !e.nativeEvent.isComposing) {
+            if (ask) {
+              setAsk(null);
+              warnedRef.current = null;
+            } else document.querySelector<HTMLElement>('.vx-timeline-scroll')?.focus({preventScroll: true});
+            return;
+          }
           // 打ちながら話す人を切り替える：Ctrl+↑↓（⌘+↑↓）で前・次のキャラクター
           if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && project.characters.length > 1) {
             e.preventDefault();
@@ -237,9 +270,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
             setState({pasteOpen: true, pasteText: pasted});
           }
         }}>
-        {flash && (
+        {flash && !ask && (
           <span className="vx-preset-flash" role="status">
             {flash}
+          </span>
+        )}
+        {ask && (
+          <span className="vx-bar-ask" role="alert">
+            <span>「{ask.name}」というキャラクターはいません</span>
+            <Button label={`「${ask.name}」を作って入れる`} size="sm" variant="primary" onClick={createAndAdd} />
+            <span className="vx-bar-ask-sub">もう一度 Enter：名前ごとセリフにする　Esc：やめる</span>
           </span>
         )}
         <TextInput
@@ -258,7 +298,13 @@ export function ScriptBar({notify}: {notify: Notify}) {
                 : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で ${insertAt}・${layer}へ`
           }
           value={text}
-          onChange={setText}
+          onChange={v => {
+            setText(v);
+            if (ask) {
+              setAsk(null);
+              warnedRef.current = null;
+            }
+          }}
           onEnter={submit}
           width="100%"
         />
