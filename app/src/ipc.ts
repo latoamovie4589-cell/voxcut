@@ -313,7 +313,7 @@ function mockProject(): Project {
       {
         id: 'ch_a',
         name: 'ナレーター',
-        color: '#0A84FF',
+        color: '#30B0C7',
         voice: {engine: 'voicepeak', speaker: 'Japanese Female 1', params: defaultParams()},
         subtitle: sub,
         // 同梱のサンプル立ち絵（public/sample/sample.psd。体・目・口のレイヤー）

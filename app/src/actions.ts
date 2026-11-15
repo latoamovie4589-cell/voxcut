@@ -247,7 +247,12 @@ export async function synthesize(notify: Notify, clipIds?: string[]): Promise<vo
     if (c?.type !== 'voice') continue;
     const ch = s.project.characters.find(x => x.id === c.characterId);
     if (ch && isSpeakerMissing(ch.voice, s.voices)) {
-      missing.set(c.id, `話者「${ch.voice.speaker}」は ${ENGINE_LABEL[ch.voice.engine]} に入っていません。右のパネルで「${ch.name}」の話者を選び直してください`);
+      missing.set(
+        c.id,
+        ch.voice.speaker
+          ? `話者「${ch.voice.speaker}」は ${ENGINE_LABEL[ch.voice.engine]} に入っていません。「${ch.name}」の声を選び直してください`
+          : `「${ch.name}」の声がまだ選ばれていません。「キャラクター」で声を選んでください`,
+      );
     }
   }
   if (missing.size) {
@@ -447,10 +452,26 @@ export async function revealInFolder(path: string) {
   await (await api).revealInFolder(path);
 }
 
-/** 保存していない変更を捨ててよいか確かめる */
+/** 保存していない変更があるときの問いの答えを待つ（UnsavedDialog が answerUnsaved で答える） */
+let unsavedWait: ((v: 'save' | 'discard' | 'cancel') => void) | null = null;
+export function answerUnsaved(v: 'save' | 'discard' | 'cancel') {
+  setState({unsavedAsk: false});
+  unsavedWait?.(v);
+  unsavedWait = null;
+}
+
+/** 保存していない変更を捨ててよいか確かめる。「保存して続ける」なら保存してから（保存をやめたら続けない） */
 async function confirmDiscard(): Promise<boolean> {
   if (!getState().dirty) return true;
-  return (await api).ask('保存していない変更があります。保存せずに続けますか？', '保存せずに続ける');
+  unsavedWait?.('cancel');
+  const v = await new Promise<'save' | 'discard' | 'cancel'>(res => {
+    unsavedWait = res;
+    setState({unsavedAsk: true});
+  });
+  if (v === 'cancel') return false;
+  if (v === 'discard') return true;
+  await saveProject(getNotify());
+  return !getState().dirty;
 }
 
 /** プロジェクトの中で使っている画像・素材のパス（絶対パスだけ） */

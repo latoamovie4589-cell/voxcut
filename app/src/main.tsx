@@ -9,10 +9,11 @@ import {App} from './App';
 import {FloatApp} from './FloatApp';
 import {floatingPanelOfThisWindow, startGuest} from './sync';
 import {startHints} from './hints';
-import {startDialogEscape} from './keys';
+import {startDialogEscape, startPopoverDirection} from './keys';
 import {useThemeMode} from './theme';
 startHints();
 startDialogEscape();
+startPopoverDirection();
 
 // 別ウィンドウに切り離したパネルなら、そのパネルだけを出す（状態はメインウィンドウと共有）
 const floatPanel = floatingPanelOfThisWindow();

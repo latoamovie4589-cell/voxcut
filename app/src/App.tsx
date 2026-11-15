@@ -54,6 +54,7 @@ import type {PanelId} from './dock/layout';
 import {ScriptBar} from './panels/ScriptBar';
 import {SettingsDialog} from './panels/SettingsDialog';
 import {ProjectSettingsDialog} from './panels/ProjectSettingsDialog';
+import {UnsavedDialog} from './panels/UnsavedDialog';
 import {toggleFullscreen} from './preview/PreviewControls';
 import './app.css';
 
@@ -79,6 +80,21 @@ function SynthStatus() {
       <HStack gap={1} vAlign="center">
         <span className="vx-synth-run" role="status" aria-live="polite">
           <span className="vx-synth-run-bar" style={{width: `${(run.done / Math.max(1, run.total)) * 100}%`}} aria-hidden />
+          {/* 何行かまとめて確定するので、その間も止まって見えないよう、見積もりの時間で次の区切りの手前まで薄く伸ばす */}
+          {left > 0 && (
+            <span
+              key={run.done}
+              className="vx-synth-run-creep"
+              style={
+                {
+                  '--from': `${(run.done / Math.max(1, run.total)) * 100}%`,
+                  '--to': `${((run.done + Math.min(3, left) * 0.9) / Math.max(1, run.total)) * 100}%`,
+                  animationDuration: `${Math.round((per || 1500) * Math.min(3, left))}ms`,
+                } as React.CSSProperties
+              }
+              aria-hidden
+            />
+          )}
           <span className="vx-synth-run-text">
             合成 {run.done}/{run.total}
             {eta !== null ? `・残り約 ${eta < 60 ? `${eta} 秒` : `${Math.round(eta / 60)} 分`}` : '・残りを計算中'}
@@ -298,6 +314,24 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
   );
 }
 
+/** 元に戻す・やり直すをしたとき、ボタンの下に何が変わったかを少しだけ出す */
+function HistoryFlash() {
+  const flash = useStore(s => s.historyFlash);
+  const [shown, setShown] = useState<number | null>(null);
+  useEffect(() => {
+    if (!flash) return;
+    setShown(flash.seq);
+    const t = window.setTimeout(() => setShown(null), 1400);
+    return () => window.clearTimeout(t);
+  }, [flash]);
+  if (!flash || shown !== flash.seq) return null;
+  return (
+    <span className="vx-history-flash" role="status">
+      {flash.text}
+    </span>
+  );
+}
+
 function Header({notify, openSettings, openExport}: {notify: Notify; openSettings: () => void; openExport: () => void}) {
   const project = useStore(s => s.project);
   const dirty = useStore(s => s.dirty);
@@ -305,16 +339,31 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
   const canUndo = useStore(s => s.past.length > 0);
   const canRedo = useStore(s => s.future.length > 0);
   const narrow = useNarrow();
+  // 合成するもの・書き出すものが無いときは押せなくする（押しても何も起きないボタンを強く見せない）
+  const pending = useStore(s => s.project?.clips.filter(c => c.type === 'voice' && !c.audio && c.text.trim() && !s.synthStatus[c.id]).length ?? 0);
+  const empty = useStore(s => !s.project?.clips.length);
+  const synthTip = pending ? `未合成のセリフ ${pending} 行をすべて合成` : 'すべて合成済みです';
+  const exportTip = empty ? 'タイムラインが空です。セリフを入れると書き出せます' : '動画を書き出す';
   return (
     <LayoutHeader hasDivider padding={0}>
       <HStack gap={2} vAlign="center" hAlign="between" paddingInline={1} paddingBlock={1}>
         <HStack gap={1} vAlign="center">
+          {/* アプリの印（声の波形をかたどった VoxCut のマーク） */}
+          <span className="vx-brand" title="VoxCut" aria-hidden>
+            <svg viewBox="0 0 20 20" width="18" height="18">
+              <rect width="20" height="20" rx="5" fill="var(--color-accent)" />
+              <path d="M5 8v4M8 5.5v9M11 7v6M14 4.5v11" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </span>
           <MenuBar notify={notify} openSettings={openSettings} openExport={openExport} />
           <div className="vx-toolbar-sep" aria-hidden />
           {/* よく使う操作は、メニューを開かなくても押せるように（ツールバー） */}
           <IconButton label="保存" tooltip={`保存（${mod}S）`} variant="ghost" size="sm" icon={<Icon icon={Save} />} clickAction={() => saveProject(notify)} />
           <IconButton label="元に戻す" tooltip={`元に戻す（${mod}Z）`} variant="ghost" size="sm" icon={<Icon icon={Undo2} />} isDisabled={!canUndo} onClick={undo} />
-          <IconButton label="やり直す" tooltip={`やり直す（${isMac ? '⇧⌘Z' : 'Ctrl+Y'}）`} variant="ghost" size="sm" icon={<Icon icon={Redo2} />} isDisabled={!canRedo} onClick={redo} />
+          <span className="vx-history">
+            <IconButton label="やり直す" tooltip={`やり直す（${isMac ? '⇧⌘Z' : 'Ctrl+Y'}）`} variant="ghost" size="sm" icon={<Icon icon={Redo2} />} isDisabled={!canRedo} onClick={redo} />
+            <HistoryFlash />
+          </span>
           {narrow ? (
             <IconButton
               label="キャラクター"
@@ -358,13 +407,13 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
           <EngineAlert />
           <SynthStatus />
           {narrow ? (
-            <IconButton label="すべて合成" tooltip="未合成のセリフをすべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
+            <IconButton label="すべて合成" tooltip={synthTip} size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy || !pending} onClick={() => void synthesize(notify)} />
           ) : (
-            <Button label="すべて合成" size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy} onClick={() => void synthesize(notify)} />
+            <Button label="すべて合成" tooltip={synthTip} size="sm" icon={<Icon icon={AudioLines} />} isDisabled={!!busy || !pending} onClick={() => void synthesize(notify)} />
           )}
           {/* 画面で唯一の主要ボタン（HIG：filled は 1 つ） */}
           <span className="vx-primary-cta">
-            <Button label={narrow ? '書き出す…' : '動画を書き出す…'} tooltip="動画を書き出す" variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy} onClick={openExport} />
+            <Button label={narrow ? '書き出す…' : '動画を書き出す…'} tooltip={exportTip} variant="primary" size="sm" icon={<Icon icon={Upload} />} isDisabled={!!busy || empty} onClick={openExport} />
           </span>
         </HStack>
       </HStack>
@@ -604,6 +653,7 @@ export function App() {
       />
       <SettingsDialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} notify={notify} />
       <ProjectSettingsDialog />
+      <UnsavedDialog />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />
       <ShortcutsDialog />

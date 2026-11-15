@@ -2,7 +2,8 @@
 
 /** ダイアログを開いている間は、後ろの編集画面のショートカットを効かせない */
 export function modalOpen(): boolean {
-  return !!document.querySelector('dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"]');
+  // <dialog> は閉じていても置いたまま（role や aria-modal も付いたまま）なので、開いているかは open で見る
+  return !!document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog), [role="alertdialog"]:not(dialog)');
 }
 
 /**
@@ -114,4 +115,23 @@ export function startSpaceGuard(play: () => void): () => void {
     window.removeEventListener('keydown', onKey, true);
     window.removeEventListener('keyup', onUp, true);
   };
+}
+
+/**
+ * メニュー・選ぶ欄を開くとき、画面の下のほうで押したなら上へ開くので、ふわっと出る向きも下から上にする
+ * （開く前に印 data-vx-up を付け、CSS で動きの向きと起点を変える）
+ */
+export function startPopoverDirection() {
+  document.addEventListener(
+    'beforetoggle',
+    e => {
+      const el = e.target as HTMLElement;
+      if (!(e as ToggleEvent).newState || (e as ToggleEvent).newState !== 'open' || !el.hasAttribute('data-astryx-layer-root')) return;
+      const trigger = document.activeElement as HTMLElement | null;
+      const r = trigger && trigger !== document.body ? trigger.getBoundingClientRect() : null;
+      if (r && r.top > window.innerHeight * 0.6) el.setAttribute('data-vx-up', '');
+      else el.removeAttribute('data-vx-up');
+    },
+    true,
+  );
 }

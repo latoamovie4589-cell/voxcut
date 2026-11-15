@@ -114,6 +114,10 @@ export interface State {
   settingsOpen: boolean;
   /** プロジェクトの設定（解像度・fps・背景色） */
   projectSettingsOpen: boolean;
+  /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
+  unsavedAsk: boolean;
+  /** 元に戻す・やり直すをしたときに少しだけ出す知らせ（何が変わったか） */
+  historyFlash: {text: string; seq: number} | null;
   /** タイムラインのレイヤーの高さ（この PC に覚える） */
   layerSize: 'small' | 'medium' | 'large';
   /** 最近使ったプロジェクト */
@@ -174,6 +178,8 @@ let state: State = {
   inputPresets: {},
   settingsOpen: false,
   projectSettingsOpen: false,
+  unsavedAsk: false,
+  historyFlash: null,
   layerSize: readLayerSize(),
   recent: [],
   pasteOpen: false,
@@ -348,12 +354,40 @@ export function replaceProject(p: Project, opts: {dirty?: boolean} = {}) {
   setState({project: next, dirty: opts.dirty ?? true});
 }
 
+/** 元に戻す・やり直すで何が変わったかを、短い言葉で（見出しに少しだけ出す） */
+function describeChange(from: Project, to: Project): string {
+  const lines = (p: Project) => p.clips.filter(c => c.type === 'voice') as VoiceClip[];
+  const a = lines(from);
+  const b = lines(to);
+  if (b.length !== a.length) return `セリフ ${b.length > a.length ? '+' : '−'}${Math.abs(b.length - a.length)} 行`;
+  if (to.clips.length !== from.clips.length) return `アイテム ${to.clips.length > from.clips.length ? '+' : '−'}${Math.abs(to.clips.length - from.clips.length)}`;
+  const byId = new Map(a.map(c => [c.id, c]));
+  if (b.some(c => byId.get(c.id)?.text !== c.text)) return 'セリフの文';
+  const prev = new Map(from.clips.map(c => [c.id, c]));
+  if (
+    to.clips.some(c => {
+      const o = prev.get(c.id);
+      return !o || o.start !== c.start || o.trackId !== c.trackId || o.duration !== c.duration;
+    })
+  )
+    return 'アイテムの位置・長さ';
+  if (JSON.stringify(from.characters) !== JSON.stringify(to.characters)) return 'キャラクターの設定';
+  if (JSON.stringify(from.tracks) !== JSON.stringify(to.tracks)) return 'レイヤーの設定';
+  return '設定';
+}
+
 export function undo() {
   if (callRemote('undo')) return;
   setState(s => {
     const prev = s.past.at(-1);
     if (!prev || !s.project) return {};
-    return {project: prev, past: s.past.slice(0, -1), future: [s.project, ...s.future], dirty: true};
+    return {
+      project: prev,
+      past: s.past.slice(0, -1),
+      future: [s.project, ...s.future],
+      dirty: true,
+      historyFlash: {text: `元に戻しました：${describeChange(s.project, prev)}`, seq: (s.historyFlash?.seq ?? 0) + 1},
+    };
   });
 }
 
@@ -362,7 +396,13 @@ export function redo() {
   setState(s => {
     const [next, ...rest] = s.future;
     if (!next || !s.project) return {};
-    return {project: next, future: rest, past: [...s.past, s.project], dirty: true};
+    return {
+      project: next,
+      future: rest,
+      past: [...s.past, s.project],
+      dirty: true,
+      historyFlash: {text: `やり直しました：${describeChange(s.project, next)}`, seq: (s.historyFlash?.seq ?? 0) + 1},
+    };
   });
 }
 
@@ -504,14 +544,21 @@ export function presetParams(params: VoiceParams): VoiceParams {
 
 export function addCharacter(): string {
   const id = newId('ch');
-  const palette = ['#0A84FF', '#FF9F0A', '#30D158', '#BF5AF2', '#FF375F', '#40C8E0'];
+  // キャラクターの色。アクセントの紫と、知らせの青・赤・黄には似せない
+  const palette = ['#30B0C7', '#FF9F0A', '#34C759', '#FF6482', '#A2845E', '#5AC8FA'];
+  // 最初の 1 人は、このPCで使える（起動していて話者が入っている）ソフトの最初の話者にする
+  const usable = (): Character['voice'] => {
+    const ready = state.engines.find(e => e.status.state === 'ready' && (state.voices[e.engine]?.length ?? 0) > 0);
+    const v = ready ? state.voices[ready.engine]![0] : null;
+    return v ? {engine: ready!.engine, speaker: v.speaker, params: defaultParams()} : {engine: 'voicepeak', speaker: '', params: defaultParams()};
+  };
   commit(p => {
     const base = p.characters[0];
     const ch: Character = {
       id,
       name: `キャラクター ${p.characters.length + 1}`,
       color: palette[p.characters.length % palette.length],
-      voice: base ? {...base.voice, params: {...base.voice.params}} : {engine: 'voicepeak', speaker: '', params: defaultParams()},
+      voice: base ? {...base.voice, params: {...base.voice.params}} : usable(),
       subtitle: base ? {...base.subtitle} : {fontFamily: 'Yu Gothic UI', fontSize: 56, color: '#FFFFFF', outlineColor: '#000000', outlineWidth: 4, position: 'bottom', marginV: 60, animation: 'none'},
       portrait: null,
       // 新しいキャラクターは、ほかのキャラクターのトラックの次のトラックへ（YMM4 と同じく 1 人 1 トラック）
@@ -655,6 +702,19 @@ function insertTime(p: Project): number {
   return state.playhead;
 }
 
+/**
+ * 再生位置がアイテムの途中にかかっていれば、その後ろへずらした時刻。
+ * 置くトラックのアイテムに加えて、ほかの人のセリフ（別のトラック）の途中にも割り込まない（字幕が重ならないように）
+ */
+function pastCover(clips: Clip[], trackId: string, start: number): number {
+  for (let guard = 0; guard < 1000; guard++) {
+    const cover = clips.find(c => (c.trackId === trackId || c.type === 'voice') && c.start < start && start < c.start + c.duration);
+    if (!cover) return start;
+    start = cover.start + cover.duration;
+  }
+  return start;
+}
+
 /** レイヤーを n 本まで増やす（一番手前に足す） */
 function ensureTracks(p: Project, _kind: 'video' | 'audio', n: number): Project {
   if (p.tracks.length >= n) return p;
@@ -681,8 +741,7 @@ export function lineInsertPoint(characterId: string): number {
     if (prev && prev.start + prev.duration >= start) start = prev.start + prev.duration;
     return start;
   }
-  const cover = p.clips.find(c => c.trackId === trackId && c.start < start && start < c.start + c.duration);
-  return cover ? cover.start + cover.duration : start;
+  return pastCover(p.clips, trackId, start);
 }
 
 const provisional = (p: Project, text: string) => Math.max(30, Math.round([...text].length * 0.12 * p.video.fps)); // 合成前の仮の長さ
@@ -732,8 +791,7 @@ export function addLine(characterId: string, text: string, presetId: string | nu
     }
     // 置くトラックで再生位置にアイテムがかかっていれば、その後ろへ（途中に割り込まない）
     if (mode !== 'join') {
-      const cover = clips.find(c => c.trackId === trackId && c.start < start && start < c.start + c.duration);
-      if (cover) start = cover.start + cover.duration;
+      start = pastCover(clips, trackId, start);
     }
     const clip = newVoiceClip(p, id, trackId, start, characterId, text, presetId);
     // 入れた分だけ、後ろのアイテムを全トラックでずらす（YMM4 の「後ろのアイテムを移動」。掛け合いの順番を崩さない）
@@ -766,8 +824,7 @@ export function addLines(items: {characterId: string; text: string}[]): string[]
     let at = insertTime(p);
     // 最初の行のトラックで再生位置にアイテムがかかっていれば、その後ろから
     const firstTrack = layerFor(p, items[0].characterId).trackId;
-    const cover = p.clips.find(c => c.trackId === firstTrack && c.start < at && at < c.start + c.duration);
-    if (cover) at = cover.start + cover.duration;
+    at = pastCover(p.clips, firstTrack, at);
     let t = at;
     const added: VoiceClip[] = [];
     for (const {characterId, text} of items) {
@@ -1296,7 +1353,8 @@ export function deleteClips(ids: string[]) {
   if (!ids.length) return;
   const del = new Set(ids);
   commit(p => rippleDelete(p, del));
-  setState({selectedClipId: null});
+  // 詰めて全体が短くなったら、再生位置を最後より後ろに残さない
+  setState(s => ({selectedClipId: null, playhead: s.project ? Math.min(s.playhead, projectDuration(s.project)) : s.playhead}));
   onDeleted?.(ids.length);
 }
 

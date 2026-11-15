@@ -2,6 +2,7 @@
 // 動画を見ながら作業する道具なので、プレビューの周りが暗い方が色を見誤りにくい
 
 import {useSyncExternalStore} from 'react';
+import {flushSync} from 'react-dom';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
 
@@ -34,7 +35,11 @@ export function setThemeMode(m: ThemeMode) {
   } catch {
     // 保存できなくても、この起動中は使える
   }
-  listeners.forEach(l => l());
+  // 全面が一瞬で反転するとまぶしいので、短く重ねて切り替える（動きを減らす設定ならすぐ）
+  const swap = () => flushSync(() => listeners.forEach(l => l()));
+  const doc = document as Document & {startViewTransition?: (cb: () => void) => unknown};
+  if (doc.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) doc.startViewTransition(swap);
+  else swap();
 }
 
 export function useThemeMode(): ThemeMode {
