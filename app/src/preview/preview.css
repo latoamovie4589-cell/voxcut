@@ -82,3 +82,17 @@
   pointer-events: none;
   z-index: 1;
 }
+
+/* 空のプロジェクトのとき、映像の真ん中に出す薄い案内 */
+.vx-preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  pointer-events: none;
+  color: rgb(255 255 255 / 0.7);
+  font-size: 13px;
+  text-align: center;
+}

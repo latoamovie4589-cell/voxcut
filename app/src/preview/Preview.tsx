@@ -219,6 +219,7 @@ export function Preview() {
   const playhead = useStore(s => s.playhead);
   const isPlaying = useStore(s => s.isPlaying);
   const playRate = useStore(s => s.playRate);
+  const isEmpty = useStore(s => !s.project?.clips.length);
   const previewZoom = useStore(s => s.previewZoom);
   const previewQuality = useStore(s => s.previewQuality);
   const showSafeArea = useStore(s => s.showSafeArea);
@@ -536,7 +537,22 @@ export function Preview() {
         }
         o.strokeStyle = '#8B74F0'; // ブランドの紫。動画の明暗どちらの上でも見える中間の明るさ
         o.lineWidth = 1.5;
+        // 映像の中ははっきり、映像の外にはみ出た分は薄い破線（字幕などの上に太い枠が重ならないように）
+        o.save();
+        o.beginPath();
+        o.rect(0, 0, cr.width, cr.height);
+        o.clip();
         o.strokeRect(r.x, r.y, r.w, r.h);
+        o.restore();
+        o.save();
+        o.beginPath();
+        o.rect(-1e5, -1e5, 2e5, 2e5);
+        o.rect(0, 0, cr.width, cr.height);
+        o.clip('evenodd');
+        o.globalAlpha = 0.45;
+        o.setLineDash([4, 4]);
+        o.strokeRect(r.x, r.y, r.w, r.h);
+        o.restore();
         o.fillStyle = '#fff';
         for (const [cx, cy] of handles(r, boundsRef.current)) {
           o.fillRect(cx - HANDLE / 2, cy - HANDLE / 2, HANDLE, HANDLE);
@@ -746,6 +762,16 @@ export function Preview() {
           }
           onKeyDown={onKeyDown}
         />
+        {/* 空のプロジェクト：真っ黒な画面だけにせず、何をすると何が出るかを映像の真ん中に薄く出す */}
+        {isEmpty && (
+          <div className="vx-preview-empty" aria-hidden>
+            <svg viewBox="0 0 20 20" width="40" height="40">
+              <rect width="20" height="20" rx="5" fill="currentColor" opacity="0.18" />
+              <path d="M5 8v4M8 5.5v9M11 7v6M14 4.5v11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" opacity="0.55" />
+            </svg>
+            <span>セリフを入れると、ここに字幕と立ち絵が出ます</span>
+          </div>
+        )}
       </div>
       <canvas ref={overlayRef} className="vx-preview-overlay" aria-hidden />
       <PreviewControls fullscreenTarget={rootRef} />
