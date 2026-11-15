@@ -1194,7 +1194,7 @@ impl Project {
             Character {
                 id: "ch_a".into(),
                 name: "ナレーター".into(),
-                color: "#0A84FF".into(),
+                color: "#30B0C7".into(),
                 voice: Voice { engine: EngineId::Voicepeak, speaker: "Japanese Female 1".into(), params: VoiceParams::default() },
                 subtitle: SubtitleStyle::default(),
                 portrait: None,
