@@ -17,9 +17,25 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
-import {Copy, Plus, Trash2, X} from 'lucide-react';
-import {SHAPE_LABEL, framesToTimecode, plainLook, type Ease, type Effect, type Look, type ShapeClip, type ShapeKind, type TextClip, type Transform, type VisualClip} from '../model';
-import {deleteClip, duplicateSelection, updateClip, useStore} from '../store';
+import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
+import {getNotify} from '../actions';
+import {itemTemplateName, saveTemplate} from '../templates';
+import {
+  SHAPE_LABEL,
+  framesToTimecode,
+  plainLook,
+  type Ease,
+  type Effect,
+  type Look,
+  type Motion,
+  type MotionKind,
+  type ShapeClip,
+  type ShapeKind,
+  type TextClip,
+  type Transform,
+  type VisualClip,
+} from '../model';
+import {deleteClip, duplicateSelection, setState, updateClip, useStore} from '../store';
 
 const EFFECT_LABEL: Record<Effect['kind'], string> = {blur: 'ぼかし', shake: '揺れ', color: '色調整', mono: '白黒', invert: '色の反転', wave: '波（くねくね）', swirl: '渦巻き'};
 const newEffect = (k: Effect['kind']): Effect =>
@@ -124,8 +140,64 @@ export function LookFields({
             <div>
               <Button label="始まりと同じにする" size="sm" variant="ghost" onClick={() => set({anim: {...anim, to: {...transform}, rotation: look.rotation}})} />
             </div>
+            <Switch
+              label="途中の状態を通る"
+              description="始まり → 途中 → 終わりの順に動きます"
+              value={!!anim.mid}
+              onChange={on =>
+                set({
+                  anim: {
+                    ...anim,
+                    // はじめは、始まりと終わりのちょうど真ん中
+                    mid: on
+                      ? {
+                          at: 0.5,
+                          transform: {
+                            x: Math.round((transform.x + anim.to.x) / 2),
+                            y: Math.round((transform.y + anim.to.y) / 2),
+                            scale: (transform.scale + anim.to.scale) / 2,
+                            opacity: (transform.opacity + anim.to.opacity) / 2,
+                          },
+                          rotation: Math.round((look.rotation + anim.rotation) / 2),
+                        }
+                      : null,
+                  },
+                })
+              }
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+            />
+            {anim.mid && (
+              <>
+                <Slider
+                  label="通る時点"
+                  value={anim.mid.at}
+                  min={0.05}
+                  max={0.95}
+                  step={0.01}
+                  valueDisplay="text"
+                  formatValue={v => `${Math.round(v * 100)}%（${Math.round(duration * v)} フレーム目）`}
+                  onChange={(at: number) => set({anim: {...anim, mid: {...anim.mid!, at}}})}
+                />
+                <Text type="label">途中の状態</Text>
+                <TransformFields value={anim.mid.transform} onChange={tr => set({anim: {...anim, mid: {...anim.mid!, transform: tr}}})} />
+                <Slider
+                  label="途中の回転"
+                  value={anim.mid.rotation}
+                  min={-720}
+                  max={720}
+                  step={1}
+                  valueDisplay="text"
+                  formatValue={v => `${Math.round(v)}°`}
+                  onChange={(rotation: number) => set({anim: {...anim, mid: {...anim.mid!, rotation}}})}
+                />
+              </>
+            )}
           </>
         )}
+        <MotionField label="登場" none="そのまま出る" value={look.enter} duration={duration} onChange={enter => set({enter})} labels={ENTER_LABEL} />
+        <MotionField label="退場" none="そのまま消える" value={look.exit} duration={duration} onChange={exit => set({exit})} labels={EXIT_LABEL} />
         <HStack gap={2}>
           <NumberInput label="フェードイン" units="フレーム" value={look.fadeIn} min={0} max={duration} onChange={fadeIn => set({fadeIn})} />
           <NumberInput label="フェードアウト" units="フレーム" value={look.fadeOut} min={0} max={duration} onChange={fadeOut => set({fadeOut})} />
@@ -136,6 +208,45 @@ export function LookFields({
         <EffectsEditor effects={look.effects ?? []} onChange={effects => set({effects})} headingLevel={headingLevel} />
       </VStack>
     </>
+  );
+}
+
+const ENTER_LABEL: Record<MotionKind, string> = {slideLeft: '左から入る', slideRight: '右から入る', slideUp: '上から入る', slideDown: '下から入る', zoom: '大きくなって出る'};
+const EXIT_LABEL: Record<MotionKind, string> = {slideLeft: '左へ出る', slideRight: '右へ出る', slideUp: '上へ出る', slideDown: '下へ出る', zoom: '小さくなって消える'};
+
+/** 登場・退場（場面の切り替わりで、画面の外から滑り込む・出ていく） */
+function MotionField({
+  label,
+  none,
+  value,
+  duration,
+  labels,
+  onChange,
+}: {
+  label: string;
+  none: string;
+  value: Motion | null | undefined;
+  duration: number;
+  labels: Record<MotionKind, string>;
+  onChange: (m: Motion | null) => void;
+}) {
+  return (
+    <HStack gap={2} vAlign="end">
+      <div style={{flex: 1, minWidth: 0}}>
+        <Selector
+          label={label}
+          value={value?.kind ?? 'none'}
+          options={[{value: 'none', label: none}, ...(Object.keys(labels) as MotionKind[]).map(k => ({value: k, label: labels[k]}))]}
+          onChange={v => onChange(v === 'none' ? null : {kind: v as MotionKind, frames: value?.frames ?? Math.min(15, duration)})}
+          width="100%"
+        />
+      </div>
+      {value && (
+        <div style={{width: 132}}>
+          <NumberInput label="長さ" units="フレーム" value={value.frames} min={1} max={duration} onChange={frames => onChange({...value, frames})} />
+        </div>
+      )}
+    </HStack>
   );
 }
 
@@ -215,6 +326,16 @@ function ItemHeader({clip, title}: {clip: VisualClip; title: string}) {
       <HStack gap={2} wrap="wrap">
         <Button label="複製" variant="ghost" icon={<Icon icon={Copy} />} tooltip="複製（Ctrl+D）" onClick={() => duplicateSelection()} />
         <Button label="削除" variant="ghost" icon={<Icon icon={Trash2} />} tooltip="削除（Delete）" onClick={() => deleteClip(clip.id)} />
+        <Button
+          label="テンプレートに保存"
+          variant="ghost"
+          icon={<Icon icon={BookmarkPlus} />}
+          tooltip="文字・色・位置・動き・効果をまとめて取っておきます（ツール → テンプレート から置けます）"
+          onClick={() => {
+            const t = saveTemplate('item', itemTemplateName(clip), clip);
+            getNotify()(`テンプレート「${t.name}」に保存しました`, 'info', 'template', {label: 'テンプレートを開く', onClick: () => setState({templatesOpen: true})});
+          }}
+        />
       </HStack>
     </VStack>
   );

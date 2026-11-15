@@ -60,6 +60,7 @@ import {
   splitClip,
   updateCharacter,
   updateClip,
+  updateTrack,
   addPortraitItem,
   useStore,
   setAftertime,
@@ -737,9 +738,19 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
   const sound = clip.mediaKind === 'audio' || (clip.mediaKind === 'video' && clip.hasAudio) ? clip : (linked.find(c => c.type === 'media' && c.mediaKind === 'audio') as MediaClip | undefined);
   const project = useStore(s => s.project!);
   const name = clip.src.split(/[\\/]/).pop() ?? clip.src;
+  const soundTrack = sound ? project.tracks.find(t => t.id === sound.trackId) : undefined;
+  const missing = useStore(s => s.missingMedia.includes(clip.src));
   return (
     <>
       <Section title={MEDIA_KIND_LABEL[clip.mediaKind]}>
+        {missing && (
+          <Banner
+            status="warning"
+            title="この素材のファイルが見つかりません"
+            description="動かしたか、名前を変えたか、消したときに起こります。"
+            endContent={<Button size="sm" label="場所を選び直す" onClick={() => setState({mediaOpen: true})} />}
+          />
+        )}
         <Text type="body" maxLines={2} wordBreak="break-all">
           {name}
         </Text>
@@ -777,6 +788,32 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
             formatValue={v => `${Math.round(v * 100)}%`}
             onChange={(volume: number) => updateClip(sound.id, {volume})}
           />
+          {/* BGM の自動音量下げ（レイヤーごとの設定。レイヤーのメニューと同じもの） */}
+          {soundTrack && (
+            <>
+              <Switch
+                label="セリフの間は音を下げる"
+                description={`${trackCode(project, soundTrack.id)} の音すべてに効きます。BGM がセリフの邪魔になりません`}
+                value={soundTrack.duck}
+                onChange={duck => updateTrack(soundTrack.id, {duck})}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+              />
+              {soundTrack.duck && (
+                <Slider
+                  label="下げたときの音量"
+                  value={soundTrack.duckLevel}
+                  min={0}
+                  max={0.9}
+                  step={0.05}
+                  valueDisplay="text"
+                  formatValue={v => `${Math.round(v * 100)}%`}
+                  onChange={(duckLevel: number) => updateTrack(soundTrack.id, {duckLevel})}
+                />
+              )}
+            </>
+          )}
         </Section>
       )}
     </>
