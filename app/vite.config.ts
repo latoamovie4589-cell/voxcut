@@ -1,9 +1,12 @@
 import {defineConfig} from 'vite';
 import react from '@vitejs/plugin-react';
+import pkg from './package.json' with {type: 'json'};
 
 // Tauri から使う前提の設定（ポート固定、画面クリアしない）
 export default defineConfig({
   plugins: [react()],
+  // 「VoxCut について」に出す版
+  define: {__APP_VERSION__: JSON.stringify(pkg.version)},
   clearScreen: false,
   server: {port: 5173, strictPort: true},
   build: {
