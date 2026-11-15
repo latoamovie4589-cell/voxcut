@@ -1,4 +1,4 @@
-// VoxCut のテーマ。Astryx の neutral を土台に、Apple HIG の値へ寄せる。
+// VoxCut のテーマ。Astryx の neutral を土台に、面の色をすみれ色寄りのインク色にする（文字の大きさ・動きは Apple HIG に寄せる）。
 // Liquid Glass（半透明・ぼかし）は使わない：面はすべて不透明。
 // ビルド：npm run theme:build（CSS にして読み込むので、実行時の style 注入がない）
 
@@ -28,14 +28,18 @@ export const voxcutTheme = defineTheme({
   // HIG §7：応答 0.3〜0.5 秒、控えめ
   motion: {fast: 150, medium: 320, ratio: 0.75},
   tokens: {
-    // HIG のセマンティックカラー（[ライト, ダーク]）
-    '--color-background-body': ['#F2F2F7', '#000000'], // systemGroupedBackground
-    '--color-background-surface': ['#FFFFFF', '#1C1C1E'], // secondarySystemGroupedBackground
-    '--color-background-card': ['#FFFFFF', '#2C2C2E'],
-    '--color-background-muted': ['#F2F2F7', '#2C2C2E'],
-    '--color-border': ['rgba(60,60,67,0.29)', 'rgba(84,84,88,0.60)'], // separator
-    // 補助テキスト：HIG の secondaryLabel（60% 透過）は白地で約 3.5:1 なので、4.5:1 を超える濃さにする
-    '--color-text-secondary': ['#5B5B63', '#AEAEB2'],
+    // 面の色は、ただの灰色ではなくアクセントのすみれ色をわずかに含んだ「インク色」（[ライト, ダーク]）。
+    // body は机（パネルの間に見える地）、surface はその上に載るパネル、card / muted は一段明るい面
+    '--color-background-body': ['#ECEAF3', '#0F0E14'],
+    '--color-background-surface': ['#FFFFFF', '#1A1921'],
+    '--color-background-card': ['#FFFFFF', '#26242F'],
+    '--color-background-muted': ['#F1EFF7', '#26242F'],
+    '--color-background-popover': ['#FDFCFF', '#2B2935'],
+    '--color-border': ['rgba(52,46,84,0.2)', 'rgba(150,142,190,0.24)'],
+    '--color-text-primary': ['#1B1A22', '#E8E6F0'],
+    // 補助テキスト：白地・暗い地のどちらでも 4.5:1 を超える濃さ
+    '--color-text-secondary': ['#5A5866', '#ABA8BA'],
+    '--color-icon-primary': ['#1B1A22', '#E8E6F0'],
     '--color-error': ['#FF3B30', '#FF453A'],
     '--color-success': ['#34C759', '#30D158'],
     '--color-warning': ['#FF9500', '#FF9F0A'],
