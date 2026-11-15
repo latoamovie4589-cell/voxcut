@@ -41,6 +41,8 @@ export function ScriptBar({notify}: {notify: Notify}) {
   // Alt+数字で声を切り替えたときに、打つ欄の上に少しだけ出す名前（打っている途中は案内文が見えないので）
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef(0);
+  /** 知らない名前で一度止めた文（同じ文でもう一度 Enter なら、そのまま入れる） */
+  const warnedRef = useRef<string | null>(null);
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -97,8 +99,16 @@ export function ScriptBar({notify}: {notify: Notify}) {
         line = m2[2].trim();
         pre = hit.id === current ? presetId : (inputPresets[hit.id] ?? null);
         if (hit.id !== current) setState({selectedCharacterId: hit.id});
+      } else if (/^[^\s、。！？!?「」]{1,12}$/.test(m2[1]) && warnedRef.current !== t) {
+        // 「名前：」の形なのに知らない名前：名前ごと読み上げてしまわないよう、一度止めて知らせる（もう一度 Enter でそのまま入れる）
+        warnedRef.current = t;
+        setFlash(`「${m2[1]}」というキャラクターはいません。もう一度 Enter で、名前ごとセリフとして入れます`);
+        window.clearTimeout(flashTimer.current);
+        flashTimer.current = window.setTimeout(() => setFlash(null), 4000);
+        return;
       }
     }
+    warnedRef.current = null;
     const id = addLine(who, line, pre);
     setText('');
     void synthesize(notify, [id]).then(() => {
@@ -117,7 +127,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
           isLabelHidden
           variant="secondary"
           size="sm"
-          width={tight ? 112 : compact ? 128 : 160}
+          width={tight ? 120 : compact ? 144 : 160}
           value={current}
           startIcon={<Avatar character={project.characters.find(c => c.id === current)} size={18} />}
           options={project.characters.map(c => ({value: c.id, label: c.name, icon: <Avatar character={c} size={18} />}))}
@@ -245,7 +255,7 @@ export function ScriptBar({notify}: {notify: Notify}) {
                 ? presetName
                   ? `${presetName}：セリフを入力`
                   : 'セリフを入力 → Enter'
-                : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で${layer}へ`
+                : `${presetName ? `${presetName}で ` : ''}セリフを入力 → Enter で ${insertAt}・${layer}へ`
           }
           value={text}
           onChange={setText}

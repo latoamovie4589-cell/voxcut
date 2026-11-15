@@ -68,14 +68,36 @@ export function CharacterDialog() {
   const panelSel = useStore(s => s.selectedCharacterId);
   const selectedId = useStore(s => s.dialogCharacterId) ?? panelSel;
   const [tab, setTab] = useState<TabId>('voice');
-  const close = () => setState({characterDialogOpen: false});
+  // 閉じたら、次の手順（セリフを打つ）へすぐ進めるよう下の入力欄へ
+  const close = () => {
+    setState({characterDialogOpen: false});
+    window.setTimeout(() => document.querySelector<HTMLInputElement>('.vx-scriptbar input')?.focus(), 140);
+  };
   // 開いたら、どのソフトの話者も選べるように一覧を読み込んでおく
   useEffect(() => {
     if (!isOpen) return;
     for (const e of ['voicevox', 'voicepeak', 'aivoice', 'voisona'] as EngineId[]) void loadVoices(e);
     // プロパティの要約から開いたときは、押した項目のタブで開く
     setTab(getState().inspectorTab);
+    // 左の一覧の選び（強調）と右で編集している人をそろえる（タイムラインから開いたときも）
+    const st = getState();
+    const list = st.project?.characters ?? [];
+    const want = list.find(c => c.id === st.dialogCharacterId) ?? list.find(c => c.id === st.selectedCharacterId) ?? list[0];
+    if (want && want.id !== st.dialogCharacterId) setState({dialogCharacterId: want.id});
   }, [isOpen]);
+  // 作ったばかり（名前が「キャラクター n」のまま）なら、名前の欄を選んだ状態にしてすぐ打てるように
+  const chId = useStore(s => (s.characterDialogOpen ? s.dialogCharacterId : null));
+  useEffect(() => {
+    if (!isOpen || !chId) return;
+    const c = getState().project?.characters.find(x => x.id === chId);
+    if (!c || !/^キャラクター \d+$/.test(c.name)) return;
+    const t = window.setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>('.vx-chardlg-name input');
+      el?.focus();
+      el?.select();
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [isOpen, chId]);
   if (!project) return null;
   const ch = project.characters.find(c => c.id === selectedId) ?? project.characters[0];
   const update = (patch: Parameters<typeof updateCharacter>[1]) => ch && updateCharacter(ch.id, patch);
@@ -100,7 +122,7 @@ export function CharacterDialog() {
               <VStack gap={3} paddingInline={4} paddingBlockStart={4}>
                 <HStack gap={2} vAlign="center">
                   <ColorSwatchInput label="アイテムの色" value={ch.color} onChange={color => update({color})} />
-                  <div style={{flex: 1, minWidth: 0}}>
+                  <div className="vx-chardlg-name" style={{flex: 1, minWidth: 0}}>
                     <TextInput label="名前" isLabelHidden value={ch.name} onChange={v => update({name: v})} />
                   </div>
                 </HStack>

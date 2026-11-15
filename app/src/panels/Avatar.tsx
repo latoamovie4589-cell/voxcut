@@ -125,7 +125,15 @@ export function Avatar({character, size = 20}: {character: Character | undefined
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const color = character?.color ?? '#8E8E93';
-  const style: React.CSSProperties = {width: size, height: size, borderColor: color, background: url ? `${color} url(${url}) center / cover` : color, fontSize: Math.round(size * 0.5)};
+  // 顔の絵も人の形も、キャラクター色の薄い下地＋色の枠で同じ重さに見せる（人の形はキャラクター色で描く）
+  const style: React.CSSProperties = {
+    width: size,
+    height: size,
+    borderColor: color,
+    color,
+    background: url ? `url(${url}) center / cover, color-mix(in srgb, ${color} 22%, var(--color-background-surface))` : `color-mix(in srgb, ${color} 22%, var(--color-background-surface))`,
+    fontSize: Math.round(size * 0.5),
+  };
   return (
     <span className="vx-avatar" style={style} aria-hidden>
       {/* 立ち絵が無ければ、どのキャラクターも同じ形の人の形（色で見分ける） */}

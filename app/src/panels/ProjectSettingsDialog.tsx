@@ -46,7 +46,11 @@ export function ProjectSettingsDialog() {
           <VStack gap={1}>
             <Text type="label">1 秒のコマ数（fps）</Text>
             <Text hasTabularNumbers>{v.fps} fps</Text>
-            <Banner status="info" title="fps は、セリフや素材を置く前に決めます" description="置いたあとに変えると、アイテムの長さが変わってしまうためです。" />
+            <Banner
+              status="info"
+              title="fps は、セリフや素材を置く前に決めます"
+              description="置いたあとに変えると、アイテムの長さがずれてしまうため、いまは変えられません。別の fps にしたいときは、新しいプロジェクトで最初に決めてください。"
+            />
           </VStack>
         ) : (
           <Selector

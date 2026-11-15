@@ -23,6 +23,8 @@ import {reorderLine, replaceInLines, setState, updateClip, useStore} from '../st
 type View = 'list' | 'doc';
 /** 文書から一覧へ切り替えた直後の Ctrl+H：一覧ができたときに置き換えの欄を開く */
 let replaceOnMount = false;
+/** 文書から一覧へ切り替えた直後の Ctrl+F / Ctrl+H：一覧ができたら探す欄にカーソルを置く */
+let focusOnMount = false;
 const VIEW_KEY = 'voxcut.scriptView';
 function readView(): View {
   try {
@@ -47,10 +49,16 @@ export function ScriptList() {
   };
   // Ctrl+F / Ctrl+H は一覧の検索を使うので、一覧へ戻す
   useEffect(() => {
-    const on = () => change('list');
+    const on = () => {
+      if (viewRef.current === 'doc') focusOnMount = true;
+      change('list');
+    };
     const onReplace = () => {
       // 一覧がまだ無い（文書を出している）ときだけ。一覧が出ていれば一覧が自分で開く
-      if (viewRef.current === 'doc') replaceOnMount = true;
+      if (viewRef.current === 'doc') {
+        replaceOnMount = true;
+        focusOnMount = true;
+      }
       change('list');
     };
     window.addEventListener('vx-open-search', on);
@@ -90,6 +98,13 @@ function ScriptLines() {
   });
   const [to, setTo] = useState('');
   // Ctrl+H（App から）：置き換えの欄を開く
+  // 文書から切り替えてきた Ctrl+H / Ctrl+F：一覧ができたら探す欄へ（App からのフォーカスが間に合わないため）
+  useEffect(() => {
+    if (focusOnMount) {
+      focusOnMount = false;
+      requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus());
+    }
+  }, []);
   useEffect(() => {
     replaceOnMount = false;
     const on = () => setReplacing(true);

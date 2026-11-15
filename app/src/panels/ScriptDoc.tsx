@@ -1,7 +1,8 @@
 // 台本モード：台本を文書のように「名前：セリフ」で 1 行ずつ書くと、タイムラインにセリフが並ぶ。
 // 書き直した行・増えた行は、改行したとき・欄から離れたときに合成する（打っている途中は並べるだけ）。
 // 名前の無い行は、すぐ上の行と同じキャラクター。知らない名前があれば、キャラクターを作るか聞く。
-// 名前はキャラクターの色で見せる（欄の後ろに同じ文字を重ねて色だけ付ける）
+// 名前はキャラクターの色で見せる（欄の後ろに同じ文字を重ねて色だけ付ける）。
+// 「元に戻す」は 1 行ずつ（改行で確定するまでの書き直しを 1 つにまとめる）。欄を離れる・タブを替えるときは書きかけも必ず反映する
 
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {Banner} from '@astryxdesign/core/Banner';
@@ -38,9 +39,14 @@ function docOf(p: Project): {text: string; ids: string[]} {
 
 const findChar = (chars: Character[], name: string) => chars.find(c => c.name === name || norm(c.name) === norm(name));
 
-/** 台本の文を、キャラクターを割り当てた行に。知らない名前は unknown に */
-function readDoc(text: string, chars: Character[], fallback: string): {items: {characterId: string; text: string}[]; unknown: string[]} {
-  const items: {characterId: string; text: string}[] = [];
+type DocItem = {characterId: string; text: string; hold?: boolean};
+
+/**
+ * 台本の文を、キャラクターを割り当てた行に。知らない名前の行は hold（その行だけ保留：今ある行はそのまま残し、新しくは入れない）。
+ * 知らない名前は unknown に
+ */
+function readDoc(text: string, chars: Character[], fallback: string): {items: DocItem[]; unknown: string[]} {
+  const items: DocItem[] = [];
   const unknown = new Set<string>();
   let last = fallback;
   for (const l of docLines(text)) {
@@ -48,6 +54,7 @@ function readDoc(text: string, chars: Character[], fallback: string): {items: {c
       const ch = findChar(chars, l.name);
       if (!ch) {
         unknown.add(l.name);
+        items.push({characterId: '', text: l.text, hold: true});
         continue;
       }
       last = ch.id;
@@ -71,7 +78,7 @@ function Highlight({text, chars}: {text: string; chars: Character[]}) {
             {m ? (
               <>
                 {m[1]}
-                <span className="vx-doc-name" data-unknown={ch ? undefined : true} style={ch ? {color: ch.color, background: `${ch.color}24`} : undefined}>
+                <span className="vx-doc-name" data-unknown={ch ? undefined : true} style={ch ? {background: `${ch.color}30`, boxShadow: `inset 0 -2px 0 ${ch.color}`} : undefined}>
                   {m[2]}
                 </span>
                 {row.slice(m[0].length)}
@@ -113,7 +120,18 @@ export function ScriptDoc() {
     setDraftState(v);
   };
 
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  /** いまの行の書き直しをまとめる「元に戻す」の単位。改行で確定するたびに次へ */
+  const lineKey = useRef(0);
+  // 欄を出したまま別のタブ・一覧へ移る（Ctrl+F / Ctrl+H を含む）ときも、書きかけを捨てずに反映する
+  const applyRef = useRef<(src: string, synth: boolean) => boolean>(() => false);
+  useEffect(
+    () => () => {
+      window.clearTimeout(timer.current);
+      const d = draftRef.current;
+      if (d !== null && d !== appliedRef.current) applyRef.current(d, true);
+    },
+    [],
+  );
   // 欄から離れたまま残った書きかけ（知らない名前）を、タブを替えても失わない
   useEffect(() => {
     keptDraft = unknown.length ? draft : null;
@@ -129,10 +147,10 @@ export function ScriptDoc() {
     if (!p) return false;
     const r = readDoc(src, p.characters, fallback);
     setUnknown(r.unknown);
-    // 知らない名前があるうちは並べない（その行を消してしまわないように）。書いた文は欄に残す
-    if (r.unknown.length) return false;
-    const ids = applyScript(r.items);
+    // 知らない名前の行だけ保留し、ほかの行は並べる。保留の行が残るうちは書いた文を欄に残す
+    const ids = applyScript(r.items, `drag:script-doc-${lineKey.current}`);
     appliedRef.current = src;
+    if (synth) lineKey.current++;
     if (synth) {
       // 前に並べただけの行も、まだ合成していなければ一緒に
       const now = getState().project;
@@ -140,8 +158,9 @@ export function ScriptDoc() {
       const all = [...new Set([...ids, ...pending])];
       if (all.length) void synthesize(getNotify(), all);
     }
-    return true;
+    return r.unknown.length === 0;
   };
+  applyRef.current = apply;
 
   /** 並べていない書きかけが無いか */
   const clean = () => draftRef.current === null || draftRef.current === doc.text || draftRef.current === appliedRef.current;
@@ -216,10 +235,14 @@ export function ScriptDoc() {
             // 探す・置き換える（Ctrl+F / Ctrl+H）と保存はアプリのショートカットへ。ほかは欄の中だけで使う（Space で再生などに取られないように）
             if (mod && (k === 'f' || k === 'h' || k === 's')) return;
             e.stopPropagation();
-            // 書きかけが無ければ、Ctrl+Z / Ctrl+Y はタイムラインの元に戻す・やり直す（1 文字ずつではなく）
-            if (mod && (k === 'z' || k === 'y') && clean()) {
+            // Ctrl+Z / Ctrl+Y はいつもタイムラインの元に戻す・やり直す（1 文字ずつではなく 1 行ずつ）。
+            // 書きかけがあれば、先にそれを 1 つの手順として並べてから戻す（＝その行の書き直しをまとめて取り消す）
+            if (mod && (k === 'z' || k === 'y')) {
               e.preventDefault();
-              if (k === 'y' || e.shiftKey) redo();
+              const redoing = k === 'y' || e.shiftKey;
+              if (!redoing && !clean()) apply(draftRef.current!, false);
+              lineKey.current++;
+              if (redoing) redo();
               else undo();
               appliedRef.current = null;
               setDraft(null);
