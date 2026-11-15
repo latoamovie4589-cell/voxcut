@@ -160,6 +160,85 @@ async def main():
         check("fps：30→60 で位置と長さが 2 倍になり、元に戻すで戻る", all(r), str(r))
         await q.close()
 
+
+        # ── マーカー：M で付く・概要欄のチャプターになる・fps を変えると同じ時間に付いていく
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const d=await import('/src/panels/DescriptionDialog.tsx');
+          s.setState({playhead:0}); s.addMarker(); s.setState({playhead:450}); const id=s.addMarker(); s.updateMarker(id,{name:'本題'}); s.setState({playhead:2250}); s.addMarker(); s.addMarker();
+          const lines=d.chapterLines(s.getState().project); s.updateVideo({fps:60}); const f=s.getState().project.markers.map(m=>m.frame); s.undo();
+          return [s.getState().project.markers.length===3, lines[1]==='0:15 本題' && lines[2].startsWith('1:15 '), JSON.stringify(f)==='[0,900,4500]']}""")
+        check("マーカー：同じ位置は 1 つ・チャプターの行・fps に付いていく", all(r), str(r))
+        await q.keyboard.press("Escape")
+        await q.evaluate("document.activeElement?.blur()")
+        n0 = await q.evaluate("async()=>(await import('/src/store.ts')).getState().project.markers.length")
+        await q.evaluate("async()=>(await import('/src/store.ts')).setState({playhead:777})")
+        await q.keyboard.press("m"); await q.wait_for_timeout(300)
+        n1 = await q.evaluate("async()=>(await import('/src/store.ts')).getState().project.markers.length")
+        check("マーカー：M キーで再生位置に付く", n1 == n0 + 1, f"{n0}->{n1}")
+        await q.get_by_role("button", name="名前を付ける").first.click(); await q.wait_for_timeout(500)
+        check("マーカー：知らせから「マーカーと概要欄」が開き、貼る文章が出る", await q.locator("dialog[open] .vx-description").count() == 1)
+        check("マーカーの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── 動き：途中の状態を通る・登場は画面の外から・退場で小さくなる（書き出しの式と同じ値）
+        q = await fresh(b, sample=False)
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts'); const t={x:0,y:0,scale:1,opacity:1};
+          const look={rotation:0,fadeIn:0,fadeOut:0,effects:[],anim:{to:{x:100,y:0,scale:1,opacity:1},rotation:0,ease:'linear',mid:{at:0.5,transform:{x:-50,y:40,scale:1.5,opacity:1},rotation:0}}};
+          const a=v.visualAt(t,look,15,60,30,0,[320,180]).transform, m=v.visualAt(t,look,30,60,30,0,[320,180]).transform, e=v.visualAt(t,look,60,60,30,0,[320,180]).transform;
+          const l2={rotation:0,fadeIn:0,fadeOut:0,effects:[],enter:{kind:'slideLeft',frames:10},exit:{kind:'zoom',frames:10}};
+          const s0=v.visualAt(t,l2,0,60,30,0,[320,180]).transform, s5=v.visualAt(t,l2,5,60,30,0,[320,180]).transform, s30=v.visualAt(t,l2,30,60,30,0,[320,180]).transform, s55=v.visualAt(t,l2,55,60,30,0,[320,180]).transform;
+          const near=(x,y)=>Math.abs(x-y)<1e-6;
+          return [near(a.x,-25)&&near(a.y,20)&&near(a.scale,1.25), near(m.x,-50)&&near(m.scale,1.5), near(e.x,100)&&near(e.y,0), near(s0.x,-320), near(s5.x,-80), near(s30.x,0)&&near(s30.scale,1), near(s55.scale,0.75)]}""")
+        check("動き：途中の状態・登場・退場の計算", all(r), str(r))
+        await q.close()
+
+        # ── 入力欄から足すと、止まっている音声合成ソフトを起動してから合成する（YMM4 と同じ）
+        q = await b.new_page(viewport={"width": 1440, "height": 900})
+        q.errs = []
+        q.on("pageerror", lambda e: q.errs.append(str(e)))
+        await q.add_init_script("""window.__launched=[]; window.__mockSynthMs=80;
+          window.__mockEngines=()=>['aivoice','voicepeak','voisona','voicevox'].map(e=>({engine:e,status:window.__launched.includes(e)?{state:'ready',version:'1'}:{state:'notRunning',detail:'起動していません'}}));
+          window.__mockLaunch=e=>{ if(e==='voisona') return false; setTimeout(()=>window.__launched.push(e),1200); return true }""")
+        await q.goto(URL); await q.wait_for_timeout(1500)
+        await q.evaluate("async()=>{const a=await import('/src/actions.ts'); await a.newProjectAction(a.getNotify(), true)}")
+        await q.wait_for_timeout(600)
+        inp = q.get_by_role("textbox", name="新しいセリフ")
+        await inp.click(); await inp.type("自動で起動して合成"); await q.keyboard.press("Enter"); await q.wait_for_timeout(600)
+        mid = await q.evaluate("()=>document.body.innerText.includes('を起動しています')")
+        await q.wait_for_timeout(4500)
+        ls = [l for l in await q.evaluate(LINES) if l["text"] == "自動で起動して合成"]
+        st = await q.evaluate("async()=>{const s=(await import('/src/store.ts')).getState(); return [window.__launched.length, Object.keys(s.synthErrors).length]}")
+        check("自動起動：起動中の知らせが出て、起動後に合成される", mid and len(ls) == 1 and ls[0]["audio"] and st[0] == 1 and st[1] == 0, f"mid={mid} {ls} {st}")
+        check("自動起動の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── 素材のつなぎ直し：見つからない素材を調べ、場所を選ぶと同じフォルダのほかの素材もつながる
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          s.addMediaClips([{path:'/old/a.png',info:{kind:'image',hasAudio:false,durationMs:null,width:10,height:10}},{path:'/old/b.png',info:{kind:'image',hasAudio:false,durationMs:null,width:10,height:10}}]);
+          window.__mockMissing=['/old/a.png','/old/b.png']; const m=await a.checkMedia(); window.__mockRelink='/new/a.png'; const n=await a.relinkMedia('/old/a.png');
+          const srcs=s.getState().project.clips.filter(c=>c.type==='media').map(c=>c.src).filter(x=>x.endsWith('.png')&&x.length<12).sort();
+          return [m.length===2, n===2, JSON.stringify(srcs)==='["/new/a.png","/new/b.png"]', s.getState().missingMedia.length===0]}""")
+        check("素材：見つからない素材を調べて、まとめてつなぎ直せる", all(r), str(r))
+
+        # ── テンプレート：アイテムを取っておいて、再生位置に置ける
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const t=await import('/src/templates.ts'); localStorage.removeItem('voxcut.templates');
+          const id=s.addVisualItem('text'); s.updateClip(id,{text:'見出し',color:'#FF0000'}); const c=s.getState().project.clips.find(x=>x.id===id);
+          const tp=t.saveTemplate('item', t.itemTemplateName(c), c); const tp2=t.saveTemplate('item','見出し',c); s.setState({playhead:3000}); const nid=s.insertItemTemplate(tp.data);
+          const n=s.getState().project.clips.find(x=>x.id===nid);
+          return [tp.name==='見出し', tp2.name==='見出し 2', n.start===3000 && n.text==='見出し' && n.color==='#FF0000' && n.id!==id, JSON.parse(localStorage.getItem('voxcut.templates')).length===2]}""")
+        check("テンプレート：保存・名前の重なり・再生位置に置く", all(r), str(r))
+        for (menu, item, title) in [("ツール", "テンプレート…", "テンプレート"), ("ファイル", "素材の場所と整理…", "素材の場所と整理")]:
+            await q.get_by_role("button", name=menu, exact=True).click(); await q.wait_for_timeout(250)
+            await q.get_by_role("menuitem", name=item).click(); await q.wait_for_timeout(500)
+            check(f"メニュー「{item}」で画面が開く", await q.locator("dialog[open]").get_by_text(title, exact=True).count() >= 1)
+            await q.keyboard.press("Escape"); await q.wait_for_timeout(350)
+        await q.get_by_role("button", name="ファイル", exact=True).click(); await q.wait_for_timeout(250)
+        await q.get_by_role("menuitem", name="この場面を画像で書き出す…").click(); await q.wait_for_timeout(1500)
+        check("画像の書き出し：終わると知らせが出る", await q.evaluate("()=>document.body.innerText.includes('画像を書き出しました')"))
+        check("素材・テンプレートの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
