@@ -107,8 +107,14 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
           }}
         />
       </div>
-      <HStack gap={2} hAlign="end">
-        <Button label="発音に反映" size="sm" variant="secondary" tooltip="発音をセリフと同じにして合成し直す（YMM4 の「変」）" isDisabled={!differs} onClick={apply} />
+      {/* 字幕だけ書き換えて発音がそのままのときは、ずれていることを言葉でも出す（声は古い文のまま） */}
+      <HStack gap={2} hAlign={differs ? 'between' : 'end'} vAlign="center">
+        {differs && (
+          <Text type="supporting" color="accent">
+            字幕と発音が違います（声は発音の文のまま）
+          </Text>
+        )}
+        <Button label="発音に反映" size="sm" variant={differs ? 'primary' : 'secondary'} tooltip="発音をセリフと同じにして合成し直す（YMM4 の「変」）" isDisabled={!differs} onClick={apply} />
       </HStack>
       <TextArea
         label="発音"
@@ -1377,6 +1383,12 @@ function ProjectSummary({project, notify}: {project: Project; notify: Notify}) {
   const pending = lines.filter(c => !c.audio && c.text.trim() && !synthStatus[c.id]).length;
   const failed = lines.filter(c => errors[c.id]).length;
   const v = project.video;
+  // 手当てが要る行（失敗・未合成）を先頭から少しだけ並べ、押すとその行へ
+  const todo = lines
+    .filter(c => errors[c.id] || (!c.audio && c.text.trim()))
+    .sort((x, y) => x.start - y.start)
+    .slice(0, 8);
+  const nameOf = (id: string) => project.characters.find(c => c.id === id)?.name ?? '';
   const row = (k: string, val: React.ReactNode) => (
     <HStack gap={2} hAlign="between" vAlign="center">
       <Text type="supporting">{k}</Text>
@@ -1395,6 +1407,24 @@ function ProjectSummary({project, notify}: {project: Project; notify: Notify}) {
         {pending > 0 && <Button label={`未合成の ${pending} 行を合成`} size="sm" icon={<Icon icon={AudioLines} />} onClick={() => void synthesize(notify)} />}
         <Button label="プロジェクトの設定…" size="sm" variant="secondary" onClick={() => setState({projectSettingsOpen: true})} />
       </HStack>
+      {todo.length > 0 && (
+        <VStack gap={1}>
+          <Text type="label">手当てが要る行</Text>
+          {todo.map(c => (
+            <button
+              key={c.id}
+              type="button"
+              className="vx-todo-row"
+              data-error={errors[c.id] ? true : undefined}
+              onClick={() => setState(s => ({selectedClipId: c.id, playhead: c.start, revealSeq: s.revealSeq + 1}))}>
+              <span className="vx-todo-tag">{errors[c.id] ? '失敗' : synthStatus[c.id] ? '合成中' : '未合成'}</span>
+              <span className="vx-todo-text">
+                {nameOf(c.characterId)}：{c.text}
+              </span>
+            </button>
+          ))}
+        </VStack>
+      )}
     </Section>
   );
 }
