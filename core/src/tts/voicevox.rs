@@ -34,12 +34,49 @@ impl Default for VoicevoxConfig {
 pub struct VoicevoxEngine {
     cfg: VoicevoxConfig,
     agent: ureq::Agent,
+    /// 自分で起動したエンジン（アプリを閉じるときに終える）
+    child: std::sync::Mutex<Option<std::process::Child>>,
+}
+
+impl Drop for VoicevoxEngine {
+    fn drop(&mut self) {
+        self.stop_child();
+    }
+}
+
+/// VOICEVOX のエンジン（窓の出ない run.exe）と、本体の置き場所の候補。
+/// 既定のポート（50021）以外は AivisSpeech など別のソフトなので、そちらを先に探す
+fn launch_candidates(port: u16) -> (Vec<Option<std::path::PathBuf>>, Vec<Option<std::path::PathBuf>>) {
+    use super::under_env;
+    let apps: &[&str] = if port == 10101 { &["AivisSpeech", "VOICEVOX"] } else { &["VOICEVOX", "AivisSpeech"] };
+    let mut engines = vec![];
+    let mut editors = vec![];
+    for app in apps {
+        let engine_dir = if *app == "AivisSpeech" { "AivisSpeech-Engine" } else { "vv-engine" };
+        for (var, base) in [("LOCALAPPDATA", "Programs"), ("ProgramFiles", ""), ("ProgramW6432", "")] {
+            let root = if base.is_empty() { app.to_string() } else { format!("{base}\\{app}") };
+            engines.push(under_env(var, &format!("{root}\\{engine_dir}\\run.exe")));
+            engines.push(under_env(var, &format!("{root}\\run.exe")));
+            editors.push(under_env(var, &format!("{root}\\{app}.exe")));
+        }
+        for res in ["Resources", "MacOS"] {
+            engines.push(Some(std::path::PathBuf::from(format!("/Applications/{app}.app/Contents/{res}/{engine_dir}/run"))));
+        }
+    }
+    (engines, editors)
 }
 
 impl VoicevoxEngine {
     pub fn new(cfg: VoicevoxConfig) -> Self {
         let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(120)).build();
-        Self { cfg, agent }
+        Self { cfg, agent, child: Default::default() }
+    }
+
+    fn stop_child(&self) {
+        if let Some(mut c) = self.child.lock().ok().and_then(|mut g| g.take()) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -126,6 +163,41 @@ impl TtsEngine for VoicevoxEngine {
 
     fn max_concurrency(&self) -> usize {
         2
+    }
+
+    fn launch(&self) -> Result<bool> {
+        if !super::is_local_host(&self.cfg.host) {
+            return Ok(false);
+        }
+        let mut guard = self.child.lock().map_err(|_| Error::Other("VOICEVOX の起動状態を読めません".into()))?;
+        // さっき起動したものがまだ動いていれば、立ち上がるのを待つだけ
+        if let Some(c) = guard.as_mut() {
+            if matches!(c.try_wait(), Ok(None)) {
+                return Ok(true);
+            }
+        }
+        let (engines, editors) = launch_candidates(self.cfg.port);
+        // 窓の出ないエンジンだけを起動する（速く立ち上がり、画面のじゃまをしない）
+        if let Some(exe) = super::first_existing(engines) {
+            let mut cmd = super::hidden_command(&exe);
+            cmd.args(["--host", "127.0.0.1", "--port", &self.cfg.port.to_string()]);
+            if let Some(dir) = exe.parent() {
+                cmd.current_dir(dir);
+            }
+            cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            *guard = Some(cmd.spawn()?);
+            return Ok(true);
+        }
+        // エンジンだけが見つからなければ、本体を起動する（こちらは閉じるのを利用者に任せる）
+        if let Some(exe) = super::first_existing(editors) {
+            std::process::Command::new(&exe).spawn()?;
+            return Ok(true);
+        }
+        Ok(super::open_mac_app(if self.cfg.port == 10101 { "AivisSpeech" } else { "VOICEVOX" }))
+    }
+
+    fn shutdown(&self) {
+        self.stop_child();
     }
 
     fn status(&self) -> EngineStatus {

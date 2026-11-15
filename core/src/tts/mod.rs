@@ -54,6 +54,33 @@ pub trait TtsEngine: Send + Sync {
     fn max_concurrency(&self) -> usize {
         1
     }
+    /// ソフトが起動していなければ起動を始める（YMM4 と同じく、セリフを足したときに自動で立ち上げる）。
+    /// 起動を始めたら true。場所が分からない・起動の要らないソフトは false。使えるようになるまでは status で待つ
+    fn launch(&self) -> Result<bool> {
+        Ok(false)
+    }
+    /// 自分で起動したソフトを終える（アプリを閉じるとき）
+    fn shutdown(&self) {}
+}
+
+/// このPCの中（127.0.0.1 / localhost）か。よそのPCのソフトは起動できない
+pub(crate) fn is_local_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+}
+
+/// 環境変数のフォルダ（%LOCALAPPDATA% など）の下の場所
+pub(crate) fn under_env(var: &str, rest: &str) -> Option<PathBuf> {
+    std::env::var_os(var).map(|d| PathBuf::from(d).join(rest))
+}
+
+/// 候補のうち、最初に見つかったファイル
+pub(crate) fn first_existing(candidates: impl IntoIterator<Item = Option<PathBuf>>) -> Option<PathBuf> {
+    candidates.into_iter().flatten().find(|p| p.exists())
+}
+
+/// macOS：アプリを名前で開く（入っていなければ false）
+pub(crate) fn open_mac_app(name: &str) -> bool {
+    cfg!(target_os = "macos") && std::process::Command::new("open").args(["-g", "-a", name]).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// ユーザー設定（設定画面で変えられる）

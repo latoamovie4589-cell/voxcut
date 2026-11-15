@@ -142,6 +142,23 @@ impl TtsEngine for VoisonaEngine {
         2
     }
 
+    fn launch(&self) -> Result<bool> {
+        // メールアドレスと API パスワードがまだなら、起動しても使えない
+        if self.cfg.user.is_empty() || !super::is_local_host(&self.cfg.host) {
+            return Ok(false);
+        }
+        let exe = super::first_existing(
+            [("ProgramFiles", "Techno-Speech\\VoiSona Talk\\VoiSona Talk.exe"), ("ProgramW6432", "Techno-Speech\\VoiSona Talk\\VoiSona Talk.exe"), ("LOCALAPPDATA", "Programs\\VoiSona Talk\\VoiSona Talk.exe")]
+                .into_iter()
+                .map(|(var, rest)| super::under_env(var, rest)),
+        );
+        if let Some(exe) = exe {
+            std::process::Command::new(&exe).spawn()?;
+            return Ok(true);
+        }
+        Ok(super::open_mac_app("VoiSona Talk"))
+    }
+
     fn status(&self) -> EngineStatus {
         if self.cfg.user.is_empty() {
             return EngineStatus::NotFound { detail: "設定で VoiSona のメールアドレスと API パスワードを入力してください".into() };
