@@ -15,8 +15,8 @@
   place-items: center;
   padding: 6px;
   overflow: hidden;
-  /* ダークでは黒い映像と見分けられるよう、周りを少し明るい灰色に */
-  background: light-dark(var(--color-background-muted), #2c2c2e);
+  /* 映像の周りは「舞台」：パネルより一段沈んだ色にして、映像を浮かせる */
+  background: light-dark(#e6e3ef, #121118);
 }
 /* 倍率を上げたときははみ出した分をスクロールで見る */
 .vx-preview[data-zoomed] {
@@ -26,7 +26,9 @@
 .vx-preview-canvas {
   display: block;
   /* ダークでも黒い映像と周りの地の境目が分かるよう、ダークでは少し明るい縁を付ける */
-  box-shadow: 0 0 0 1px light-dark(var(--color-border), rgb(255 255 255 / 0.22));
+  box-shadow:
+    0 0 0 1px light-dark(rgb(52 46 84 / 0.18), rgb(255 255 255 / 0.14)),
+    0 10px 30px light-dark(rgb(52 46 84 / 0.18), rgb(0 0 0 / 0.5));
   outline: none;
 }
 .vx-preview-canvas:focus-visible {
@@ -95,4 +97,12 @@
   color: rgb(255 255 255 / 0.86);
   font-size: 14px;
   text-align: center;
+}
+
+.vx-pc-now {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--color-text-primary);
 }

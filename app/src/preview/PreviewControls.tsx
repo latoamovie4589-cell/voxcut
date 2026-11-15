@@ -103,9 +103,8 @@ export function PreviewControls({fullscreenTarget}: {fullscreenTarget: RefObject
       </div>
 
       <div className="vx-pc-time" aria-live="off">
-        <Text type="code" hasTabularNumbers>
-          {framesToTimecode(playhead, fps)}
-        </Text>
+        {/* いまの時刻は、この画面でいちばん大事な数字。等幅ではなく画面の書体で、数字の幅だけそろえて大きめに */}
+        <span className="vx-pc-now">{framesToTimecode(playhead, fps)}</span>
         {!small && (
           <Text type="supporting" hasTabularNumbers>
             / {framesToTimecode(projectDuration(project), fps)}
