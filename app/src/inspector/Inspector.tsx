@@ -6,7 +6,6 @@ import {Collapsible} from '@astryxdesign/core/Collapsible';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Divider} from '@astryxdesign/core/Divider';
-import {EmptyState} from '@astryxdesign/core/EmptyState';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
@@ -108,12 +107,12 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         />
       </div>
       {/* 字幕だけ書き換えて発音がそのままのときは、ずれていることを言葉でも出す（声は古い文のまま） */}
-      <HStack gap={2} hAlign={differs ? 'between' : 'end'} vAlign="center">
-        {differs && (
-          <Text type="supporting" color="accent">
-            字幕と発音が違います（声は発音の文のまま）
-          </Text>
-        )}
+      {differs && (
+        <Text type="supporting" color="accent">
+          字幕と発音が違います（声は発音の文のまま）。そろえるなら「発音に反映」
+        </Text>
+      )}
+      <HStack gap={2} hAlign="start">
         <Button label="発音に反映" size="sm" variant={differs ? 'primary' : 'secondary'} tooltip="発音をセリフと同じにして合成し直す（YMM4 の「変」）" isDisabled={!differs} onClick={apply} />
       </HStack>
       <TextArea
@@ -1364,13 +1363,12 @@ export function Inspector({notify}: {notify: Notify}) {
   if (ch) return <CharacterInspector key={ch.id} character={ch} />;
   return (
     <VStack padding={4} gap={4}>
-      <EmptyState
-        isCompact
-        icon={<Icon icon={MousePointerClick} size="lg" color="secondary" />}
-        title="何も選ばれていません"
-        description="タイムラインのアイテムか、「キャラクター」タブの人物を選ぶと設定が出ます"
-      />
+      {/* 何も選んでいないときは、プロジェクトのあらましを主役に。選び方の案内は 1 行だけ */}
       <ProjectSummary project={project} notify={notify} />
+      <HStack gap={2} vAlign="center">
+        <Icon icon={MousePointerClick} size="sm" color="secondary" />
+        <Text type="supporting">タイムラインのアイテムか、「キャラクター」タブの人物を選ぶと、ここに設定が出ます</Text>
+      </HStack>
     </VStack>
   );
 }
@@ -1387,7 +1385,7 @@ function ProjectSummary({project, notify}: {project: Project; notify: Notify}) {
   const todo = lines
     .filter(c => errors[c.id] || (!c.audio && c.text.trim()))
     .sort((x, y) => x.start - y.start)
-    .slice(0, 8);
+    .slice(0, 30);
   const nameOf = (id: string) => project.characters.find(c => c.id === id)?.name ?? '';
   const row = (k: string, val: React.ReactNode) => (
     <HStack gap={2} hAlign="between" vAlign="center">
@@ -1409,7 +1407,7 @@ function ProjectSummary({project, notify}: {project: Project; notify: Notify}) {
       </HStack>
       {todo.length > 0 && (
         <VStack gap={1}>
-          <Text type="label">手当てが要る行</Text>
+          <Text type="label">手当てが要る行（押すとその行へ）</Text>
           {todo.map(c => (
             <button
               key={c.id}

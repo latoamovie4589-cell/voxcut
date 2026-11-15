@@ -36,7 +36,8 @@ export const EMOTION_LABEL: Record<string, string> = {
   angry2: '怒り（強）',
 };
 
-const fmtPitch = (v: number) => (Math.abs(v) < 0.05 ? '標準' : `${v > 0 ? '+' : ''}${v.toFixed(1)} 半音`);
+// 0 のときも数で出す（ほかの値と同じ幅になり、スライダーの右端がそろう）
+const fmtPitch = (v: number) => (Math.abs(v) < 0.05 ? '±0.0 半音' : `${v > 0 ? '+' : ''}${v.toFixed(1)} 半音`);
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 /** 感情（VOICEPEAK の感情、VoiSona のスタイル）。話者が対応していなければ出さない */
