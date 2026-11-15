@@ -766,8 +766,8 @@ export function Preview() {
         {isEmpty && (
           <div className="vx-preview-empty" aria-hidden>
             <svg viewBox="0 0 20 20" width="40" height="40">
-              <rect width="20" height="20" rx="5" fill="currentColor" opacity="0.18" />
-              <path d="M5 8v4M8 5.5v9M11 7v6M14 4.5v11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" opacity="0.55" />
+              <rect width="20" height="20" rx="5" fill="#7A5FEA" />
+              <path d="M5 8v4M8 5.5v9M11 7v6M14 4.5v11" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
             <span>セリフを入れると、ここに字幕と立ち絵が出ます</span>
           </div>
