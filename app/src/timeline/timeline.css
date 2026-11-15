@@ -173,7 +173,6 @@
   box-shadow:
     0 0 0 1px var(--color-border),
     0 8px 28px rgb(0 0 0 / 0.16);
-  animation: vx-pop-in 160ms ease-out;
 }
 .vx-start-top {
   display: flex;
@@ -186,6 +185,22 @@
   margin: 0;
   font-size: 15px;
   font-weight: 700;
+}
+/* 手順の名前は言葉の途中で折り返さない（「打っ／て」のように切れないように） */
+.vx-start-title {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+/* タイムラインが低いときは説明を省き、手順の名前と最初のボタンだけ（文の途中で切らない） */
+.vx-start[data-short] {
+  padding-block: 10px;
+}
+.vx-start[data-short] .vx-start-top {
+  margin-bottom: 6px;
+}
+.vx-start[data-short] .vx-start-step:not(:first-child) .vx-start-body,
+.vx-start[data-short] .vx-start-step[data-done] .vx-start-body {
+  display: none;
 }
 /* 狭いときは説明を省き、手順の名前だけ並べる */
 @container (max-width: 560px) {
@@ -249,6 +264,22 @@
   font-size: 12px;
   color: var(--color-text-secondary);
   line-height: 1.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx-start {
+    animation: none;
+  }
+}
+
+/* 「最初の 3 手順」は少し下からふわっと出す（位置は margin で決めているので、動きは translate で） */
+.vx-start {
+  animation: vx-start-in 180ms ease-out;
+}
+@keyframes vx-start-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .vx-start {

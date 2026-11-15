@@ -302,7 +302,7 @@ function TrackHeader({track}: {track: Track}) {
       </div>
       <HStack gap={0} vAlign="center">
         <IconButton
-          label={`${label}を表示`}
+          label={`${label} を表示`}
           tooltip={track.hidden ? 'レイヤーを表示する（見出しをホイールクリックでも）' : 'レイヤーを隠す（映像も音も出さない。見出しをホイールクリックでも）'}
           variant="ghost"
           size="sm"
@@ -314,7 +314,7 @@ function TrackHeader({track}: {track: Track}) {
           type="button"
           className="vx-track-toggle"
           aria-pressed={track.muted}
-          aria-label={`${label}をミュート`}
+          aria-label={`${label} をミュート`}
           title={track.muted ? 'ミュートを解除' : 'ミュート（音だけ止める）'}
           onClick={() => updateTrack(track.id, {muted: !track.muted})}>
           M
@@ -324,13 +324,13 @@ function TrackHeader({track}: {track: Track}) {
           className="vx-track-toggle"
           data-solo
           aria-pressed={!!track.solo}
-          aria-label={`${label}をソロ`}
+          aria-label={`${label} をソロ`}
           title={track.solo ? 'ソロを解除' : 'ソロ（このレイヤーの音だけ鳴らす）'}
           onClick={() => updateTrack(track.id, {solo: !track.solo})}>
           S
         </button>
         <IconButton
-          label={`${label}をロック`}
+          label={`${label} をロック`}
           tooltip={track.locked ? 'ロックを外す' : 'レイヤーをロック（動かせなくする）'}
           variant="ghost"
           size="sm"
@@ -371,6 +371,16 @@ function TrackHeader({track}: {track: Track}) {
  */
 function StartCard() {
   const chars = useStore(s => s.project?.characters.length ?? 0);
+  // タイムラインが低い（720p など）ときは説明文を省いた短い形にする（文の途中で切れないように）
+  const ref = useRef<HTMLElement>(null);
+  const [short, setShort] = useState(false);
+  useLayoutEffect(() => {
+    const host = ref.current?.parentElement;
+    if (!host) return;
+    const ro = new ResizeObserver(() => setShort(host.clientHeight < 200));
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
   const step = (done: boolean, n: number, title: string, body: React.ReactNode) => (
     <li className="vx-start-step" data-done={done || undefined}>
       <span className="vx-start-num" aria-hidden>
@@ -386,7 +396,7 @@ function StartCard() {
     </li>
   );
   return (
-    <section className="vx-start" aria-label="最初の 3 手順">
+    <section ref={ref} className="vx-start" data-short={short || undefined} aria-label="最初の 3 手順">
       <div className="vx-start-top">
         <h2 className="vx-start-head">最初の 3 手順</h2>
         <Button label="サンプルを開いて見る" size="sm" variant="ghost" onClick={() => void import('../actions').then(m => m.newProjectAction(m.getNotify(), true))} />
@@ -697,10 +707,22 @@ export function Timeline() {
         ctx.roundRect(x, y, cw, ch, 3);
         ctx.save();
         const hovered = hoverRef.current?.clipId === c.id && !dragRef.current;
-        ctx.globalAlpha *= isSel ? 0.46 : (unsynth ? 0.1 : 0.2) + (hovered ? 0.12 : 0);
+        // 立ち絵の帯はセリフより薄く塗り、左端に同じ色の太い線（同じキャラクター色でもセリフと見分けられるように）
+        const band = c.type === 'portrait';
+        ctx.globalAlpha *= isSel ? 0.46 : (unsynth ? 0.1 : band ? 0.1 : 0.22) + (hovered ? 0.12 : 0);
         ctx.fillStyle = color;
         ctx.fill();
         ctx.restore();
+        if (band) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(x, y, cw, ch, 3);
+          ctx.clip();
+          ctx.globalAlpha *= 0.85;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, 3, ch);
+          ctx.restore();
+        }
         ctx.lineWidth = 1;
         ctx.strokeStyle = failed || forbiddenHere ? pal.error : overlapped ? pal.warn : color;
         if (overlapped || forbiddenHere || (hovered && !isSel)) ctx.lineWidth = 2;
@@ -767,7 +789,7 @@ export function Timeline() {
             const norm = peakMax(pk);
             ctx.fillStyle = color;
             // 名前の文字と重なっても読めるよう、波形は薄く（文字には縁取りも付ける）
-            ctx.globalAlpha *= tall ? 0.55 : 0.35;
+            ctx.globalAlpha *= tall ? 0.75 : 0.5;
             for (let px = Math.max(0, -x); px < Math.min(upTo, w - x); px++) {
               // 再生開始位置で飛ばした頭は描かない
               const i = Math.floor((px / z + startOffsetOf(c)) * perFrame) * 2;
@@ -788,6 +810,8 @@ export function Timeline() {
         if (st === 'running') badges.push({text: '合成中', color: pal.accent});
         else if (st === 'queued') badges.push({text: '合成待ち', color: pal.text2});
         else if (unsynth && !failed) badges.push({text: '未合成', color: pal.text2});
+        // 字幕だけ書き換えて、発音（声）が古い文のまま
+        if (c.type === 'voice' && c.subtitle !== null && c.subtitle !== c.text) badges.push({text: '字幕≠発音', color: pal.warn, ink: pal.text});
         if (c.type === 'media' && c.mediaKind === 'video') {
           const px = s.proxies[c.src];
           if (px && !px.url && !px.error)
@@ -1078,17 +1102,44 @@ export function Timeline() {
   }, [anyRunning, draw]);
   useEffect(() => onPeaks(draw), [draw]);
 
-  // 再生中は再生位置が見えるようにスクロールを追従
+  // 横スクロールを短く滑らせる（自前の rAF。送り中に再生位置が進んでも出し直さず、行き先だけ差し替える）。
+  // smooth の scrollTo を毎コマ出し直すと打ち消し合って止まって見えるため
+  const glideRef = useRef<{raf: number; from: number; to: number; t0: number} | null>(null);
+  const glideTo = useCallback((left: number, ms = 220) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const to = Math.max(0, Math.min(left, el.scrollWidth - el.clientWidth));
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      el.scrollLeft = to;
+      return;
+    }
+    const g = glideRef.current;
+    if (g) {
+      // 送り中なら行き先だけ更新（今の位置から続ける）
+      g.to = to;
+      return;
+    }
+    const st = {raf: 0, from: el.scrollLeft, to, t0: performance.now()};
+    glideRef.current = st;
+    const step = (now: number) => {
+      const k = Math.min(1, (now - st.t0) / ms);
+      el.scrollLeft = st.from + (st.to - st.from) * (1 - Math.pow(1 - k, 3));
+      if (k < 1) st.raf = requestAnimationFrame(step);
+      else glideRef.current = null;
+    };
+    st.raf = requestAnimationFrame(step);
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(glideRef.current?.raf ?? 0), []);
+
+  // 再生中は再生位置が見えるようにスクロールを追従：端まで来たらページごと送るが、跳ばずに短く滑らせる
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !getState().isPlaying) return;
     const x = playhead * zoom;
-    // 端まで来たらページごと送るが、跳ばずに短く滑らせる（再生位置を見失わないように）
-    if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - 40) {
-      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      el.scrollTo({left: Math.max(0, x - 80), behavior: reduce ? 'auto' : 'smooth'});
-    }
-  }, [playhead, zoom]);
+    const g = glideRef.current;
+    const left = g ? g.to : el.scrollLeft;
+    if (x < left || x > left + el.clientWidth - 40) glideTo(x - 80);
+  }, [playhead, zoom, glideTo]);
 
   // 選択を見せる：追加した行・キーボードで選んだクリップ・台本から選んだ行が画面外ならスクロール
   useEffect(() => {
@@ -1099,7 +1150,12 @@ export function Timeline() {
     const z = getState().zoom;
     const x0 = c.start * z;
     const x1 = (c.start + c.duration) * z;
-    if (x0 < el.scrollLeft || x1 > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.max(0, x0 - el.clientWidth * 0.25);
+    // 近ければ滑らせ、遠ければすぐ（長く流れると目が追えないため）
+    if (x0 < el.scrollLeft || x1 > el.scrollLeft + el.clientWidth) {
+      const to = Math.max(0, x0 - el.clientWidth * 0.25);
+      if (Math.abs(to - el.scrollLeft) < el.clientWidth * 1.5) glideTo(to, 200);
+      else el.scrollLeft = to;
+    }
     const {tops, rows} = trackTops(p);
     const ti = rows.findIndex(t => t.id === c.trackId);
     const ty = tops[ti];
@@ -1175,6 +1231,17 @@ export function Timeline() {
     });
     requestAnimationFrame(() => (el.scrollLeft = 0));
   };
+
+  // プロジェクトを開いたら、全体が入りきらないときだけ全体が見える拡大率にする（短い動画を無理に拡大はしない）
+  const openSeq = useStore(s => s.openSeq);
+  useEffect(() => {
+    if (!openSeq) return;
+    const el = scrollRef.current;
+    const p = getState().project;
+    if (!el || !p) return;
+    if (projectDuration(p) * getState().zoom > el.clientWidth - 24) zoomToFit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSeq]);
 
   const hitTest = (clientX: number, clientY: number) => {
     const el = scrollRef.current!;
@@ -1531,10 +1598,8 @@ export function Timeline() {
     const h = hitTest(e.clientX, e.clientY);
     if (h.ruler) return;
     if (!h.clip) {
-      setState({
-        selectedClipId: null,
-        playhead: Math.max(0, Math.round(h.frame)),
-      });
+      // 右クリックはメニューを開くだけ（再生位置は動かさない。貼り付けはいつもどおり再生位置へ）
+      setState({selectedClipId: null});
       return;
     }
     const s = getState();
