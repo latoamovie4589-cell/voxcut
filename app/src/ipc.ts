@@ -303,7 +303,7 @@ function mockProject(): Project {
   const lines: [string, string][] = [
     ['ch_a', 'こんにちは。VoxCut のサンプルです。'],
     ['ch_b', 'セリフを入力すると、音声と字幕が自動で並びます。'],
-    ['ch_a', '声は A.I.VOICE、VOICEPEAK、VoiSona Talk から選べます。'],
+    ['ch_a', '声は A.I.VOICE、VOICEPEAK、VoiSona Talk、VOICEVOX から選べます。'],
   ];
   return {
     version: 4,

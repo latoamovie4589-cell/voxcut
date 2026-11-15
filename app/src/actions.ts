@@ -492,7 +492,7 @@ async function loadProject(project: Project, path: string | null, dirty: boolean
   // プロジェクトのフォルダ外にある素材・立ち絵もプレビューで読めるようにする
   const paths = absolutePaths(project);
   if (paths.length) await a.allowPaths(paths);
-  setState({project, projectPath: path, dirty, past: [], future: [], selectedClipId: null, playhead: 0, proxies: {}, media: {}, synthErrors: {}});
+  setState(s => ({project, projectPath: path, dirty, past: [], future: [], selectedClipId: null, playhead: 0, proxies: {}, media: {}, synthErrors: {}, openSeq: s.openSeq + 1}));
   ensureAllProxies();
 }
 

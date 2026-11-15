@@ -116,6 +116,8 @@ export interface State {
   projectSettingsOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
+  /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
+  openSeq: number;
   /** 元に戻す・やり直すをしたときに少しだけ出す知らせ（何が変わったか） */
   historyFlash: {text: string; seq: number} | null;
   /** タイムラインのレイヤーの高さ（この PC に覚える） */
@@ -179,6 +181,7 @@ let state: State = {
   settingsOpen: false,
   projectSettingsOpen: false,
   unsavedAsk: false,
+  openSeq: 0,
   historyFlash: null,
   layerSize: readLayerSize(),
   recent: [],
@@ -854,21 +857,23 @@ export function addLines(items: {characterId: string; text: string}[]): string[]
  * 増えた行は前の行のすぐ後ろへ入れて後ろを押し出し、消えた行は消して詰める。
  * 書き直した行と増えた行の ID を返す（合成し直す対象）
  */
-export function applyScript(items: {characterId: string; text: string}[], mergeKey = 'script-doc'): string[] {
+export function applyScript(items: {characterId: string; text: string; hold?: boolean}[], mergeKey = 'script-doc'): string[] {
   const touched: string[] = [];
   commit(p0 => {
     const old = p0.clips.filter((c): c is VoiceClip => c.type === 'voice').sort((a, b) => a.start - b.start || a.trackId.localeCompare(b.trackId));
     const k = (ch: string, t: string) => `${ch}\u0000${t}`;
     const a = old.map(c => k(c.characterId, c.text));
     const b = items.map(x => k(x.characterId, x.text));
+    // 保留の行（知らない名前）は、文が同じ今の行と同じものとみなす（名前を打ち直している途中でも、その行を消さない）
+    const same = (i: number, j: number) => (items[j].hold ? old[i].text === items[j].text : a[i] === b[j]);
     // 最長共通部分列で「変わらない行」を決める
     const n = a.length;
     const m = b.length;
     const dp: Uint32Array[] = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
-    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = same(i, j) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     const pairs: [number, number][] = [];
     for (let i = 0, j = 0; i < n && j < m;) {
-      if (a[i] === b[j]) {
+      if (same(i, j)) {
         pairs.push([i, j]);
         i++;
         j++;
@@ -887,11 +892,13 @@ export function applyScript(items: {characterId: string; text: string}[], mergeK
       const ns = items.slice(pj, j);
       const both = Math.min(os.length, ns.length);
       for (let x = 0; x < both; x++) {
-        updates.set(os[x].id, ns[x]);
+        // 保留の行と組になった今の行は、そのまま残す
+        if (!ns[x].hold) updates.set(os[x].id, ns[x]);
         anchor = os[x].id;
       }
       for (const c of os.slice(both)) del.add(c.id);
-      if (ns.length > both) inserts.push({after: anchor, items: ns.slice(both)});
+      const add = ns.slice(both).filter(x => !x.hold);
+      if (add.length) inserts.push({after: anchor, items: add});
       if (i < n) anchor = old[i].id;
       pi = i + 1;
       pj = j + 1;

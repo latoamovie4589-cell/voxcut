@@ -12,7 +12,7 @@ import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {Section} from '@astryxdesign/core/Section';
 import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
-import {AudioLines, Redo2, Save, Settings, TriangleAlert, Undo2, Upload, UserPen} from 'lucide-react';
+import {AudioWaveform, AudioLines, Redo2, Save, TriangleAlert, Undo2, Upload, UserPen} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {
   copySelection,
@@ -71,6 +71,32 @@ function SynthStatus() {
   const failed = Object.keys(errors);
   const busy = useStore(s => s.busy);
   const run = useStore(s => s.synthRun);
+  // 終わったら、帯を最後まで伸ばして「合成 n/n」を少し見せてから消す（途中で急に消えないように）
+  const lastRun = useRef<typeof run>(null);
+  const [finished, setFinished] = useState<{total: number} | null>(null);
+  useEffect(() => {
+    if (run) {
+      lastRun.current = run;
+      setFinished(null);
+      return;
+    }
+    const was = lastRun.current;
+    lastRun.current = null;
+    if (!was) return;
+    setFinished({total: was.total});
+    const t = window.setTimeout(() => setFinished(null), 900);
+    return () => window.clearTimeout(t);
+  }, [run]);
+  if (!run && finished) {
+    return (
+      <span className="vx-synth-run" data-finished role="status" aria-live="polite">
+        <span className="vx-synth-run-bar" style={{width: '100%'}} aria-hidden />
+        <span className="vx-synth-run-text">
+          合成 {finished.total}/{finished.total}・完了
+        </span>
+      </span>
+    );
+  }
   // 合成中：何行のうち何行・残りの目安・取り消し（合成中も編集はそのまま続けられる）
   if (run) {
     const per = run.done ? run.workMs / run.done : 0;
@@ -100,7 +126,7 @@ function SynthStatus() {
             {eta !== null ? `・残り約 ${eta < 60 ? `${eta} 秒` : `${Math.round(eta / 60)} 分`}` : '・残りを計算中'}
           </span>
         </span>
-        <Button label="取り消し" size="sm" variant="ghost" tooltip="まだ始めていない行の合成をやめます（合成済みの行はそのまま）" onClick={cancelSynthesis} />
+        <Button label="合成を中止" size="sm" variant="secondary" tooltip="まだ始めていない行の合成をやめます（合成済みの行はそのまま）" onClick={cancelSynthesis} />
       </HStack>
     );
   }
@@ -309,6 +335,8 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
       </DropdownMenu>
       <DropdownMenu button={menu('ヘルプ')} hasChevron={false} menuWidth={240}>
         <DropdownMenuItem label="キーボードショートカット" endContent={key('?')} onClick={() => setState({shortcutsOpen: true})} />
+        <DropdownMenuDivider />
+        <DropdownMenuItem label="VoxCut について" onClick={() => notify(`VoxCut ${__APP_VERSION__}　A.I.VOICE・VOICEPEAK・VoiSona Talk・VOICEVOX と連携する動画編集ソフト`, 'info')} />
       </DropdownMenu>
     </HStack>
   );
@@ -383,14 +411,19 @@ function Header({notify, openSettings, openExport}: {notify: Notify; openSetting
               onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))}
             />
           )}
-          <IconButton label="音声合成ソフトの設定" tooltip="音声合成ソフトの設定" variant="ghost" size="sm" icon={<Icon icon={Settings} />} onClick={openSettings} />
+          {/* 歯車だけだと「プロジェクトの設定」に見えるので、声の印と名前を付ける（狭いときは印だけ） */}
+          {narrow ? (
+            <IconButton label="音声合成ソフト" tooltip="音声合成ソフトの設定（つなぎ先・話者の一覧）" variant="ghost" size="sm" icon={<Icon icon={AudioWaveform} />} onClick={openSettings} />
+          ) : (
+            <Button label="音声合成ソフト" tooltip="音声合成ソフトの設定（つなぎ先・話者の一覧）" variant="ghost" size="sm" icon={<Icon icon={AudioWaveform} />} onClick={openSettings} />
+          )}
           <div className="vx-toolbar-sep" aria-hidden />
           <span className="vx-project-name">
             <Text type="label" maxLines={1}>
               {project?.name ?? 'VoxCut'}
             </Text>
           </span>
-          {dirty && <Text type="supporting">未保存</Text>}
+          {dirty && <span className="vx-unsaved">未保存</span>}
         </HStack>
 
         <HStack gap={2} vAlign="center">
