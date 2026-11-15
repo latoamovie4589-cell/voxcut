@@ -1,4 +1,4 @@
-/* パネルの配置。枠と枠の間はすき間（背景色）で区切り、角は丸めない */
+/* パネルの配置。机（body の色）の上に、角の丸いパネルを 6px のすき間で並べる。枠線は引かず、面の明るさの差で分ける */
 .vx-dock {
   position: relative;
   box-sizing: border-box;
@@ -7,7 +7,7 @@
   display: flex;
   min-width: 0;
   min-height: 0;
-  padding: 3px;
+  padding: 0 6px 6px;
   background: var(--color-background-body);
 }
 .vx-dock[data-dragging] {
@@ -28,7 +28,7 @@
   min-height: 0;
 }
 
-/* 境目：見た目は 3px のすき間、つかめる幅は 9px */
+/* 境目：見た目は 6px のすき間、つかめる幅は 12px。つかむと真ん中に細い線が出る */
 .vx-dock-splitter {
   position: relative;
   flex: none;
@@ -36,11 +36,11 @@
   z-index: 1;
 }
 .vx-dock-splitter[data-dir='row'] {
-  width: 3px;
+  width: 6px;
   cursor: col-resize;
 }
 .vx-dock-splitter[data-dir='column'] {
-  height: 3px;
+  height: 6px;
   cursor: row-resize;
 }
 .vx-dock-splitter::before {
@@ -51,7 +51,12 @@
 .vx-dock-splitter:hover,
 .vx-dock-splitter:focus-visible,
 .vx-dock-splitter:active {
-  background: var(--color-accent);
+  background: linear-gradient(var(--color-accent), var(--color-accent)) center / 2px 100% no-repeat;
+}
+.vx-dock-splitter[data-dir='column']:hover,
+.vx-dock-splitter[data-dir='column']:focus-visible,
+.vx-dock-splitter[data-dir='column']:active {
+  background-size: 100% 2px;
 }
 
 .vx-dock-group {
@@ -61,7 +66,12 @@
   min-width: 0;
   min-height: 0;
   background: var(--color-background-surface);
-  box-shadow: inset 0 0 0 1px var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  /* ライトでは白いパネルが机から浮いて見えるよう、ごく薄い縁と影 */
+  box-shadow:
+    0 0 0 1px light-dark(rgb(52 46 84 / 0.08), rgb(255 255 255 / 0.04)),
+    0 1px 2px light-dark(rgb(52 46 84 / 0.06), transparent);
 }
 /* 最後に触った枠：全体を囲まず、見出しの上の辺に細い紫の線だけ（目立ちすぎないように） */
 .vx-dock-group[data-focused] > .vx-dock-header {
