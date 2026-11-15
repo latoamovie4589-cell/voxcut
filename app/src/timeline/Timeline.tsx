@@ -790,14 +790,26 @@ export function Timeline() {
             ctx.fillStyle = color;
             // 名前の文字と重なっても読めるよう、波形は薄く（文字には縁取りも付ける）
             ctx.globalAlpha *= tall ? 0.75 : 0.5;
-            for (let px = Math.max(0, -x); px < Math.min(upTo, w - x); px++) {
-              // 再生開始位置で飛ばした頭は描かない
-              const i = Math.floor((px / z + startOffsetOf(c)) * perFrame) * 2;
-              if (i + 1 >= pk.length) break;
-              const lo = (pk[i] / norm) * amp;
-              const hi = (pk[i + 1] / norm) * amp;
-              ctx.fillRect(x + px, mid - hi, 1, Math.max(1, hi - lo));
+            // 波形は「声の棒」で描く（2px の棒を 1px 空けて並べる。アプリの印と同じ形で、声のアイテムだとひと目で分かる）
+            const STEP = 3;
+            ctx.beginPath();
+            for (let px = Math.max(0, Math.ceil(-x / STEP) * STEP); px < Math.min(upTo, w - x); px += STEP) {
+              // 再生開始位置で飛ばした頭は描かない。棒 1 本ぶん（3px）の中でいちばん大きい山を取る
+              let v = 0;
+              let end = false;
+              for (let k = 0; k < STEP; k++) {
+                const i = Math.floor(((px + k) / z + startOffsetOf(c)) * perFrame) * 2;
+                if (i + 1 >= pk.length) {
+                  end = true;
+                  break;
+                }
+                v = Math.max(v, Math.abs(pk[i]), Math.abs(pk[i + 1]));
+              }
+              const bh = Math.max(1.5, (v / norm) * amp * 2);
+              ctx.roundRect(x + px, mid - bh / 2, 2, bh, 1);
+              if (end) break;
             }
+            ctx.fill();
             ctx.globalAlpha = (track.hidden ? 0.4 : 1) * fade;
           }
         }
@@ -987,12 +999,16 @@ export function Timeline() {
       // 再生位置
       const phx = Math.round(X(s.playhead)) + 0.5;
       if (phx >= 0 && phx <= w) {
-        ctx.fillStyle = pal.accent;
+        // 再生位置は文字と同じ色（白／黒）。紫は「選んでいるもの」と主な操作だけに使い、時間の線とは分ける
+        ctx.fillStyle = pal.text;
         ctx.fillRect(phx - 0.5, 0, 1.5, h);
         ctx.beginPath();
-        ctx.moveTo(phx - 6, 0);
-        ctx.lineTo(phx + 6, 0);
-        ctx.lineTo(phx, 8);
+        ctx.roundRect(phx - 5.5, 0, 11, 9, [0, 0, 3, 3]);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(phx - 5.5, 8);
+        ctx.lineTo(phx + 5.5, 8);
+        ctx.lineTo(phx, 13);
         ctx.fill();
       }
     });
