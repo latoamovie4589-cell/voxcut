@@ -1,5 +1,6 @@
 // テキスト・図形アイテムのプロパティと、画像・動画・テキスト・図形に共通の「動き・効果」（YMM4 のアニメーション・映像エフェクト）。
 
+import {useRef} from 'react';
 import {Hint} from '../Hint';
 import {Button} from '@astryxdesign/core/Button';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
@@ -17,6 +18,7 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
+import {RubyButton} from './RubyButton';
 import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
 import {getNotify} from '../actions';
 import {itemTemplateName, saveTemplate} from '../templates';
@@ -409,11 +411,17 @@ export function TextStyleFields({value, onChange}: {value: TextStyle; onChange: 
 
 export function TextInspector({clip}: {clip: TextClip}) {
   const set = (patch: Partial<TextClip>) => updateClip(clip.id, patch);
+  const textRef = useRef<HTMLDivElement>(null);
   return (
     <>
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
         <ItemHeader clip={clip} title="テキスト" />
-        <TextArea label="文字" value={clip.text} onChange={text => set({text})} />
+        <div ref={textRef}>
+          <TextArea label="文字" description="ふりがなは 漢字《かんじ》" value={clip.text} onChange={text => set({text})} />
+        </div>
+        <HStack gap={2} hAlign="start">
+          <RubyButton host={() => textRef.current} value={clip.text} onChange={text => set({text})} />
+        </HStack>
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>

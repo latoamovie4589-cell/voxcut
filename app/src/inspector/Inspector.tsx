@@ -1,4 +1,4 @@
-import {Fragment, useEffect, useState} from 'react';
+import {Fragment, useEffect, useRef, useState} from 'react';
 import {Hint} from '../Hint';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
 // 右パネル。選んだセリフ、またはキャラクターの設定を編集する。
@@ -7,6 +7,7 @@ import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Divider} from '@astryxdesign/core/Divider';
 import {Icon} from '@astryxdesign/core/Icon';
+import {RubyButton} from './RubyButton';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
@@ -88,9 +89,11 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
     void synthesize(notify, [clip.id]);
   };
   const differs = clip.subtitle !== null && clip.subtitle !== clip.text;
+  const lineRef = useRef<HTMLDivElement>(null);
   return (
     <>
       <div
+        ref={lineRef}
         onKeyDownCapture={e => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
@@ -99,7 +102,7 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         }}>
         <TextArea
           label="セリフ"
-          description="字幕に出す文。Enter で発音にも反映して合成し直します（Shift+Enter で改行）"
+          description="字幕に出す文。Enter で発音にも反映して合成し直します（Shift+Enter で改行）。ふりがなは 漢字《かんじ》"
           value={draft}
           onChange={v => {
             setDraft(v);
@@ -115,6 +118,14 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
       )}
       <HStack gap={2} hAlign="start">
         <Button label="発音に反映" size="sm" variant={differs ? 'primary' : 'secondary'} tooltip="発音をセリフと同じにして合成し直す（YMM4 の「変」）" isDisabled={!differs} onClick={apply} />
+        <RubyButton
+          host={() => lineRef.current}
+          value={draft}
+          onChange={v => {
+            setDraft(v);
+            updateClip(clip.id, {subtitle: v === clip.text ? null : v});
+          }}
+        />
       </HStack>
       <TextArea
         label="発音"
@@ -1228,15 +1239,22 @@ function CaptionInspector({clip}: {clip: CaptionClip}) {
   const project = useStore(s => s.project)!;
   const voice = project.clips.find(c => c.id === clip.voiceId);
   const fps = project.video.fps;
+  const capRef = useRef<HTMLDivElement>(null);
   if (voice?.type !== 'voice') return null;
   const ch = project.characters.find(c => c.id === voice.characterId);
   const linked = !!clip.linkId && clip.linkId === voice.linkId;
+  const setCap = (v: string) => updateClip(voice.id, {subtitle: v === voice.text ? null : v} as Partial<VoiceClip>);
   return (
     <Section title={linked ? '字幕（セリフとリンク）' : '字幕'}>
       <Text type="supporting">
         {ch?.name ?? ''} のセリフの字幕です。{linked ? 'セリフと一緒に動きます。' : 'リンクを外しているので、別々に動かせます。'}
       </Text>
-      <TextArea label="字幕に出す文" value={voice.subtitle ?? voice.text} rows={3} onChange={v => updateClip(voice.id, {subtitle: v === voice.text ? null : v} as Partial<VoiceClip>)} />
+      <div ref={capRef}>
+        <TextArea label="字幕に出す文" value={voice.subtitle ?? voice.text} rows={3} onChange={setCap} />
+      </div>
+      <HStack gap={2} hAlign="start">
+        <RubyButton host={() => capRef.current} value={voice.subtitle ?? voice.text} onChange={setCap} />
+      </HStack>
       <Text type="supporting" hasTabularNumbers>
         {framesToTimecode(clip.start, fps)} から 長さ {framesToTimecode(clip.duration, fps)}
       </Text>
