@@ -21,6 +21,7 @@ import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
 import {getNotify} from '../actions';
 import {itemTemplateName, saveTemplate} from '../templates';
 import {QuickEffects} from './QuickEffects';
+import {TextDecoFields, TextDecoPicker} from './TextDeco';
 import {
   SHAPE_LABEL,
   framesToTimecode,
@@ -413,7 +414,12 @@ export function TextInspector({clip}: {clip: TextClip}) {
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
         <ItemHeader clip={clip} title="テキスト" />
         <TextArea label="文字" value={clip.text} onChange={text => set({text})} />
+      </VStack>
+      <Divider />
+      <VStack gap={3} paddingBlock={4} paddingInline={4}>
+        <TextDecoPicker clip={clip} />
         <TextStyleFields value={clip} onChange={set} />
+        <TextDecoFields clip={clip} />
       </VStack>
       <Divider />
       <LookEditor clip={clip} />

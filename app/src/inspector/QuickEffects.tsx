@@ -1,16 +1,17 @@
 // かんたんエフェクト：一覧から選ぶだけで、登場・退場・動き・画面効果が付く（CapCut と同じ選び方）。
 // 中身は「動き・効果」の欄と同じ値を入れているだけなので、選んだあとに下の欄で細かく直せる。書き出しも同じ絵になる。
 
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useRef} from 'react';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
 import {Heading} from '@astryxdesign/core/Heading';
 import {VStack} from '@astryxdesign/core/Layout';
 import {Text} from '@astryxdesign/core/Text';
-import {plainLook, type Effect, type Look, type MotionKind, type Transform, type VisualClip} from '../model';
+import {Slider} from '@astryxdesign/core/Slider';
+import {plainLook, prevAdjacent, transitionFrames, type Effect, type Look, type MotionKind, type Transform, type TransitionKind, type VisualClip} from '../model';
 import {play, stop} from '../preview/playback';
-import {getState, setState, updateClip} from '../store';
+import {getState, setState, updateClip, useStore} from '../store';
 
-type Tab = 'in' | 'out' | 'move' | 'fx';
+type Tab = 'in' | 'out' | 'move' | 'fx' | 'trans';
 type Ctx = {transform: Transform; look: Look; duration: number; fps: number};
 export interface QuickPreset {
   id: string;
@@ -93,6 +94,16 @@ function fxPreset(id: string, label: string, fx: Effect): QuickPreset {
   };
 }
 
+/** つなぎ目の切り替え（次の場面＝このアイテムに付ける。長さは前と同じなら引き継ぐ） */
+function transPreset(id: string, label: string, kind: TransitionKind | null): QuickPreset {
+  return {
+    id,
+    label,
+    on: c => (c.look.transition?.kind ?? null) === kind,
+    apply: c => ({...c.look, transition: kind ? {kind, frames: c.look.transition?.frames ?? Math.round(c.fps * 0.6)} : null}),
+  };
+}
+
 export const QUICK: Record<Tab, QuickPreset[]> = {
   in: [
     enterPreset('in-none', 'なし', null, false),
@@ -138,9 +149,20 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     fxPreset('fx-wave', '波', {kind: 'wave', amount: 12, length: 160, speed: 1}),
     fxPreset('fx-swirl', '渦巻き', {kind: 'swirl', angle: 180}),
   ],
+  trans: [
+    transPreset('tr-none', 'なし', null),
+    transPreset('tr-dissolve', 'ディゾルブ', 'dissolve'),
+    transPreset('tr-black', '暗転', 'black'),
+    transPreset('tr-white', '白く光る', 'white'),
+    transPreset('tr-left', '左へ流す', 'slideLeft'),
+    transPreset('tr-right', '右へ流す', 'slideRight'),
+    transPreset('tr-up', '上へ流す', 'slideUp'),
+    transPreset('tr-down', '下へ流す', 'slideDown'),
+    transPreset('tr-zoom', 'ズーム', 'zoom'),
+  ],
 };
 
-const TAB_LABEL: Record<Tab, string> = {in: '登場', out: '退場', move: '動き', fx: '画面効果'};
+const TAB_LABEL: Record<Tab, string> = {in: '登場', out: '退場', move: '動き', fx: '画面効果', trans: '切り替え'};
 
 let previewTimer = 0;
 /** 付けた効果をすぐ見せる：その部分だけを再生して止める */
@@ -149,9 +171,11 @@ function previewClip(clip: VisualClip, tab: Tab, fps: number) {
   if (getState().isPlaying) stop();
   const end = clip.start + clip.duration;
   const span = Math.round(fps * 1.2);
-  const from = tab === 'out' ? Math.max(clip.start, end - span) : clip.start;
+  // 切り替えはつなぎ目の前後（前の場面の終わりから、次の場面の頭まで）
+  const lead = tab === 'trans' ? Math.round(fps * 0.8) : 0;
+  const from = tab === 'out' ? Math.max(clip.start, end - span) : Math.max(0, clip.start - lead);
   // 動きはアイテムの長さいっぱい（長くても 4 秒）、ほかは 1 秒と少し
-  const frames = tab === 'move' ? Math.min(clip.duration, fps * 4) : Math.min(end - from, span);
+  const frames = tab === 'move' ? Math.min(clip.duration, fps * 4) : tab === 'trans' ? Math.min(end - from, lead * 2 + (clip.look?.transition?.frames ?? 0)) : Math.min(end - from, span);
   setState({playhead: from});
   void play(1);
   previewTimer = window.setTimeout(
@@ -166,7 +190,9 @@ function previewClip(clip: VisualClip, tab: Tab, fps: number) {
 }
 
 export function QuickEffects({clip, fps}: {clip: VisualClip; fps: number}) {
-  const [tab, setTab] = useState<Tab>('in');
+  const tab = useStore(s => s.fxTab);
+  const setTab = (fxTab: Tab) => setState({fxTab});
+  const prev = useStore(s => (s.project ? prevAdjacent(s.project, clip) : null));
   const live = useRef(clip);
   live.current = clip;
   useEffect(() => () => window.clearTimeout(previewTimer), []);
@@ -189,6 +215,7 @@ export function QuickEffects({clip, fps}: {clip: VisualClip; fps: number}) {
               className="vx-fx-tile"
               data-fx={p.id}
               aria-pressed={on}
+              disabled={tab === 'trans' && !prev && p.id !== 'tr-none'}
               onClick={() => {
                 // 「なし」以外は、付いているものをもう一度押すと外れる
                 const none = QUICK[tab][0];
@@ -204,8 +231,26 @@ export function QuickEffects({clip, fps}: {clip: VisualClip; fps: number}) {
           );
         })}
       </div>
+      {tab === 'trans' && prev && ctx.look.transition && (
+        <Slider
+          label="切り替えの長さ"
+          value={ctx.look.transition.frames}
+          min={4}
+          max={Math.max(5, Math.floor((Math.min(prev.duration, clip.duration) * 4) / 5))}
+          step={1}
+          valueDisplay="text"
+          formatValue={v => `${Math.round(v)} フレーム`}
+          onChange={(frames: number) => updateClip(clip.id, {look: {...ctx.look, transition: {...ctx.look.transition!, frames: Math.round(frames)}}} as Partial<VisualClip>)}
+        />
+      )}
       <Text type="supporting">
-        {tab === 'fx' ? '画面効果は重ねて付けられます。強さは下の「映像エフェクト」で直せます。' : '押すとすぐ付いて、その部分を再生します。長さや動く量は下の欄で直せます。'}
+        {tab === 'trans'
+          ? prev
+            ? `同じレイヤーのすぐ前のアイテムから、このアイテムへ切り替わるときの効果です${ctx.look.transition ? `（実際の長さ ${transitionFrames(ctx.look.transition, prev, clip)} フレーム）` : ''}。`
+            : '切り替えは、同じレイヤーで前のアイテムとくっついているときに使えます。2 つの場面を同じレイヤーに並べて置いてください。'
+          : tab === 'fx'
+            ? '画面効果は重ねて付けられます。強さは下の「映像エフェクト」で直せます。'
+            : '押すとすぐ付いて、その部分を再生します。長さや動く量は下の欄で直せます。'}
       </Text>
     </VStack>
   );
