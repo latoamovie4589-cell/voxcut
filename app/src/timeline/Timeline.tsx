@@ -39,9 +39,37 @@ import {
   Type,
   ZoomIn,
   ZoomOut,
+  Heart,
+  ArrowRight,
+  MessageCircle,
+  Cloud,
+  Droplet,
+  Angry,
+  CircleAlert,
+  CircleHelp,
+  Zap,
+  Sun,
+  Sticker,
+  Music2,
 } from 'lucide-react';
 import type {Clip, MediaClip, Project, Track} from '../model';
-import {SHAPE_LABEL, type ShapeKind, isVisual, prevAdjacent, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode, speedsOf, keyframeTimes} from '../model';
+import {
+  BASIC_SHAPES,
+  SFX_LIST,
+  SHAPE_LABEL,
+  STICKERS,
+  type ShapeKind,
+  isVisual,
+  prevAdjacent,
+  overlappingLines,
+  framesToTimecode,
+  layerLabel,
+  projectDuration,
+  startOffsetOf,
+  trackCode,
+  speedsOf,
+  keyframeTimes,
+} from '../model';
 import {TEXT_STYLES} from '../textStyles';
 import {
   getState,
@@ -64,6 +92,7 @@ import {
   deleteClips,
   setCharacterForSelection,
   addVisualItem,
+  addSticker,
   updateClip,
   selectOnly,
   setLinkedSelection,
@@ -76,7 +105,7 @@ import {
   addPortraitItem,
 } from '../store';
 import {getPeaks, onPeaks} from '../peaks';
-import {addMedia, getNotify, synthesize} from '../actions';
+import {addMedia, addSfx, getNotify, synthesize} from '../actions';
 import './timeline.css';
 
 const RULER_H = 26;
@@ -446,7 +475,25 @@ function peakMax(pk: ArrayLike<number>): number {
 }
 
 /** 図形メニューの絵（ツールバーと同じく、項目にも形を出す） */
-const SHAPE_ICON: Record<ShapeKind, typeof Square> = {rect: RectangleHorizontal, roundRect: Square, ellipse: Circle, triangle: Triangle, line: Minus, star: Star};
+const SHAPE_ICON: Record<ShapeKind, typeof Square> = {
+  rect: RectangleHorizontal,
+  roundRect: Square,
+  ellipse: Circle,
+  triangle: Triangle,
+  line: Minus,
+  star: Star,
+  heart: Heart,
+  arrow: ArrowRight,
+  bubble: MessageCircle,
+  thought: Cloud,
+  sparkle: Sparkles,
+  sweat: Droplet,
+  anger: Angry,
+  exclaim: CircleAlert,
+  question: CircleHelp,
+  burst: Zap,
+  speed: Sun,
+};
 
 /** メニューの右端に出すショートカット */
 const MOD = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl+';
@@ -1837,7 +1884,8 @@ export function Timeline() {
           })),
         },
         {label: 'テキストを追加', onClick: () => addVisualItem('text')},
-        {label: '図形を追加', items: (Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => ({label: SHAPE_LABEL[k], onClick: () => addVisualItem('shape', k)}))},
+        {label: '図形を追加', items: BASIC_SHAPES.map(k => ({label: SHAPE_LABEL[k], onClick: () => addVisualItem('shape', k)}))},
+        {label: 'スタンプを追加', items: STICKERS.map(st => ({label: SHAPE_LABEL[st.kind], onClick: () => addSticker(st.kind)}))},
         {label: '素材を追加…', onClick: () => void addMedia()},
       ];
   const {height} = trackTops(project);
@@ -1896,8 +1944,18 @@ export function Timeline() {
           ))}
         </DropdownMenu>
         <DropdownMenu button={{label: '図形', size: 'sm', variant: 'ghost', icon: <Icon icon={Shapes} />, isIconOnly: compact, tooltip: '図形を再生位置に追加'}} menuWidth={160}>
-          {(Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => (
+          {BASIC_SHAPES.map(k => (
             <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
+          ))}
+        </DropdownMenu>
+        <DropdownMenu button={{label: '効果音', size: 'sm', variant: 'ghost', icon: <Icon icon={Music2} />, isIconOnly: compact, tooltip: '効果音を再生位置に追加'}} menuWidth={160}>
+          {SFX_LIST.map(sx => (
+            <DropdownMenuItem key={sx.id} label={sx.label} onClick={() => void addSfx(sx.id)} />
+          ))}
+        </DropdownMenu>
+        <DropdownMenu button={{label: 'スタンプ', size: 'sm', variant: 'ghost', icon: <Icon icon={Sticker} />, isIconOnly: compact, tooltip: 'スタンプを再生位置に追加'}} menuWidth={180}>
+          {STICKERS.map(st => (
+            <DropdownMenuItem key={st.kind} label={SHAPE_LABEL[st.kind]} icon={<Icon icon={SHAPE_ICON[st.kind]} />} onClick={() => addSticker(st.kind)} />
           ))}
         </DropdownMenu>
         {compact ? (
