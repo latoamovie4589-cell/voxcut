@@ -5,6 +5,7 @@ import {getDock, showPanel} from '../dock/layout';
 import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
+import {wrapSubtitle} from '../subtitleWrap';
 import type {Character, Effect, MediaClip, PortraitClip, Project, Transform} from '../model';
 import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks, withTransitions} from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
@@ -170,6 +171,8 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
   const fps = p.video.fps;
   const anim = st?.animation ?? 'none';
   const size = (st?.fontSize ?? 56) * scale;
+  // 改行の位置は書き出しと同じ（画面の幅から左右の余白 40px ずつを引いた幅で切る）
+  text = wrapSubtitle(text, st?.fontSize ?? 56, Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
   ctx.font = `600 ${size}px ${st?.fontFamily ? `"${st.fontFamily}",` : ''} -apple-system, "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif`;
   ctx.lineJoin = 'round';
   const lines = text.split('\n');
