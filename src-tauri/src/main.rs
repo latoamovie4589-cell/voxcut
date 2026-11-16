@@ -75,6 +75,10 @@ fn main() {
             commands::file_stamp,
             commands::write_portrait_png,
             commands::portrait_png_path,
+            commands::model_status,
+            commands::download_model,
+            commands::transcribe,
+            commands::make_matte,
         ])
         .run(tauri::generate_context!())
         .expect("VoxCut を起動できませんでした");

@@ -611,6 +611,7 @@ pub async fn export_video(
         opt.item_images = options.item_images.clone();
         // 1 文字ずつ出す字幕は、文字数ごとの画像を順に出す
         opt.item_sequences = render::prepare_sequences(&project, &opt.item_images, &work).map_err(err)?;
+        opt.mattes = collect_mattes(&app, &project, &opt.project_dir);
         if let Some(crf) = options.crf {
             opt.crf = crf.clamp(10, 40);
         }
@@ -875,3 +876,113 @@ pub async fn make_proxy(app: AppHandle, state: State<'_, AppState>, src: PathBuf
     .await
 }
 
+
+// ───────────── AI（自動字幕・背景を消す） ─────────────
+
+fn models_root(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("models"))
+}
+
+fn mattes_root(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("mattes"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelStatus {
+    #[serde(flatten)]
+    info: voxcut_core::ai::ModelInfo,
+    ready: bool,
+}
+
+/// モデルの一覧と、ダウンロード済みかどうか
+#[tauri::command]
+pub fn model_status(app: AppHandle) -> CmdResult<Vec<ModelStatus>> {
+    let root = models_root(&app)?;
+    Ok(voxcut_core::ai::MODELS.iter().map(|m| ModelStatus { info: *m, ready: voxcut_core::ai::model_path(&root, m.id).is_some() }).collect())
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProgress {
+    /// "download" / "transcribe" / "matte"
+    stage: &'static str,
+    id: String,
+    ratio: f64,
+}
+
+/// モデルをダウンロードする。進捗は "ai-progress"
+#[tauri::command]
+pub async fn download_model(app: AppHandle, id: String) -> CmdResult<()> {
+    let root = models_root(&app)?;
+    blocking(move || {
+        let mut last = -1.0;
+        voxcut_core::ai::download_model(&root, &id, &mut |ratio| {
+            if ratio - last >= 0.01 || ratio >= 1.0 {
+                last = ratio;
+                let _ = app.emit("ai-progress", AiProgress { stage: "download", id: id.clone(), ratio });
+            }
+        })
+        .map(|_| ())
+        .map_err(err)
+    })
+    .await
+}
+
+fn need_model(app: &AppHandle, id: &str) -> CmdResult<PathBuf> {
+    voxcut_core::ai::model_path(&models_root(app)?, id).ok_or_else(|| "モデルがまだダウンロードされていません".to_string())
+}
+
+/// 素材の音を文字起こしする（in_s から dur 秒。秒は素材の頭から）。進捗は "ai-progress"
+#[tauri::command]
+pub async fn transcribe(app: AppHandle, state: State<'_, AppState>, src: PathBuf, model: String, in_s: f64, dur: f64) -> CmdResult<Vec<voxcut_core::ai::Segment>> {
+    let ffmpeg = state.ffmpeg();
+    let mp = need_model(&app, &model)?;
+    blocking(move || {
+        let a = app.clone();
+        let id = src.to_string_lossy().into_owned();
+        voxcut_core::ai::transcribe(&ffmpeg, &mp, &src, in_s, dur, Box::new(move |ratio| {
+            let _ = a.emit("ai-progress", AiProgress { stage: "transcribe", id: id.clone(), ratio });
+        }))
+        .map_err(err)
+    })
+    .await
+}
+
+/// 背景を消す型を作り、そのパスを返す（できていればすぐ返る）。進捗は "ai-progress"
+#[tauri::command]
+pub async fn make_matte(app: AppHandle, state: State<'_, AppState>, src: PathBuf, model: String, still: bool, duration_ms: u64) -> CmdResult<PathBuf> {
+    let ffmpeg = state.ffmpeg();
+    let mp = need_model(&app, &model)?;
+    let root = mattes_root(&app)?;
+    let _ = app.asset_protocol_scope().allow_directory(&root, false);
+    blocking(move || {
+        let id = src.to_string_lossy().into_owned();
+        voxcut_core::ai::make_matte(&ffmpeg, &mp, &model, &src, &root, still, duration_ms as f64 / 1000.0, &mut |ratio| {
+            let _ = app.emit("ai-progress", AiProgress { stage: "matte", id: id.clone(), ratio });
+        })
+        .map_err(err)
+    })
+    .await
+}
+
+/// 書き出しのために、作ってある型を集める（素材のパス → 型）
+fn collect_mattes(app: &AppHandle, project: &Project, project_dir: &Path) -> std::collections::HashMap<String, PathBuf> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(root) = mattes_root(app) else { return out };
+    for c in &project.clips {
+        if let voxcut_core::model::ClipBody::Media(m) = &c.body {
+            if let Some(id) = m.src_fx.matte.as_deref() {
+                let p = Path::new(&m.src);
+                let abs = if p.is_absolute() { p.to_path_buf() } else { project_dir.join(p) };
+                let still = matches!(m.media_kind, voxcut_core::model::MediaKind::Image);
+                if let Ok(mp) = voxcut_core::ai::matte_path(&root, &abs, id, still) {
+                    if mp.is_file() {
+                        out.insert(m.src.clone(), mp);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
