@@ -41,7 +41,8 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
-import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
+import {SHAPE_LABEL, type ShapeKind, isVisual, prevAdjacent, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
+import {TEXT_STYLES} from '../textStyles';
 import {
   getState,
   addCharacter,
@@ -63,6 +64,7 @@ import {
   deleteClips,
   setCharacterForSelection,
   addVisualItem,
+  updateClip,
   selectOnly,
   setLinkedSelection,
   linkClips,
@@ -920,6 +922,39 @@ export function Timeline() {
         ctx.globalAlpha = 1;
       }
 
+      // つなぎ目の切り替え（CapCut と同じく、つなぎ目の上に小さな印）
+      for (const c of p.clips) {
+        if (!isVisual(c) || !c.look?.transition) continue;
+        const ti = rowOf(c.trackId);
+        if (ti < 0 || !prevAdjacent(p, c)) continue;
+        const cx = Math.round(X(c.start));
+        if (cx < -10 || cx > w + 10) continue;
+        const cy = Y(ti) + LAYER_H / 2;
+        const sel = c.id === selected;
+        ctx.save();
+        ctx.fillStyle = sel ? pal.accent : pal.bg;
+        ctx.strokeStyle = sel ? '#fff' : pal.accent;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cx - 8, cy - 8, 16, 16, 4);
+        ctx.fill();
+        ctx.stroke();
+        // 2 つの矢印（前の場面から次の場面へ）
+        ctx.strokeStyle = sel ? '#fff' : pal.accent;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx - 4, cy - 2.5);
+        ctx.lineTo(cx + 4, cy - 2.5);
+        ctx.moveTo(cx + 1.5, cy - 5);
+        ctx.lineTo(cx + 4, cy - 2.5);
+        ctx.moveTo(cx + 4, cy + 2.5);
+        ctx.lineTo(cx - 4, cy + 2.5);
+        ctx.moveTo(cx - 1.5, cy + 5);
+        ctx.lineTo(cx - 4, cy + 2.5);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // ドラッグ中の案内（クリップより手前に描く）：重なるなら「空いているトラックへ」か「挿入」、置けないトラックなら「置けません」
       if (drag?.mode === 'move' && drag.moved) {
         const tag = (ti: number, x0: number, label: string, color: string) => {
@@ -1739,6 +1774,18 @@ export function Timeline() {
           : n >= 2
             ? {label: 'リンク', description: '選んだアイテムを一緒に動くようにします', onClick: () => linkClips(selClips.map(c => c.id))}
             : null,
+        ...(primary && n === 1 && prevAdjacent(project, primary)
+          ? [
+              {
+                label: primary.type !== 'voice' && isVisual(primary) && primary.look?.transition ? '前とのつなぎ目の切り替えを変える…' : '前とのつなぎ目に切り替えを入れる…',
+                description: 'ディゾルブ・暗転・流す・ズームなど',
+                onClick: () => {
+                  setState({fxTab: 'trans'});
+                  openQuickEffects();
+                },
+              },
+            ]
+          : []),
         {type: 'divider' as const},
         {label: '複製', endContent: menuKey(`${MOD}D`), onClick: () => duplicateSelection()},
         {label: 'コピー', endContent: menuKey(`${MOD}C`), onClick: () => copySelection()},
@@ -1806,7 +1853,20 @@ export function Timeline() {
             />
           ))}
         </DropdownMenu>
-        <Button label="テキスト" size="sm" variant="ghost" icon={<Icon icon={Type} />} isIconOnly={compact} tooltip="テキストを再生位置に追加" onClick={() => addVisualItem('text')} />
+        <DropdownMenu
+          button={{label: 'テキスト', size: 'sm', variant: 'ghost', icon: <Icon icon={Type} />, isIconOnly: compact, tooltip: 'テキストを再生位置に追加（飾りを選べます）'}}
+          menuWidth={200}>
+          {TEXT_STYLES.map(ts => (
+            <DropdownMenuItem
+              key={ts.id}
+              label={ts.label}
+              onClick={() => {
+                const id = addVisualItem('text');
+                if (id) updateClip(id, ts.look as Partial<Clip>);
+              }}
+            />
+          ))}
+        </DropdownMenu>
         <DropdownMenu button={{label: '図形', size: 'sm', variant: 'ghost', icon: <Icon icon={Shapes} />, isIconOnly: compact, tooltip: '図形を再生位置に追加'}} menuWidth={160}>
           {(Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => (
             <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
