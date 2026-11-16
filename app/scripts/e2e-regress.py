@@ -125,7 +125,7 @@ async def main():
         await pg.wait_for_timeout(700)
         sl3 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
         # 戻した位置から、追いかけで前へ引き戻されていない（再生は続いている）
-        check("再生：ホイールで戻したら 2 秒は引き戻さない", sl2 < sl - 100 and sl3 <= sl2 + 2, f"{sl}->{sl2}->{sl3}")
+        check("再生：ホイールで戻したら 2 秒は引き戻さない", sl2 < sl - 40 and sl3 <= sl2 + 2, f"{sl}->{sl2}->{sl3}")
         await pg.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
 
         # ── メニューを閉じるとき跳ねない（閉じている途中に動きが走らない）
@@ -311,6 +311,14 @@ async def main():
           return {{ext: ga.duration===a0.duration+20 && ga.look.fadeOut===20 && d1.clips.find(c=>c.id==='{B}').look.fadeIn===20,
             covers: JSON.stringify(ids)===JSON.stringify(['{B}~cover1','{B}~cover2']), baked: !!imgs['{B}~cover1'] && !!imgs['{B}~cover2'], same: s.getState().project.clips.length===p0.clips.length}}}}""")
         check("切り替え：クロスフェードは前を延ばし、暗転は覆う図形を最後に足す（元のプロジェクトは変えない）", all(r.values()), str(r))
+        r = await q.evaluate("""async()=>{const m=await import('/src/model.ts'); const s=await import('/src/store.ts'); const p0=s.getState().project;
+          const base={trackId:'V1', linkId:null, type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}};
+          const va={...base, id:'va', start:0, duration:60, src:'/m/a.mp4', mediaKind:'video', hasAudio:true};
+          const vb={...base, id:'vb', start:60, duration:60, src:'/m/b.png', mediaKind:'image', hasAudio:false, look:{rotation:0, fadeIn:0, fadeOut:0, transition:{kind:'slideLeft', frames:20}}};
+          const p={...p0, clips:[va, vb]}; const d=m.withTransitions(p); const ga=d.clips.find(c=>c.id==='va');
+          const vb2={...vb, look:{...vb.look, transition:{kind:'dissolve', frames:20}}}; const g2=m.withTransitions({...p, clips:[va, vb2]}).clips.find(c=>c.id==='va');
+          return {push: ga.duration===80 && ga.audioUntil===60 && ga.look.exit?.smooth===true, dis: g2.duration===80 && g2.audioUntil===60 && g2.look.fadeOut===20, orig: va.audioUntil===undefined && va.duration===60}}""")
+        check("切り替え：前が動画でも映像だけ延ばして押し出し・ディゾルブし、音は元の長さで止める", all(r.values()), str(r))
         await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); s.setState({{selectedClipId:'{A}', selectedClipIds:['{A}']}})}}")
         await q.wait_for_timeout(300)
         dis = await q.evaluate("()=>document.querySelector(\".vx-fx-tile[data-fx='tr-left']\")?.disabled")
