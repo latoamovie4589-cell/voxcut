@@ -599,6 +599,32 @@ pub struct Look {
     /// 退場のしかた（アイテムの終わりで、画面の外へ出ていく・小さくなって消える）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<Motion>,
+    /// 同じレイヤーのすぐ前のアイテムとのつなぎ目に入れる切り替え（場面転換）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
+}
+
+/// つなぎ目の切り替え
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Transition {
+    pub kind: TransitionKind,
+    /// 全体の長さ（フレーム）
+    pub frames: Frame,
+}
+
+/// 切り替えの種類。slide は「前の場面がその方向へ流れ、次の場面が反対側から入る」
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TransitionKind {
+    Dissolve,
+    Black,
+    White,
+    SlideLeft,
+    SlideRight,
+    SlideUp,
+    SlideDown,
+    Zoom,
 }
 
 /// 登場・退場の動き
@@ -624,6 +650,158 @@ pub enum MotionKind {
 impl Look {
     pub fn is_plain(&self) -> bool {
         *self == Look::default()
+    }
+}
+
+/// 切り替えに使えるアイテム（見た目のあるもの）の Look
+fn visual_look_mut(c: &mut Clip) -> Option<&mut Look> {
+    match &mut c.body {
+        ClipBody::Text(t) => Some(&mut t.look),
+        ClipBody::Shape(s) => Some(&mut s.look),
+        ClipBody::Media(m) if m.media_kind != MediaKind::Audio => Some(&mut m.look),
+        _ => None,
+    }
+}
+fn visual_look(c: &Clip) -> Option<&Look> {
+    match &c.body {
+        ClipBody::Text(t) => Some(&t.look),
+        ClipBody::Shape(s) => Some(&s.look),
+        ClipBody::Media(m) if m.media_kind != MediaKind::Audio => Some(&m.look),
+        _ => None,
+    }
+}
+
+impl Project {
+    /// 同じレイヤーで、b のすぐ前に接しているアイテム（2 フレームまでのすき間は接しているとみなす）。
+    /// 画面側の model.ts の prevAdjacent と同じ
+    pub fn prev_adjacent(&self, b: &Clip) -> Option<usize> {
+        visual_look(b)?;
+        self.clips
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.id != b.id && a.track_id == b.track_id && visual_look(a).is_some() && a.start < b.start)
+            .filter(|(_, a)| {
+                let end = a.start + a.duration;
+                end <= b.start && end >= b.start - 2
+            })
+            .max_by_key(|(_, a)| (a.start + a.duration, a.start))
+            .map(|(i, _)| i)
+    }
+
+    /// 切り替えを、前後のアイテムの登場・退場・フェード（と、暗転・白は画面を覆う図形）に置き換えた写し。
+    /// 書き出しはこれを描く。画面側の model.ts の withTransitions と同じ結果になる
+    pub fn with_transitions(&self) -> Project {
+        let mut p = self.clone();
+        let jobs: Vec<(usize, usize, Transition)> = self
+            .clips
+            .iter()
+            .enumerate()
+            .filter_map(|(bi, b)| {
+                let t = visual_look(b)?.transition.clone()?;
+                let ai = self.prev_adjacent(b)?;
+                Some((ai, bi, t))
+            })
+            .collect();
+        if jobs.is_empty() {
+            return p;
+        }
+        let mut extra: Vec<Clip> = vec![];
+        for (ai, bi, t) in jobs {
+            let (a, b) = (&self.clips[ai], &self.clips[bi]);
+            let cut = b.start;
+            let d = t.frames.min(a.duration * 4 / 5).min(b.duration * 4 / 5).max(2);
+            let h = d / 2;
+            let (out_f, in_f) = (h.max(1), (d - h).max(1));
+            let extendable = !matches!(&a.body, ClipBody::Media(m) if m.media_kind == MediaKind::Video);
+            let set_a = |p: &mut Project, f: &dyn Fn(&mut Look)| {
+                if let Some(l) = visual_look_mut(&mut p.clips[ai]) {
+                    f(l)
+                }
+            };
+            let set_b = |p: &mut Project, f: &dyn Fn(&mut Look)| {
+                if let Some(l) = visual_look_mut(&mut p.clips[bi]) {
+                    f(l)
+                }
+            };
+            match t.kind {
+                TransitionKind::Dissolve if extendable => {
+                    // 前の場面を後ろへ延ばして、次の場面の下で消していく
+                    p.clips[ai].duration = a.duration + (cut - (a.start + a.duration)) + d;
+                    set_a(&mut p, &|l| {
+                        l.exit = None;
+                        l.fade_out = d;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = None;
+                        l.fade_in = d;
+                    });
+                }
+                TransitionKind::Dissolve => {
+                    set_a(&mut p, &|l| {
+                        l.exit = None;
+                        l.fade_out = out_f;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = None;
+                        l.fade_in = in_f;
+                    });
+                }
+                TransitionKind::Black | TransitionKind::White => {
+                    // 画面を覆う図形を、つなぎ目の前で濃くし、後で薄くする（同じレイヤーの上に重ねる）
+                    let fill = if t.kind == TransitionKind::Black { "#000000" } else { "#FFFFFF" };
+                    let cover = |id: String, start: Frame, duration: Frame, look: Look| Clip {
+                        id,
+                        track_id: b.track_id.clone(),
+                        start,
+                        duration,
+                        link_id: None,
+                        body: ClipBody::Shape(ShapeClip {
+                            shape: "rect".into(),
+                            width: (self.video.width + 8) as f64,
+                            height: (self.video.height + 8) as f64,
+                            fill: fill.into(),
+                            stroke: String::new(),
+                            stroke_width: 0.0,
+                            transform: Transform::default(),
+                            look,
+                        }),
+                    };
+                    extra.push(cover(format!("{}~cover1", b.id), cut - out_f, out_f, Look { fade_in: out_f, ..Default::default() }));
+                    extra.push(cover(format!("{}~cover2", b.id), cut, in_f, Look { fade_out: in_f, ..Default::default() }));
+                }
+                TransitionKind::Zoom => {
+                    set_a(&mut p, &|l| {
+                        l.exit = Some(Motion { kind: MotionKind::Zoom, frames: out_f });
+                        l.fade_out = out_f;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = Some(Motion { kind: MotionKind::Zoom, frames: in_f });
+                        l.fade_in = in_f;
+                    });
+                }
+                k => {
+                    // 前の場面がその方向へ流れて、次の場面が反対側から入る
+                    let (go, come) = match k {
+                        TransitionKind::SlideLeft => (MotionKind::SlideLeft, MotionKind::SlideRight),
+                        TransitionKind::SlideRight => (MotionKind::SlideRight, MotionKind::SlideLeft),
+                        TransitionKind::SlideUp => (MotionKind::SlideUp, MotionKind::SlideDown),
+                        _ => (MotionKind::SlideDown, MotionKind::SlideUp),
+                    };
+                    set_a(&mut p, &|l| {
+                        l.exit = Some(Motion { kind: go, frames: out_f });
+                        l.fade_out = 0;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = Some(Motion { kind: come, frames: in_f });
+                        l.fade_in = 0;
+                    });
+                }
+            }
+        }
+        // 重なりの順（同じレイヤーでは頭の早い順に描く）。覆う図形は同じ時刻のアイテムより手前に
+        p.clips.sort_by_key(|c| c.start);
+        p.clips.extend(extra);
+        p
     }
 }
 
@@ -705,6 +883,37 @@ pub struct TextClip {
     pub transform: Transform,
     #[serde(default, skip_serializing_if = "Look::is_plain")]
     pub look: Look,
+    /// 文字の飾り（影・外側の縁・背景の帯・グラデーション）。画面側で描くので、ここでは保存するだけ
+    #[serde(flatten)]
+    pub deco: TextDeco,
+}
+
+/// 文字の飾り（画面側の textImage が描く。Rust では保存と読み込みだけ）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDeco {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_blur: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline2_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline2_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_opacity: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_padding: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient_color: Option<String>,
 }
 
 fn center() -> String {
@@ -1340,6 +1549,7 @@ mod tests {
             align: "center".into(),
             transform: Transform::default(),
             look: Look::default(),
+            deco: Default::default(),
         });
         p.validate().unwrap(); // テキストもどのレイヤーにも置ける
         let mut p = Project::sample();
@@ -1610,5 +1820,88 @@ mod tests {
         let json = p.to_json().unwrap();
         assert!(!json.contains("presetId"));
         assert!(Project::from_json(&json).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    fn image(id: &str, start: Frame, duration: Frame, kind: MediaKind) -> Clip {
+        Clip {
+            id: id.into(),
+            track_id: "V1".into(),
+            start,
+            duration,
+            link_id: None,
+            body: ClipBody::Media(MediaClip {
+                src: format!("{id}.png"),
+                media_kind: kind,
+                has_audio: false,
+                in_point: 0,
+                volume: 1.0,
+                transform: Transform::default(),
+                look: Look::default(),
+            }),
+        }
+    }
+    fn look(c: &Clip) -> &Look {
+        visual_look(c).unwrap()
+    }
+
+    #[test]
+    fn transitions_become_motions_fades_and_covers() {
+        let mut p = Project::sample();
+        p.clips.clear();
+        p.clips.push(image("b", 60, 60, MediaKind::Image));
+        p.clips.push(image("a", 0, 60, MediaKind::Image));
+        p.clips.push(image("far", 200, 60, MediaKind::Image));
+        // 切り替えがなければそのまま
+        assert_eq!(p.with_transitions(), p);
+        let set = |p: &mut Project, id: &str, kind: TransitionKind, frames: Frame| {
+            let c = p.clips.iter_mut().find(|c| c.id == id).unwrap();
+            visual_look_mut(c).unwrap().transition = Some(Transition { kind, frames });
+        };
+        // 押し出し：前は左へ出て、次は右から入る（半分ずつ）
+        set(&mut p, "b", TransitionKind::SlideLeft, 20);
+        let q = p.with_transitions();
+        let get = |q: &Project, id: &str| q.clips.iter().find(|c| c.id == id).cloned().unwrap();
+        assert_eq!(look(&get(&q, "a")).exit, Some(Motion { kind: MotionKind::SlideLeft, frames: 10 }));
+        assert_eq!(look(&get(&q, "b")).enter, Some(Motion { kind: MotionKind::SlideRight, frames: 10 }));
+        // 離れたアイテムには掛からない
+        set(&mut p, "far", TransitionKind::Zoom, 20);
+        assert!(look(&get(&p.with_transitions(), "far")).enter.is_none());
+        // クロスフェード：前を延ばして、次の下で消していく
+        set(&mut p, "b", TransitionKind::Dissolve, 20);
+        let q = p.with_transitions();
+        assert_eq!(get(&q, "a").duration, 80);
+        assert_eq!((look(&get(&q, "a")).fade_out, look(&get(&q, "b")).fade_in), (20, 20));
+        // 頭の早い順に並べ直す（後のアイテムが手前）
+        assert_eq!(q.clips.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a", "b", "far"]);
+        // 動画は延ばせないので、前を消してから次を出す
+        p.clips[1] = image("a", 0, 60, MediaKind::Video);
+        let q = p.with_transitions();
+        assert_eq!((get(&q, "a").duration, look(&get(&q, "a")).fade_out, look(&get(&q, "b")).fade_in), (60, 10, 10));
+        // 暗転：覆う図形がつなぎ目の前後に 1 つずつ、最後に（手前に）付く
+        set(&mut p, "b", TransitionKind::Black, 21);
+        let q = p.with_transitions();
+        let ids: Vec<_> = q.clips.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(&ids[3..], ["b~cover1", "b~cover2"]);
+        assert_eq!((get(&q, "b~cover1").start, get(&q, "b~cover1").duration, get(&q, "b~cover2").start, get(&q, "b~cover2").duration), (50, 10, 60, 11));
+        // 短いアイテムでは長さの 8 割まで
+        set(&mut p, "b", TransitionKind::Zoom, 200);
+        let q = p.with_transitions();
+        assert_eq!(look(&get(&q, "b")).enter.as_ref().unwrap().frames + look(&get(&q, "a")).exit.as_ref().unwrap().frames, 48);
+    }
+
+    #[test]
+    fn text_decoration_is_kept_when_saving() {
+        let json = r##"{"id":"t","trackId":"V1","start":0,"duration":30,"type":"text","text":"x","fontFamily":"a","fontSize":40,"color":"#fff","shadowColor":"#000000","shadowBlur":8,"outline2Color":"#FFFFFF","outline2Width":6,"boxColor":"#000","boxOpacity":0.6,"gradientColor":"#FF0000"}"##;
+        let c: Clip = serde_json::from_str(json).unwrap();
+        let back = serde_json::to_value(&c).unwrap();
+        for k in ["shadowColor", "shadowBlur", "outline2Color", "outline2Width", "boxColor", "boxOpacity", "gradientColor"] {
+            assert!(back.get(k).is_some(), "{k} が消えた: {back}");
+        }
+        assert!(back.get("shadowX").is_none());
     }
 }

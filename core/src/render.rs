@@ -441,6 +441,9 @@ pub fn build_args(
     captions: &[(String, PathBuf)],
     opt: &ExportOptions,
 ) -> Result<Vec<String>> {
+    // つなぎ目の切り替えは、前後のアイテムの登場・退場・フェードと覆う図形に置き換えて描く
+    let owned = p.with_transitions();
+    let p = &owned;
     let v = &p.video;
     let total = p.duration().max(1);
     let total_s = v.frames_to_secs(total);
@@ -1355,6 +1358,7 @@ mod tests {
             fade_out: 0,
             enter: None,
             exit: None,
+            transition: None,
             effects: vec![Effect::Blur { radius: 4.0 }, Effect::Shake { amount: 5.0, speed: 2.0 }, Effect::Mono, Effect::Color { brightness: 1.2, contrast: 1.0, saturation: 1.0 }],
         };
         p.clips.push(Clip {
@@ -1375,6 +1379,7 @@ mod tests {
                 align: "center".into(),
                 transform: Transform::default(),
                 look,
+                deco: Default::default(),
             }),
         });
         p.clips.push(Clip {
@@ -1456,6 +1461,7 @@ mod tests {
                     fade_out: 5,
                     enter: None,
                     exit: None,
+                    transition: None,
                     effects: vec![
                         Effect::Blur { radius: 1.5 },
                         Effect::Shake { amount: 3.0, speed: 4.0 },
@@ -1465,6 +1471,7 @@ mod tests {
                         Effect::Swirl { angle: -120.0 },
                     ],
                 },
+                deco: Default::default(),
             }),
         });
         let out = d.path().join("o.mp4");
