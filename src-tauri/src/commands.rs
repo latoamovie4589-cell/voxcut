@@ -788,6 +788,40 @@ struct ProxyProgress {
     ratio: f64,
 }
 
+/// 効果音のファイル（なければ作る。アプリのデータの中に置く）
+#[tauri::command]
+pub async fn make_sfx(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<PathBuf> {
+    let ffmpeg = state.ffmpeg();
+    let root = app.path().app_data_dir().map_err(err)?.join("効果音");
+    let _ = app.asset_protocol_scope().allow_directory(&root, false);
+    blocking(move || voxcut_core::sfx::make_sfx(&ffmpeg, &root, &name).map_err(err)).await
+}
+
+/// 動画の場面の変わり目（秒、素材の頭から）
+#[tauri::command]
+pub async fn detect_scenes(state: State<'_, AppState>, src: PathBuf, threshold: f64) -> CmdResult<Vec<f64>> {
+    let ffmpeg = state.ffmpeg();
+    blocking(move || voxcut_core::sfx::detect_scenes(&ffmpeg, &src, threshold).map_err(err)).await
+}
+
+/// テキストファイルを書く（テンプレートの書き出し。保存ダイアログで選んだ場所だけ）
+#[tauri::command]
+pub async fn write_text_file(path: PathBuf, text: String) -> CmdResult<()> {
+    if path.extension().and_then(|e| e.to_str()) != Some("voxtpl") {
+        return Err("テンプレートのファイル（.voxtpl）だけを書けます".into());
+    }
+    blocking(move || std::fs::write(&path, text).map_err(err)).await
+}
+
+/// テキストファイルを読む（テンプレートの読み込み。開くダイアログで選んだファイルだけ）
+#[tauri::command]
+pub async fn read_text_file(path: PathBuf) -> CmdResult<String> {
+    if path.extension().and_then(|e| e.to_str()) != Some("voxtpl") {
+        return Err("テンプレートのファイル（.voxtpl）だけを読めます".into());
+    }
+    blocking(move || std::fs::read_to_string(&path).map_err(err)).await
+}
+
 /// 素材の音を加工した WAV（プレビュー用。書き出しと同じフィルター）を作り、そのパスを返す
 #[tauri::command]
 pub async fn process_audio(app: AppHandle, state: State<'_, AppState>, src: PathBuf, fx: voxcut_core::audiofx::MediaAudioFx) -> CmdResult<PathBuf> {
@@ -826,14 +860,14 @@ pub async fn detect_beats(state: State<'_, AppState>, src: PathBuf) -> CmdResult
 
 /// 動画のプロキシを作り、そのパスを返す（できていればすぐ返る）。進捗は "proxy-progress"
 #[tauri::command]
-pub async fn make_proxy(app: AppHandle, state: State<'_, AppState>, src: PathBuf, duration_ms: u64) -> CmdResult<PathBuf> {
+pub async fn make_proxy(app: AppHandle, state: State<'_, AppState>, src: PathBuf, duration_ms: u64, stabilize: Option<bool>) -> CmdResult<PathBuf> {
     let ffmpeg = state.ffmpeg();
     let root = state.proxy_root.clone();
     let lock = state.proxy_lock.clone();
     blocking(move || {
         let _g = lock.lock().unwrap();
         let name = src.to_string_lossy().into_owned();
-        voxcut_core::proxy::make_proxy(&ffmpeg, &src, &root, duration_ms as f64 / 1000.0, &mut |ratio| {
+        voxcut_core::proxy::make_proxy_with(&ffmpeg, &src, &root, duration_ms as f64 / 1000.0, stabilize.unwrap_or(false), &mut |ratio| {
             let _ = app.emit("proxy-progress", ProxyProgress { src: name.clone(), ratio });
         })
         .map_err(err)
