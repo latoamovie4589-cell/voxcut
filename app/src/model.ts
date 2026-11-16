@@ -52,6 +52,8 @@ export interface SubtitleStyle {
   boxColor?: string;
   boxOpacity?: number;
   boxPadding?: number;
+  /** 1 行に入れる文字数の上限（全角を 1、半角を 0.55 と数える）。0 か無しなら画面の幅で決める */
+  maxChars?: number;
 }
 
 export interface Transform {
