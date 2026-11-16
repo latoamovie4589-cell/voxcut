@@ -33,16 +33,28 @@ fn alignment(p: SubtitlePosition) -> u8 {
 }
 
 fn style_line(name: &str, s: &SubtitleStyle) -> String {
+    // 帯（BorderStyle 3）：縁の色の欄が帯の色、縁の太さの欄が帯の余白になる
+    let boxed = !s.box_color.is_empty();
+    let (border, out, ow) = if boxed {
+        (3, ass_color_alpha(&s.box_color, s.box_opacity), s.box_padding)
+    } else {
+        (1, ass_color(&s.outline_color), s.outline_width)
+    };
+    let (back, shadow) = if s.shadow_color.is_empty() { ("&H80000000".to_string(), 0) } else { (ass_color(&s.shadow_color), s.shadow_offset) };
     format!(
-        "Style: {name},{font},{size},{pri},&H000000FF,{out},&H80000000,0,0,0,0,100,100,0,0,1,{ow},0,{al},40,40,{mv},1",
+        "Style: {name},{font},{size},{pri},&H000000FF,{out},{back},0,0,0,0,100,100,0,0,{border},{ow},{shadow},{al},40,40,{mv},1",
         font = s.font_family,
         size = s.font_size,
         pri = ass_color(&s.color),
-        out = ass_color(&s.outline_color),
-        ow = s.outline_width,
         al = alignment(s.position),
         mv = s.margin_v,
     )
+}
+
+/// 不透明度つきの色（ASS は透明度で書く。00 が不透明）
+fn ass_color_alpha(hex: &str, opacity: f64) -> String {
+    let a = ((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8;
+    format!("&H{a:02X}{}", &ass_color(hex)[4..])
 }
 
 /// アニメーションにかけるフレーム数（0.2 秒）
@@ -234,6 +246,12 @@ mod tests {
         }
         let s = build_ass(&p);
         assert!(s.contains("Style: ch_a,"));
+        // 影と帯：帯の色は縁の欄（不透明度は ASS の透明度）、余白は縁の太さの欄、BorderStyle 3
+        let mut st = SubtitleStyle { shadow_color: "#112233".into(), shadow_offset: 5, ..SubtitleStyle::default() };
+        assert!(style_line("x", &st).ends_with("&H00332211,0,0,0,0,100,100,0,0,1,4,5,2,40,40,60,1"), "{}", style_line("x", &st));
+        st.box_color = "#000000".into();
+        st.box_opacity = 0.6;
+        assert!(style_line("x", &st).contains(",&H66000000,&H00332211,0,0,0,0,100,100,0,0,3,12,5,"), "{}", style_line("x", &st));
         assert!(s.contains("Style: ch_b,"));
         assert_eq!(s.matches("Dialogue:").count(), 3);
         assert!(s.contains("Dialogue: 0,0:00:00.00,0:00:03.00,ch_a,,0,0,0,,こんにちは。"));

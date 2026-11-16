@@ -28,6 +28,8 @@ pub struct ExportOptions {
     pub portrait_frames: std::collections::HashMap<String, std::collections::HashMap<usize, PathBuf>>,
     /// 静止画を 1 枚だけ書き出すときの時刻（秒）。音は作らない
     pub still_at: Option<f64>,
+    /// 一部だけ書き出すときの範囲（始まりと終わりの秒）。無ければ全体
+    pub range: Option<(f64, f64)>,
 }
 
 impl ExportOptions {
@@ -44,6 +46,7 @@ impl ExportOptions {
             item_sequences: Default::default(),
             portrait_frames: Default::default(),
             still_at: None,
+            range: None,
         }
     }
 }
@@ -669,8 +672,9 @@ pub fn build_args(
             "pcm_s16le".into(),
             "-ar".into(),
             v.sample_rate.to_string(),
-            "-t".into(),
-            format!("{total_s:.3}"),
+        ]);
+        args.extend(range_args(opt.range, total_s));
+        args.extend([
             "-progress".into(),
             "pipe:1".into(),
             "-nostats".into(),
@@ -694,8 +698,9 @@ pub fn build_args(
         "aac".into(),
         "-b:a".into(),
         "192k".into(),
-        "-t".into(),
-        format!("{total_s:.3}"),
+    ]);
+    args.extend(range_args(opt.range, total_s));
+    args.extend([
         "-movflags".into(),
         "+faststart".into(),
         "-progress".into(),
@@ -704,6 +709,18 @@ pub fn build_args(
         opt.out.to_string_lossy().into_owned(),
     ]);
     Ok(args)
+}
+
+/// 書き出す範囲（出力側で頭を飛ばして、長さで切る）。範囲が無ければ全体の長さで切る
+fn range_args(range: Option<(f64, f64)>, total_s: f64) -> Vec<String> {
+    match range {
+        Some((a, b)) => {
+            let a = a.clamp(0.0, total_s);
+            let b = b.clamp(a, total_s);
+            vec!["-ss".into(), format!("{a:.3}"), "-t".into(), format!("{:.3}", (b - a).max(0.04))]
+        }
+        None => vec!["-t".into(), format!("{total_s:.3}")],
+    }
 }
 
 fn resolve(base: &Path, src: &str) -> String {
@@ -1482,6 +1499,21 @@ mod tests {
         let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    }
+
+    /// 一部だけの書き出し：出力側で頭を飛ばして、その長さだけ書く（音だけのときも）
+    #[test]
+    fn range_export_cuts_output() {
+        let p = Project::sample();
+        let wav = |id: &str| Some(PathBuf::from(format!("/cache/{id}.wav")));
+        let mut opt = ExportOptions::new("ffmpeg", Path::new("/o.mp4"), Path::new("/"));
+        opt.range = Some((1.0, 2.5));
+        let args = build_args(&p, &wav, &[], &[], &opt).unwrap();
+        let tail = args[args.len() - 12..].join(" ");
+        assert!(tail.contains("-ss 1.000 -t 1.500"), "{tail}");
+        opt.out = PathBuf::from("/o.wav");
+        let args = build_args(&p, &wav, &[], &[], &opt).unwrap();
+        assert!(args.join(" ").contains("-ss 1.000 -t 1.500 -progress"), "{}", args.join(" "));
     }
 
     /// 途中の状態・登場・退場の式と、静止画の書き出し（FFmpeg があれば実際に 1 枚書く）

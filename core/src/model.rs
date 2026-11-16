@@ -137,6 +137,34 @@ pub struct SubtitleStyle {
     pub margin_v: u32,
     #[serde(default)]
     pub animation: SubtitleAnimation,
+    /// 影の色（空なら影なし）とずれ（px）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shadow_color: String,
+    #[serde(default = "four", skip_serializing_if = "is_four")]
+    pub shadow_offset: u32,
+    /// 文字の後ろの帯（空なら帯なし）。帯を付けると縁取りの代わりになる（ASS の BorderStyle 3）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub box_color: String,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub box_opacity: f64,
+    #[serde(default = "twelve", skip_serializing_if = "is_twelve")]
+    pub box_padding: u32,
+}
+
+fn four() -> u32 {
+    4
+}
+fn is_four(v: &u32) -> bool {
+    *v == 4
+}
+fn twelve() -> u32 {
+    12
+}
+fn is_twelve(v: &u32) -> bool {
+    *v == 12
+}
+fn is_one(v: &f64) -> bool {
+    (*v - 1.0).abs() < 1e-9
 }
 
 /// 字幕の出し方。プレビュー（app/src/subtitleAnim.ts）と書き出し（subtitle.rs）で同じ時間配分にする
@@ -165,6 +193,11 @@ impl Default for SubtitleStyle {
             position: SubtitlePosition::Bottom,
             margin_v: 60,
             animation: SubtitleAnimation::None,
+            shadow_color: String::new(),
+            shadow_offset: 4,
+            box_color: String::new(),
+            box_opacity: 1.0,
+            box_padding: 12,
         }
     }
 }
