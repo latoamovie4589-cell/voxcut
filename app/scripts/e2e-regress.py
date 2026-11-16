@@ -271,6 +271,62 @@ async def main():
         check("かんたんエフェクトの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+
+        # ── 切り替え：同じレイヤーで接している次のアイテムに付ける。書き出しと同じ置き換え（Rust の with_transitions と同じ値）
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const m=await import('/src/model.ts');
+          s.setState({playhead:3000}); const a=s.addVisualItem('text'); const ca=s.getState().project.clips.find(c=>c.id===a);
+          s.setState({playhead:ca.start+ca.duration}); const b=s.addVisualItem('text'); const cb=s.getState().project.clips.find(c=>c.id===b);
+          return {a, b, same: ca.trackId===cb.trackId, adj: m.prevAdjacent(s.getState().project, cb)?.id===a}}""")
+        check("切り替え：2 つ目のテキストが同じレイヤーで前と接する", r["same"] and r["adj"], str(r))
+        A, B = r["a"], r["b"]
+        await q.wait_for_timeout(300)
+        await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); s.setState({{selectedClipId:'{B}', selectedClipIds:['{B}'], fxTab:'trans'}})}}")
+        await q.wait_for_timeout(400)
+        await q.locator(".vx-fx-tile[data-fx='tr-left']").click(); await q.wait_for_timeout(300)
+        r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const p=s.getState().project;
+          const t=p.clips.find(c=>c.id==='{B}').look.transition; const d=m.withTransitions(p); const ga=d.clips.find(c=>c.id==='{A}'), gb=d.clips.find(c=>c.id==='{B}');
+          return {{t, ex: ga.look.exit, en: gb.look.enter, pressed: !!document.querySelector(".vx-fx-tile[data-fx='tr-left'][aria-pressed='true']")}}}}""")
+        check("切り替え：「左へ流す」で前は左へ出て、次は右から入る", r["t"]["kind"] == "slideLeft" and r["ex"]["kind"] == "slideLeft" and r["en"]["kind"] == "slideRight" and r["ex"]["frames"] + r["en"]["frames"] == r["t"]["frames"] and r["pressed"], str(r))
+        await q.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
+        r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts');
+          const lk=k=>{{const p=s.getState().project; const c=p.clips.find(c=>c.id==='{B}'); s.updateClip('{B}',{{look:{{...c.look, transition:{{kind:k, frames:20}}}}}}); return m.withTransitions(s.getState().project)}};
+          const p0=s.getState().project; const a0=p0.clips.find(c=>c.id==='{A}');
+          const d1=lk('dissolve'); const ga=d1.clips.find(c=>c.id==='{A}');
+          const d2=lk('black'); const ids=d2.clips.slice(-2).map(c=>c.id); const imgs=await v.bakeItemImages(d2);
+          return {{ext: ga.duration===a0.duration+20 && ga.look.fadeOut===20 && d1.clips.find(c=>c.id==='{B}').look.fadeIn===20,
+            covers: JSON.stringify(ids)===JSON.stringify(['{B}~cover1','{B}~cover2']), baked: !!imgs['{B}~cover1'] && !!imgs['{B}~cover2'], same: s.getState().project.clips.length===p0.clips.length}}}}""")
+        check("切り替え：クロスフェードは前を延ばし、暗転は覆う図形を最後に足す（元のプロジェクトは変えない）", all(r.values()), str(r))
+        await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); s.setState({{selectedClipId:'{A}', selectedClipIds:['{A}']}})}}")
+        await q.wait_for_timeout(300)
+        dis = await q.evaluate("()=>document.querySelector(\".vx-fx-tile[data-fx='tr-left']\")?.disabled")
+        check("切り替え：前に接するアイテムがないと選べない", dis is True, str(dis))
+        await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); s.setState({{playhead:s.getState().project.clips.find(c=>c.id==='{B}').start}})}}")
+        await q.wait_for_timeout(300)
+        await q.get_by_role("button", name="ファイル", exact=True).click(); await q.wait_for_timeout(250)
+        await q.get_by_role("menuitem", name="この場面を画像で書き出す…").click(); await q.wait_for_timeout(1500)
+        check("切り替え：入れたまま画像を書き出せる", await q.evaluate("()=>document.body.innerText.includes('画像を書き出しました')"))
+        check("切り替えの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── 文字の飾り：ツールバーの「テキスト」からひな形を選んで置ける。見本を押すと飾りが入れ替わる
+        q = await fresh(b)
+        await q.get_by_role("button", name="テキスト", exact=True).click(); await q.wait_for_timeout(250)
+        await q.get_by_role("menuitem", name="ネオン").click(); await q.wait_for_timeout(500)
+        CUR = "async()=>{const s=(await import('/src/store.ts')).getState(); return s.project.clips.find(x=>x.id===s.selectedClipId)}"
+        c1 = await q.evaluate(CUR)
+        check("文字の飾り：「テキスト ▸ ネオン」で光る文字が置かれる", c1["type"] == "text" and c1["shadowColor"] == "#00E5FF" and c1["shadowBlur"] == 14, str({k: c1.get(k) for k in ["type", "shadowColor"]}))
+        check("文字の飾り：今のひな形が押された状態で出る", await q.locator(".vx-fx-tile[data-style='neon'][aria-pressed='true']").count() == 1)
+        await q.locator(".vx-fx-tile[data-style='band']").click(); await q.wait_for_timeout(300)
+        c2 = await q.evaluate(CUR)
+        check("文字の飾り：「黒い帯」に替えると影が消えて帯が付く（文字と位置はそのまま）", c2["boxColor"] == "#000000" and c2["shadowColor"] == "" and c2["text"] == c1["text"] and c2["transform"] == c1["transform"], str({k: c2.get(k) for k in ["boxColor", "shadowColor"]}))
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts'); const base={id:'x',trackId:'',start:0,duration:1,type:'text',text:'あ',fontFamily:'Yu Gothic UI',fontSize:60,color:'#fff',outlineColor:'#000',outlineWidth:0,bold:true,italic:false,align:'center',transform:{x:0,y:0,scale:1,opacity:1}};
+          const a=v.textImage(base), g=v.textImage({...base, shadowColor:'#0ff', shadowBlur:10}), o=v.textImage({...base, outline2Color:'#fff', outline2Width:8});
+          return [g.width-a.width===40 && g.height-a.height===40, o.width-a.width===16, JSON.stringify(v.textKey(base))!==JSON.stringify(v.textKey({...base, gradientColor:'#f00'}))]}""")
+        check("文字の飾り：光は四方に余白、外側の縁は太さの分だけ大きく、飾りが違えば別の画像", all(r), str(r))
+        check("文字の飾りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
