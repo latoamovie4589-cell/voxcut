@@ -1111,6 +1111,15 @@ export function CharacterSubtitleTab({character}: {character: Character}) {
       </HStack>
       <ColorField label="文字の色" value={character.subtitle.color} onChange={color => update({subtitle: {...character.subtitle, color}})} />
       <ColorField label="縁の色" value={character.subtitle.outlineColor} onChange={outlineColor => update({subtitle: {...character.subtitle, outlineColor}})} />
+      <NumberInput
+        label="1 行の文字数"
+        units="文字"
+        description="これより長い字幕は改行します（半角は約半分と数えます）。0 なら画面の幅いっぱいで改行します。句読点が行の頭に来ないよう調整します"
+        value={character.subtitle.maxChars ?? 0}
+        min={0}
+        max={80}
+        onChange={maxChars => update({subtitle: {...character.subtitle, maxChars}})}
+      />
       <SubtitleDeco character={character} />
     </Section>
   );
