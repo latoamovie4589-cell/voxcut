@@ -528,6 +528,95 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
   });
 }
 
+/** スタンプの形（この中の数はどれも、このアプリで決めたもの） */
+function stickerPath(x: CanvasRenderingContext2D, kind: string, W: number, H: number) {
+  const m = Math.min(W, H);
+  if (kind === 'heart') {
+    x.moveTo(W / 2, H * 0.95);
+    x.bezierCurveTo(-W * 0.12, H * 0.48, W * 0.1, -H * 0.08, W / 2, H * 0.26);
+    x.bezierCurveTo(W * 0.9, -H * 0.08, W * 1.12, H * 0.48, W / 2, H * 0.95);
+    x.closePath();
+  } else if (kind === 'arrow') {
+    x.moveTo(0, H * 0.34);
+    x.lineTo(W * 0.58, H * 0.34);
+    x.lineTo(W * 0.58, 0);
+    x.lineTo(W, H / 2);
+    x.lineTo(W * 0.58, H);
+    x.lineTo(W * 0.58, H * 0.66);
+    x.lineTo(0, H * 0.66);
+    x.closePath();
+  } else if (kind === 'bubble') {
+    x.roundRect(0, 0, W, H * 0.78, m * 0.2);
+    // しっぽは本体と同じ向き（時計回り）に描く（逆だと重なりが抜ける）
+    x.moveTo(W * 0.44, H * 0.7);
+    x.lineTo(W * 0.14, H);
+    x.lineTo(W * 0.24, H * 0.7);
+    x.closePath();
+  } else if (kind === 'thought') {
+    x.ellipse(W / 2, H * 0.38, W / 2, H * 0.38, 0, 0, Math.PI * 2);
+    x.moveTo(W * 0.27 + m * 0.08, H * 0.84);
+    x.ellipse(W * 0.27, H * 0.84, m * 0.08, m * 0.08, 0, 0, Math.PI * 2);
+    x.moveTo(W * 0.13 + m * 0.045, H * 0.96);
+    x.ellipse(W * 0.13, H * 0.96, m * 0.045, m * 0.045, 0, 0, Math.PI * 2);
+  } else if (kind === 'sparkle') {
+    x.moveTo(W / 2, 0);
+    x.quadraticCurveTo(W * 0.56, H * 0.44, W, H / 2);
+    x.quadraticCurveTo(W * 0.56, H * 0.56, W / 2, H);
+    x.quadraticCurveTo(W * 0.44, H * 0.56, 0, H / 2);
+    x.quadraticCurveTo(W * 0.44, H * 0.44, W / 2, 0);
+    x.closePath();
+  } else if (kind === 'sweat') {
+    x.moveTo(W / 2, 0);
+    x.bezierCurveTo(W * 0.62, H * 0.3, W * 1.05, H * 0.55, W * 0.95, H * 0.75);
+    x.bezierCurveTo(W * 0.85, H * 1.02, W * 0.15, H * 1.02, W * 0.05, H * 0.75);
+    x.bezierCurveTo(-W * 0.05, H * 0.55, W * 0.38, H * 0.3, W / 2, 0);
+    x.closePath();
+  } else if (kind === 'anger') {
+    // 四つの角に、内側へ曲がる線
+    const cx = W / 2;
+    const cy = H / 2;
+    const g = m * 0.1;
+    const r = m * 0.42;
+    for (const [sx, sy] of [
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ]) {
+      x.moveTo(cx + sx * g, cy + sy * r);
+      x.quadraticCurveTo(cx + sx * g * 1.2, cy + sy * g * 1.2, cx + sx * r, cy + sy * g);
+    }
+  } else if (kind === 'exclaim') {
+    x.roundRect(W * 0.3, 0, W * 0.4, H * 0.66, W * 0.2);
+    x.moveTo(W / 2 + W * 0.21, H * 0.87);
+    x.ellipse(W / 2, H * 0.87, W * 0.21, H * 0.11, 0, 0, Math.PI * 2);
+  } else if (kind === 'burst') {
+    // ぎざぎざの爆発（とがりの長さは決まった並び）
+    const k = [1, 0.62, 0.92, 0.58, 1, 0.66, 0.88, 0.6, 0.98, 0.63, 0.9, 0.57, 1, 0.64, 0.86, 0.6, 0.95, 0.62];
+    k.forEach((r, i) => {
+      const a = -Math.PI / 2 + (i * Math.PI * 2) / k.length;
+      const px = W / 2 + (Math.cos(a) * W * r) / 2;
+      const py = H / 2 + (Math.sin(a) * H * r) / 2;
+      if (i) x.lineTo(px, py);
+      else x.moveTo(px, py);
+    });
+    x.closePath();
+  } else if (kind === 'speed') {
+    // 集中線：外から真ん中へ細くなる線。真ん中は空ける
+    const n = 64;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + ((i * 7) % 5) * 0.01;
+      const w = (0.008 + ((i * 13) % 7) * 0.004) * Math.PI;
+      const inner = 0.34 + ((i * 11) % 9) * 0.025;
+      const R = Math.hypot(W, H);
+      x.moveTo(W / 2 + Math.cos(a - w) * R, H / 2 + Math.sin(a - w) * R);
+      x.lineTo(W / 2 + Math.cos(a) * (W / 2) * inner, H / 2 + Math.sin(a) * (H / 2) * inner);
+      x.lineTo(W / 2 + Math.cos(a + w) * R, H / 2 + Math.sin(a + w) * R);
+      x.closePath();
+    }
+  }
+}
+
 /** 図形アイテムの画像（線の太さの分だけ外側に余白を足す） */
 export function shapeImage(c: ShapeClip): HTMLCanvasElement {
   const key = JSON.stringify(['s', c.shape, c.width, c.height, c.fill, c.stroke, c.strokeWidth]);
@@ -563,12 +652,40 @@ export function shapeImage(c: ShapeClip): HTMLCanvasElement {
     } else if (c.shape === 'line') {
       x.moveTo(0, H / 2);
       x.lineTo(W, H / 2);
-    }
+    } else stickerPath(x, c.shape, W, H);
     if (c.shape === 'line') {
       x.strokeStyle = c.fill;
       x.lineWidth = Math.max(1, H);
       x.lineCap = 'round';
       x.stroke();
+    } else if (c.shape === 'anger') {
+      // 線だけで描くスタンプ（色は塗りの色）
+      x.strokeStyle = c.fill;
+      x.lineWidth = Math.min(W, H) * 0.12;
+      x.lineCap = 'round';
+      x.stroke();
+    } else if (c.shape === 'question') {
+      x.font = `900 ${Math.round(H * 0.95)}px "Arial Black", "Hiragino Sans", "Yu Gothic UI", sans-serif`;
+      x.textAlign = 'center';
+      x.textBaseline = 'middle';
+      if (sw > 0) {
+        x.strokeStyle = c.stroke;
+        x.lineWidth = sw * 2;
+        x.lineJoin = 'round';
+        x.strokeText('?', W / 2, H * 0.54, W);
+      }
+      x.fillStyle = c.fill;
+      x.fillText('?', W / 2, H * 0.54, W);
+    } else if (c.shape === 'bubble' || c.shape === 'thought') {
+      // 吹き出しは縁を先に描いてから塗る（しっぽとのつなぎ目に線が出ない）
+      if (sw > 0) {
+        x.strokeStyle = c.stroke;
+        x.lineWidth = sw * 2;
+        x.lineJoin = 'round';
+        x.stroke();
+      }
+      x.fillStyle = c.fill;
+      x.fill();
     } else {
       x.fillStyle = c.fill;
       x.fill();

@@ -27,6 +27,7 @@ import {
   animStateAt,
   setKeyframe,
   hasAudioFx,
+  proxyKey,
 } from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -526,7 +527,8 @@ export function Preview() {
               });
           }
         } else if (m.mediaKind === 'video') {
-          const px = proxies[m.src];
+          // 手ぶれ補正を付けた動画は、補正したプロキシ（できるまでは元のプロキシ）
+          const px = (m.stabilize && proxies[proxyKey(m)]?.url ? proxies[proxyKey(m)] : null) ?? proxies[m.src];
           const info = media[m.src];
           if (px?.url && info?.width && info.height) {
             const v = videoFor(px.url, bump);
