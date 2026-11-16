@@ -7,11 +7,12 @@ import {Heading} from '@astryxdesign/core/Heading';
 import {VStack} from '@astryxdesign/core/Layout';
 import {Text} from '@astryxdesign/core/Text';
 import {Slider} from '@astryxdesign/core/Slider';
-import {plainLook, prevAdjacent, transitionFrames, type Effect, type Look, type MotionKind, type Transform, type TransitionKind, type VisualClip} from '../model';
+import {GRADES, plainLook, prevAdjacent, transitionFrames, type Effect, type Look, type MotionKind, type Transform, type TransitionKind, type VisualClip} from '../model';
 import {play, stop} from '../preview/playback';
+import {gradeFilter} from '../preview/visual';
 import {getState, setState, updateClip, useStore} from '../store';
 
-type Tab = 'in' | 'out' | 'move' | 'fx' | 'trans';
+type Tab = 'in' | 'out' | 'move' | 'fx' | 'filter' | 'trans';
 type Ctx = {transform: Transform; look: Look; duration: number; fps: number};
 export interface QuickPreset {
   id: string;
@@ -94,6 +95,22 @@ function fxPreset(id: string, label: string, fx: Effect): QuickPreset {
   };
 }
 
+/** フィルター（色の雰囲気。1 つだけ付く。強さは今の値を引き継ぐ） */
+function gradePreset(name: string, label: string): QuickPreset {
+  return {
+    id: `gr-${name}`,
+    label,
+    on: c => (c.look.effects ?? []).some(e => e.kind === 'grade' && e.name === name),
+    apply: c => {
+      const list = c.look.effects ?? [];
+      const cur = list.find(e => e.kind === 'grade');
+      if (cur && cur.kind === 'grade' && cur.name === name) return {...c.look, effects: list.filter(e => e !== cur)};
+      const strength = cur && cur.kind === 'grade' ? cur.strength : 1;
+      return {...c.look, effects: [...list.filter(e => e.kind !== 'grade'), {kind: 'grade', name, strength}]};
+    },
+  };
+}
+
 /** つなぎ目の切り替え（次の場面＝このアイテムに付ける。長さは前と同じなら引き継ぐ） */
 function transPreset(id: string, label: string, kind: TransitionKind | null): QuickPreset {
   return {
@@ -149,6 +166,10 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     fxPreset('fx-wave', '波', {kind: 'wave', amount: 12, length: 160, speed: 1}),
     fxPreset('fx-swirl', '渦巻き', {kind: 'swirl', angle: 180}),
   ],
+  filter: [
+    {id: 'gr-none', label: 'なし', on: c => !(c.look.effects ?? []).some(e => e.kind === 'grade'), apply: c => ({...c.look, effects: (c.look.effects ?? []).filter(e => e.kind !== 'grade')})},
+    ...Object.entries(GRADES).map(([name, g]) => gradePreset(name, g.label)),
+  ],
   trans: [
     transPreset('tr-none', 'なし', null),
     transPreset('tr-dissolve', 'ディゾルブ', 'dissolve'),
@@ -162,7 +183,7 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
   ],
 };
 
-const TAB_LABEL: Record<Tab, string> = {in: '登場', out: '退場', move: '動き', fx: '画面効果', trans: '切り替え'};
+const TAB_LABEL: Record<Tab, string> = {in: '登場', out: '退場', move: '動き', fx: '画面効果', filter: 'フィルター', trans: '切り替え'};
 
 let previewTimer = 0;
 /** 付けた効果をすぐ見せる：その部分だけを再生して止める */
@@ -219,18 +240,43 @@ export function QuickEffects({clip, fps}: {clip: VisualClip; fps: number}) {
               onClick={() => {
                 // 「なし」以外は、付いているものをもう一度押すと外れる
                 const none = QUICK[tab][0];
-                const look = on && p !== none ? (tab === 'fx' ? p.apply(ctx) : none.apply(ctx)) : p.apply(ctx);
+                const look = on && p !== none ? (tab === 'fx' || tab === 'filter' ? p.apply(ctx) : none.apply(ctx)) : p.apply(ctx);
                 updateClip(clip.id, {look} as Partial<VisualClip>);
                 if (!(on && p !== none) && p !== none) previewClip({...live.current, look} as VisualClip, tab, fps);
               }}>
-              <span className="vx-fx-demo" aria-hidden>
-                <span className="vx-fx-dot" />
-              </span>
+              {tab === 'filter' ? (
+                // 色見本にそのフィルターを掛けて見せる（書き出しと同じ SVG フィルター）
+                <span
+                  className="vx-fx-demo vx-grade-demo"
+                  aria-hidden
+                  style={{filter: p.id === 'gr-none' ? undefined : (gradeFilter({kind: 'grade', name: p.id.slice(3), strength: 1}) ?? undefined)}}
+                />
+              ) : (
+                <span className="vx-fx-demo" aria-hidden>
+                  <span className="vx-fx-dot" />
+                </span>
+              )}
               <span className="vx-fx-name">{p.label}</span>
             </button>
           );
         })}
       </div>
+      {tab === 'filter' &&
+        (() => {
+          const g = (ctx.look.effects ?? []).find(e => e.kind === 'grade');
+          return g && g.kind === 'grade' ? (
+            <Slider
+              label="フィルターの強さ"
+              value={g.strength}
+              min={0}
+              max={1}
+              step={0.01}
+              valueDisplay="text"
+              formatValue={v => `${Math.round(v * 100)}%`}
+              onChange={(strength: number) => updateClip(clip.id, {look: {...ctx.look, effects: (ctx.look.effects ?? []).map(e => (e === g ? {...g, strength} : e))}} as Partial<VisualClip>)}
+            />
+          ) : null;
+        })()}
       {tab === 'trans' && prev && ctx.look.transition && (
         <Slider
           label="切り替えの長さ"
@@ -250,7 +296,9 @@ export function QuickEffects({clip, fps}: {clip: VisualClip; fps: number}) {
             : '切り替えは、同じレイヤーで前のアイテムとくっついているときに使えます。2 つの場面を同じレイヤーに並べて置いてください。'
           : tab === 'fx'
             ? '画面効果は重ねて付けられます。強さは下の「映像エフェクト」で直せます。'
-            : '押すとすぐ付いて、その部分を再生します。長さや動く量は下の欄で直せます。'}
+            : tab === 'filter'
+              ? '色の雰囲気を変えます。色温度は下の「映像エフェクト」の「追加」から付けられます。'
+              : '押すとすぐ付いて、その部分を再生します。長さや動く量は下の欄で直せます。'}
       </Text>
     </VStack>
   );

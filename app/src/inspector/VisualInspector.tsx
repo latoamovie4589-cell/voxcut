@@ -39,10 +39,21 @@ import {
   type TextClip,
   type Transform,
   type VisualClip,
+  GRADES,
 } from '../model';
 import {deleteClip, duplicateSelection, setState, updateClip, useStore} from '../store';
 
-const EFFECT_LABEL: Record<Effect['kind'], string> = {blur: 'ぼかし', shake: '揺れ', color: '色調整', mono: '白黒', invert: '色の反転', wave: '波（くねくね）', swirl: '渦巻き'};
+const EFFECT_LABEL: Record<Effect['kind'], string> = {
+  blur: 'ぼかし',
+  shake: '揺れ',
+  color: '色調整',
+  mono: '白黒',
+  invert: '色の反転',
+  wave: '波（くねくね）',
+  swirl: '渦巻き',
+  grade: 'フィルター',
+  temperature: '色温度',
+};
 const newEffect = (k: Effect['kind']): Effect =>
   k === 'blur'
     ? {kind: 'blur', radius: 6}
@@ -54,7 +65,11 @@ const newEffect = (k: Effect['kind']): Effect =>
           ? {kind: 'shake', amount: 8, speed: 6}
           : k === 'color'
             ? {kind: 'color', brightness: 1, contrast: 1, saturation: 1}
-            : ({kind: k} as Effect);
+            : k === 'grade'
+              ? {kind: 'grade', name: 'film', strength: 1}
+              : k === 'temperature'
+                ? {kind: 'temperature', warm: 0.3, tint: 0}
+                : ({kind: k} as Effect);
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
@@ -312,6 +327,36 @@ export function EffectsEditor({
           )}
           {fx.kind === 'swirl' && (
             <Slider label="ねじる角度" value={fx.angle} min={-720} max={720} step={5} valueDisplay="text" formatValue={v => `${v}°`} onChange={(angle: number) => setFx(i, {...fx, angle})} />
+          )}
+          {fx.kind === 'grade' && (
+            <VStack gap={2}>
+              <Selector label="フィルター" value={fx.name} options={Object.entries(GRADES).map(([value, g]) => ({value, label: g.label}))} onChange={(name: string) => setFx(i, {...fx, name})} />
+              <Slider label="強さ" value={fx.strength} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(strength: number) => setFx(i, {...fx, strength})} />
+            </VStack>
+          )}
+          {fx.kind === 'temperature' && (
+            <VStack gap={2}>
+              <Slider
+                label="色温度（青 ← → 黄）"
+                value={fx.warm}
+                min={-1}
+                max={1}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={v => `${Math.round(v * 100)}`}
+                onChange={(warm: number) => setFx(i, {...fx, warm})}
+              />
+              <Slider
+                label="色合い（緑 ← → 赤紫）"
+                value={fx.tint}
+                min={-1}
+                max={1}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={v => `${Math.round(v * 100)}`}
+                onChange={(tint: number) => setFx(i, {...fx, tint})}
+              />
+            </VStack>
           )}
           {fx.kind === 'color' && (
             <VStack gap={2}>

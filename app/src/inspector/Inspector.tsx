@@ -9,6 +9,8 @@ import {Divider} from '@astryxdesign/core/Divider';
 import {Icon} from '@astryxdesign/core/Icon';
 import {RubyButton} from './RubyButton';
 import {SpeedSection} from './SpeedSection';
+import {CutoutSection} from './CutoutSection';
+import {SoundFxFields} from './SoundFxFields';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
@@ -789,6 +791,8 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
       <Divider />
       {clip.mediaKind !== 'image' && <SpeedSection clip={clip} notify={notify} />}
       {clip.mediaKind !== 'image' && <Divider />}
+      {clip.mediaKind !== 'audio' && <CutoutSection clip={clip} />}
+      {clip.mediaKind !== 'audio' && <Divider />}
       {clip.mediaKind !== 'audio' && <LookEditor clip={clip} />}
       {sound && (
         <Section title="音">
@@ -802,6 +806,7 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
             formatValue={v => `${Math.round(v * 100)}%`}
             onChange={(volume: number) => updateClip(sound.id, {volume})}
           />
+          <SoundFxFields clip={sound} notify={notify} />
           {/* BGM の自動音量下げ（レイヤーごとの設定。レイヤーのメニューと同じもの） */}
           {soundTrack && (
             <>
