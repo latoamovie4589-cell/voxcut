@@ -50,7 +50,8 @@ pub fn plan(p: &Project, cache: &AudioCache, only: Option<&[String]>, dict: &Dic
             continue;
         }
         let Some(voice) = p.effective_voice(v) else { continue };
-        let text = dict.apply(&v.text);
+        // ルビを付けた語はルビの読みで合成する（辞書より先）
+        let text = dict.apply(&crate::text::ruby_reading(&v.text));
         // アクセントの手直しは、作ったときと文・話者が同じ VOICEVOX の行でだけ使う。キャッシュの鍵にも入れる
         let accent = v
             .accent

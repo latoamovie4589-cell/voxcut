@@ -1,6 +1,7 @@
 //! セリフから ASS 字幕を作る（FFmpeg の ass フィルタで焼き込む）。
 
 use crate::model::{Clip, Frame, Project, SubtitleAnimation, SubtitlePosition, SubtitleStyle};
+use crate::text::{parse_ruby, RubySeg};
 use std::fmt::Write;
 
 /// "#RRGGBB" → ASS の "&H00BBGGRR"
@@ -159,6 +160,120 @@ fn reveal_text(text: &str, count: usize) -> String {
     format!("{}{{\\alpha&HFF&}}{}", escape_text(&shown), escape_text(rest))
 }
 
+/// 改行した行ごとの区切り（地の文・ルビ付きの語と、その語の頭が全文の何文字目か。改行は数えない）
+type RubyRow = Vec<(String, Option<String>, usize)>;
+
+/// ルビの付いた語の途中で改行しない（語の頭で改行する。語が行の頭からなら語の終わりまで延ばす）。画面側の ruby.ts と同じ
+pub fn keep_ruby_words(segs: &[RubySeg], wrapped: &str) -> String {
+    let owner: Vec<usize> = segs.iter().enumerate().flat_map(|(k, s)| s.base.chars().filter(|c| *c != '\n').map(move |_| k)).collect();
+    let chars: Vec<char> = wrapped.chars().filter(|c| *c != '\n').collect();
+    // 行の切れ目（改行を除いた文字の位置）
+    let mut cuts: Vec<usize> = vec![];
+    let mut n = 0;
+    for ch in wrapped.chars() {
+        if ch == '\n' {
+            cuts.push(n);
+        } else {
+            n += 1;
+        }
+    }
+    for i in 0..cuts.len() {
+        let b = cuts[i];
+        if b == 0 || b >= owner.len() || owner[b - 1] != owner[b] || segs[owner[b]].ruby.is_none() {
+            continue;
+        }
+        let k = owner[b];
+        let s0 = owner.iter().position(|&o| o == k).unwrap_or(b);
+        let e0 = owner.iter().rposition(|&o| o == k).map(|e| e + 1).unwrap_or(b);
+        let prev = if i == 0 { 0 } else { cuts[i - 1] };
+        let next = cuts.get(i + 1).copied().unwrap_or(usize::MAX);
+        cuts[i] = if s0 > prev { s0 } else { e0.min(next) };
+    }
+    let mut out = String::new();
+    let mut at = 0;
+    for &c in &cuts {
+        out.extend(&chars[at.min(c)..c]);
+        out.push('\n');
+        at = c;
+    }
+    out.extend(&chars[at.min(chars.len())..]);
+    out
+}
+
+/// ルビを外した文を改行した結果（wrapped）に、ルビを割り当て直す。行をまたいだ語のルビは、頭の行に付ける
+pub fn ruby_rows(segs: &[RubySeg], wrapped: &str) -> Vec<RubyRow> {
+    // 文字ごとの区切り番号
+    let owner: Vec<usize> = segs.iter().enumerate().flat_map(|(k, s)| s.base.chars().filter(|c| *c != '\n').map(move |_| k)).collect();
+    let mut rows = vec![];
+    let mut n = 0;
+    for line in wrapped.split('\n') {
+        let mut row: RubyRow = vec![];
+        for ch in line.chars() {
+            let k = owner.get(n).copied().unwrap_or(usize::MAX);
+            let ruby = segs.get(k).and_then(|s| s.ruby.clone());
+            match row.last_mut() {
+                // 同じ区切りの続き（ルビ付きの語が行をまたいだら、次の行の分はルビなし）
+                Some((t, _, _)) if n > 0 && owner.get(n - 1) == Some(&k) && !t.is_empty() => t.push(ch),
+                _ => {
+                    let first = n == 0 || owner.get(n - 1) != Some(&k);
+                    row.push((ch.to_string(), if first { ruby } else { None }, n));
+                }
+            }
+            n += 1;
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+/// ルビ付きの字幕の ASS テキスト。ルビは行の上に小さい行として置き、横の位置は透明な文字で合わせる
+/// （地の文は同じ文字を透明・高さ 1% で、語の左右のすき間は全角の空白の幅を変えて。どちらもフォントの字幅に従う）。
+/// pop はポップの長さ（ミリ秒）、count は見せる文字数（1 文字ずつ出すとき。ルビは語の頭が出たら出す）
+fn ruby_ass(rows: &[RubyRow], font_size: u32, pop: Option<u32>, count: usize) -> String {
+    let fs = font_size.max(1) as f64;
+    let rs = (fs * 0.5).round().max(1.0);
+    let tags = |sx: f64, sy: f64| match pop {
+        Some(ms) => format!("\\fscx{:.0}\\fscy{:.0}\\t(0,{ms},0.5,\\fscx{:.0}\\fscy{:.0})", sx * 0.85, (sy * 0.85).max(1.0), sx, sy),
+        None => {
+            let x = if (sx - 100.0).abs() < 0.5 { String::new() } else { format!("\\fscx{sx:.0}") };
+            let y = if (sy - 100.0).abs() < 0.5 { String::new() } else { format!("\\fscy{sy:.0}") };
+            x + &y
+        }
+    };
+    let hide = "\\alpha&HFF&";
+    let em = |t: &str| t.chars().map(char_em).sum::<f64>();
+    let mut out: Vec<String> = vec![];
+    for row in rows {
+        if row.iter().any(|(_, r, _)| r.is_some()) {
+            let mut line = String::new();
+            for (base, ruby, at) in row {
+                let Some(ruby) = ruby else {
+                    let _ = write!(line, "{{\\r{}{hide}}}{}", tags(100.0, 1.0), escape_text(base));
+                    continue;
+                };
+                let (wb, wr) = (em(base) * fs, em(ruby) * rs);
+                let shown = if *at < count { "" } else { hide };
+                if wr <= wb {
+                    let gap = (wb - wr) / 2.0 / fs * 100.0;
+                    let pad = if gap >= 0.5 { format!("{{\\r{}{hide}}}\u{3000}", tags(gap, 1.0)) } else { String::new() };
+                    let _ = write!(line, "{pad}{{\\r\\fs{rs:.0}{}{shown}}}{}{pad}", tags(100.0, 100.0), escape_text(ruby));
+                } else {
+                    let _ = write!(line, "{{\\r\\fs{rs:.0}{}{shown}}}{}", tags(wb / wr * 100.0, 100.0), escape_text(ruby));
+                }
+            }
+            out.push(line);
+        }
+        // 地の文の行（まだ出ていない文字は透明）
+        let text: String = row.iter().map(|(t, _, _)| t.as_str()).collect();
+        let start = row.first().map(|(_, _, at)| *at).unwrap_or(0);
+        let k = count.saturating_sub(start).min(text.chars().count());
+        let (a, b): (String, String) = (text.chars().take(k).collect(), text.chars().skip(k).collect());
+        let rest = if b.is_empty() { String::new() } else { format!("{{{hide}}}{}", escape_text(&b)) };
+        out.push(format!("{{\\r{}}}{}{rest}", tags(100.0, 100.0), escape_text(&a)));
+    }
+    out.join("\\N")
+}
+
 /// 見た目を上書きした字幕のスタイル名（ASS のスタイル名に使えない「,」を避ける）
 fn caption_style_name(clip_id: &str) -> String {
     format!("cap_{}", clip_id.replace(',', "_"))
@@ -224,8 +339,15 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             Some(ov) => ov.apply(&ch.subtitle),
             None => ch.subtitle.clone(),
         });
-        let wrapped = eff.map(|st| wrap_subtitle(text, st.font_size, p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| text.to_string());
+        // ルビの書き方を外した文で改行する
+        let segs = parse_ruby(text);
+        let base: String = segs.iter().map(|s| s.base.as_str()).collect();
+        let font_size = eff.as_ref().map(|st| st.font_size).unwrap_or(56);
+        let wrapped = eff.map(|st| wrap_subtitle(&base, st.font_size, p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| base.clone());
+        let has_ruby = segs.iter().any(|s| s.ruby.is_some());
+        let wrapped = if has_ruby { keep_ruby_words(&segs, &wrapped) } else { wrapped };
         let text = wrapped.as_str();
+        let rows = has_ruby.then(|| ruby_rows(&segs, text));
         // 出し方：分離した字幕で上書きしていればそれ
         let anim = c
             .as_caption()
@@ -234,19 +356,17 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             .or_else(|| p.character(&v.character_id).map(|ch| ch.subtitle.animation))
             .unwrap_or_default();
         let ms = (p.video.frames_to_secs(anim_frames(p.video.fps)) * 1000.0).round() as u32;
+        // ルビがあれば、ルビの行を足した文にする（ないときは今までどおり）
+        let body = |pop: Option<u32>, count: usize| match &rows {
+            Some(r) => ruby_ass(r, font_size, pop, count),
+            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", escape_text(text)),
+            None if count == usize::MAX => escape_text(text),
+            None => reveal_text(text, count),
+        };
         match anim {
-            SubtitleAnimation::None => dialogue(&mut out, p, c.start, c.end(), &style, &escape_text(text)),
-            SubtitleAnimation::Fade => {
-                dialogue(&mut out, p, c.start, c.end(), &style, &format!("{{\\fad({ms},{ms})}}{}", escape_text(text)))
-            }
-            SubtitleAnimation::Pop => dialogue(
-                &mut out,
-                p,
-                c.start,
-                c.end(),
-                &style,
-                &format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", escape_text(text)),
-            ),
+            SubtitleAnimation::None => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
+            SubtitleAnimation::Fade => dialogue(&mut out, p, c.start, c.end(), &style, &format!("{{\\fad({ms},{ms})}}{}", body(None, usize::MAX))),
+            SubtitleAnimation::Pop => dialogue(&mut out, p, c.start, c.end(), &style, &body(Some(ms), usize::MAX)),
             SubtitleAnimation::Typewriter => {
                 // 表示文字数が変わるフレームごとに 1 行。文字の位置は全文で決まるので、出ていない文字は透明にしておく
                 let chars = text.chars().filter(|ch| *ch != '\n' && *ch != '\r').count();
@@ -255,7 +375,7 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
                 for f in 1..=c.duration {
                     let next = if f == c.duration { usize::MAX } else { typewriter_count(chars, c.duration, f) };
                     if next != cur {
-                        dialogue(&mut out, p, c.start + seg_start, c.start + f, &style, &reveal_text(text, cur));
+                        dialogue(&mut out, p, c.start + seg_start, c.start + f, &style, &body(None, cur));
                         seg_start = f;
                         cur = next;
                     }
@@ -279,7 +399,7 @@ pub fn build_srt(p: &Project) -> String {
         .iter()
         .filter(|c| p.track(&c.track_id).is_some_and(|t| !t.hidden))
         .filter_map(|c| p.line_of_subtitle(c).map(|v| (c, v)))
-        .map(|(c, v)| (c.start, c.end(), v.subtitle.as_deref().unwrap_or(&v.text).trim().to_string()))
+        .map(|(c, v)| (c.start, c.end(), crate::text::ruby_base(v.subtitle.as_deref().unwrap_or(&v.text)).trim().to_string()))
         .filter(|(_, _, t)| !t.is_empty())
         .collect();
     lines.sort_by_key(|(s, _, _)| *s);
@@ -309,6 +429,34 @@ mod tests {
         assert_eq!(ass_color("#0A84FF"), "&H00FF840A");
         assert_eq!(ass_time(0.0), "0:00:00.00");
         assert_eq!(ass_time(3723.456), "1:02:03.46");
+    }
+
+    #[test]
+    fn ruby_goes_on_a_small_line_above() {
+        let mut p = Project::sample();
+        if let ClipBody::Voice(v) = &mut p.clips[1].body {
+            v.subtitle = Some("今日は夕暮《ゆうぐれ》時".into());
+        }
+        let font = p.character(&p.clips[1].as_voice().unwrap().character_id).unwrap().subtitle.font_size;
+        let s = build_ass(&p);
+        let line = s.lines().find(|l| l.contains("ゆうぐれ")).unwrap();
+        // 地の文は透明・高さ 1% の同じ文字、ルビは半分の大きさ、その下に地の文の行
+        assert!(line.contains(&format!("{{\\r\\fscy1\\alpha&HFF&}}今日は{{\\r\\fs{}}}ゆうぐれ", (font as f64 * 0.5).round())), "{line}");
+        assert!(line.ends_with("\\N{\\r}今日は夕暮時"), "{line}");
+        // 改行をまたいでもルビは頭の行に付き、1 文字ずつ出すときは語の頭が出たら出す
+        let segs = parse_ruby("ああ漢字《かんじ》いい");
+        let rows = ruby_rows(&segs, "ああ漢\n字いい");
+        assert_eq!(rows[0][1], ("漢".to_string(), Some("かんじ".to_string()), 2));
+        assert_eq!(rows[1][0], ("字".to_string(), None, 3));
+        // 改行はルビの語の頭へ動かす（行の頭からの語なら語の終わりへ）
+        assert_eq!(keep_ruby_words(&segs, "ああ漢\n字いい"), "ああ\n漢字いい");
+        let segs2 = parse_ruby("漢字《かんじ》いい\n\nう");
+        assert_eq!(keep_ruby_words(&segs2, "漢\n字いい\n\nう"), "漢字\nいい\n\nう");
+        let t = ruby_ass(&rows, 40, None, 2);
+        assert!(t.contains("{\\r\\fs20\\fscx67\\alpha&HFF&}かんじ"), "{t}");
+        assert!(ruby_ass(&rows, 40, None, 3).contains("{\\r\\fs20\\fscx67}かんじ"));
+        // 字幕ファイル（SRT）はルビを外した文
+        assert!(build_srt(&p).contains("今日は夕暮時"));
     }
 
     #[test]

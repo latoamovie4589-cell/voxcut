@@ -54,6 +54,82 @@ impl Dictionary {
     }
 }
 
+/// ルビの付いた文の 1 区切り（ruby が None なら地の文）
+#[derive(Debug, Clone, PartialEq)]
+pub struct RubySeg {
+    pub base: String,
+    pub ruby: Option<String>,
+}
+
+/// ルビを付けられる漢字（「々」「〆」「ヶ」「〇」を含む）
+pub fn is_kanji(c: char) -> bool {
+    matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '\u{F900}'..='\u{FAFF}' | '々' | '〆' | 'ヶ' | '〇')
+}
+
+/// 「漢字《かんじ》」「｜文字《もじ》」の形のルビを区切る（青空文庫と同じ書き方）。
+/// ｜がなければ《の直前の漢字の並びに付く。閉じていない《や、付ける文字がない《はそのまま文字として残す。画面側の ruby.ts と同じ
+pub fn parse_ruby(text: &str) -> Vec<RubySeg> {
+    let c: Vec<char> = text.chars().collect();
+    let mut out: Vec<RubySeg> = vec![];
+    let mut cur: Vec<char> = vec![];
+    let mut mark: Option<usize> = None;
+    // i から先、改行の前に《…》があれば、その《と》の位置
+    let find = |i: usize| -> Option<(usize, usize)> {
+        let open = (i..c.len()).take_while(|&k| c[k] != '\n').find(|&k| c[k] == '《')?;
+        let close = (open + 1..c.len()).take_while(|&k| c[k] != '\n').find(|&k| c[k] == '》')?;
+        Some((open, close))
+    };
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        if (ch == '｜' || ch == '|') && find(i + 1).is_some_and(|(o, _)| !c[i + 1..o].iter().any(|&x| x == '｜' || x == '|')) {
+            mark = Some(cur.len());
+            i += 1;
+            continue;
+        }
+        if ch == '《' {
+            if let Some((_, close)) = find(i).filter(|&(o, cl)| o == i && cl > i + 1) {
+                let split = mark.unwrap_or_else(|| {
+                    let mut s = cur.len();
+                    while s > 0 && is_kanji(cur[s - 1]) {
+                        s -= 1;
+                    }
+                    s
+                });
+                if split < cur.len() {
+                    if split > 0 {
+                        out.push(RubySeg { base: cur[..split].iter().collect(), ruby: None });
+                    }
+                    out.push(RubySeg { base: cur[split..].iter().collect(), ruby: Some(c[i + 1..close].iter().collect()) });
+                    cur.clear();
+                    mark = None;
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        if ch == '\n' {
+            mark = None;
+        }
+        cur.push(ch);
+        i += 1;
+    }
+    if !cur.is_empty() {
+        out.push(RubySeg { base: cur.into_iter().collect(), ruby: None });
+    }
+    out
+}
+
+/// ルビの書き方を外した、画面に出す文
+pub fn ruby_base(text: &str) -> String {
+    parse_ruby(text).into_iter().map(|s| s.base).collect()
+}
+
+/// ルビを読みにした、合成する文（「明日《あした》」→「あした」）
+pub fn ruby_reading(text: &str) -> String {
+    parse_ruby(text).into_iter().map(|s| s.ruby.unwrap_or(s.base)).collect()
+}
+
 /// `max_chars` 文字以下になるよう、句読点・改行の位置で分割する。
 /// 句読点がなく長すぎる部分は文字数で強制的に切る。
 pub fn split_for_engine(text: &str, max_chars: usize) -> Vec<String> {
@@ -106,6 +182,18 @@ pub fn split_for_engine(text: &str, max_chars: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ruby_notation() {
+        let segs = parse_ruby("今日は夕暮《ゆうぐれ》時｜VoxCut《ボックスカット》です");
+        assert_eq!(segs.iter().map(|s| (s.base.as_str(), s.ruby.as_deref())).collect::<Vec<_>>(), vec![("今日は", None), ("夕暮", Some("ゆうぐれ")), ("時", None), ("VoxCut", Some("ボックスカット")), ("です", None)]);
+        assert_eq!(ruby_base("明日《あした》、｜Ｃ《シー》"), "明日、Ｃ");
+        assert_eq!(ruby_reading("明日《あした》は晴れ"), "あしたは晴れ");
+        // 付ける文字がない・閉じていない・縦棒だけは文字のまま
+        assert_eq!(ruby_base("《注》と|と《あ"), "《注》と|と《あ");
+        assert_eq!(ruby_base("ひらがな《かな》"), "ひらがな《かな》");
+        assert_eq!(ruby_base("ａ｜漢字\n《かんじ》"), "ａ｜漢字\n《かんじ》");
+    }
+
     use super::*;
 
     #[test]
