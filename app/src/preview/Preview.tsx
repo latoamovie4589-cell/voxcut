@@ -28,6 +28,7 @@ import {
   setKeyframe,
   hasAudioFx,
   proxyKey,
+  matteKey,
 } from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -54,6 +55,19 @@ function image(src: string, projectPath: string | null, onLoad: () => void): HTM
     img.decoding = 'async';
     img.onload = onLoad;
     img.src = apiNow ? apiNow.mediaUrl(src, projectPath) : src;
+    images.set(key, img);
+  }
+  return img.complete && img.naturalWidth ? img : null;
+}
+
+/** URL の画像を読む（背景を消す型など）。まだなら null */
+function urlImage(url: string, onLoad: () => void): HTMLImageElement | null {
+  const key = `url|${url}`;
+  let img = images.get(key);
+  if (!img) {
+    img = new Image();
+    img.onload = onLoad;
+    img.src = url;
     images.set(key, img);
   }
   return img.complete && img.naturalWidth ? img : null;
@@ -509,12 +523,15 @@ export function Preview() {
           continue;
         }
         const m = c as MediaClip;
+        // 背景を消す型（作ってあれば）。画像は PNG、動画は同じ素材の時刻に合わせた白黒の動画
+        const matteUrl = m.matte ? proxies[matteKey(m.src, m.matte)]?.url : null;
         if (m.mediaKind === 'image') {
           const img = image(m.src, projectPath, bump);
+          const matte = matteUrl ? urlImage(matteUrl, bump) : null;
           const key = `m:${m.id}`;
           if (img) {
             // 切り抜き・色抜き・形の切り抜き（書き出しと同じく、大きさを変える前に）
-            const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src);
+            const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src, matte);
             if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
             const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
             if (!locked.has(m.trackId))
@@ -543,7 +560,16 @@ export function Preview() {
             const sp = speedAt(m, playhead - m.start);
             if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
               const key = `m:${m.id}`;
-              const sv = sourceView(v, [info.width, info.height], m, false);
+              let matte: CanvasImageSource | null = null;
+              if (matteUrl) {
+                if (/\.png($|\?)|^data:image/.test(matteUrl)) matte = urlImage(matteUrl, bump);
+                else {
+                  const mv = videoFor(matteUrl, bump);
+                  if (syncVideo(mv, srcFrameAt(m, playhead - m.start) / fps, isPlaying, 0, playRate * sp)) matte = mv;
+                  activeVideos.add(mv);
+                }
+              }
+              const sv = sourceView(v, [info.width, info.height], m, false, '', matte);
               if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
               const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
               if (!locked.has(m.trackId))

@@ -221,14 +221,15 @@ const viewCache = new Map<string, HTMLCanvasElement>();
  * 素材を切り抜き・色抜き・形の切り抜きをした画像にする。size は元の素材の大きさ（プロキシの動画でも元の大きさ）。
  * 返す大きさは切り抜いた後の元の大きさ。still（画像）なら結果を使い回す
  */
-export function sourceView(img: CanvasImageSource, size: [number, number], m: MediaClip, still: boolean, key = ''): {img: CanvasImageSource; size: [number, number]} {
-  if (!m.crop && !m.mask && !m.chroma) return {img, size};
+export function sourceView(img: CanvasImageSource, size: [number, number], m: MediaClip, still: boolean, key = '', matte?: CanvasImageSource | null): {img: CanvasImageSource; size: [number, number]} {
+  if (!m.crop && !m.mask && !m.chroma && !matte) return {img, size};
   const [l, t, kw, kh] = cropKeep(m.crop);
   const out: [number, number] = [size[0] * kw, size[1] * kh];
   const iw = (img as HTMLVideoElement).videoWidth || (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
   const ih = (img as HTMLVideoElement).videoHeight || (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
   if (!iw || !ih) return {img, size};
-  const ck = still ? JSON.stringify([key, iw, ih, m.crop, m.mask, m.chroma]) : '';
+  const mk = matte ? ((matte as HTMLImageElement).src ?? 'v') : '';
+  const ck = still ? JSON.stringify([key, iw, ih, m.crop, m.mask, m.chroma, mk]) : '';
   const hit = ck && viewCache.get(ck);
   if (hit) return {img: hit, size: out};
   const cw = Math.max(1, Math.round(iw * kw));
@@ -241,6 +242,18 @@ export function sourceView(img: CanvasImageSource, size: [number, number], m: Me
   if (f) x.filter = f;
   x.drawImage(img, iw * l, ih * t, cw, ch, 0, 0, cw, ch);
   x.filter = 'none';
+  if (matte) {
+    // 背景を消す型（白が残すところ。書き出しと同じく切り抜く前の素材に合わせて伸ばし、明るさを不透明度にする）
+    const mw = (matte as HTMLVideoElement).videoWidth || (matte as HTMLImageElement).naturalWidth || (matte as HTMLCanvasElement).width;
+    const mh = (matte as HTMLVideoElement).videoHeight || (matte as HTMLImageElement).naturalHeight || (matte as HTMLCanvasElement).height;
+    if (mw && mh) {
+      x.globalCompositeOperation = 'destination-in';
+      x.filter = svgFilter('vx-luma', '<feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  1 0 0 0 0"/>');
+      x.drawImage(matte, mw * l, mh * t, mw * kw, mh * kh, 0, 0, cw, ch);
+      x.filter = 'none';
+      x.globalCompositeOperation = 'source-over';
+    }
+  }
   if (m.mask) {
     x.globalCompositeOperation = 'destination-in';
     x.drawImage(maskImage(m.mask, cw, ch), 0, 0, cw, ch);
