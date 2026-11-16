@@ -788,6 +788,42 @@ struct ProxyProgress {
     ratio: f64,
 }
 
+/// 素材の音を加工した WAV（プレビュー用。書き出しと同じフィルター）を作り、そのパスを返す
+#[tauri::command]
+pub async fn process_audio(app: AppHandle, state: State<'_, AppState>, src: PathBuf, fx: voxcut_core::audiofx::MediaAudioFx) -> CmdResult<PathBuf> {
+    let ffmpeg = state.ffmpeg();
+    let root = app.path().app_cache_dir().map_err(err)?.join("audiofx");
+    let _ = app.asset_protocol_scope().allow_directory(&root, false);
+    blocking(move || voxcut_core::audiofx::make_processed(&ffmpeg, &src, &root, &fx).map_err(err)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Loudness {
+    mean_db: f64,
+    max_db: f64,
+    /// 音量をそろえるための増減（dB）
+    gain_db: f64,
+}
+
+/// 素材の音の大きさを測り、そろえるための増減を返す
+#[tauri::command]
+pub async fn measure_audio(state: State<'_, AppState>, src: PathBuf) -> CmdResult<Loudness> {
+    let ffmpeg = state.ffmpeg();
+    blocking(move || {
+        let (mean_db, max_db) = voxcut_core::audiofx::measure(&ffmpeg, &src).map_err(err)?;
+        Ok(Loudness { mean_db, max_db, gain_db: voxcut_core::audiofx::normalize_gain(mean_db, max_db) })
+    })
+    .await
+}
+
+/// 素材の拍の時刻（秒、素材の頭から）
+#[tauri::command]
+pub async fn detect_beats(state: State<'_, AppState>, src: PathBuf) -> CmdResult<Vec<f64>> {
+    let ffmpeg = state.ffmpeg();
+    blocking(move || voxcut_core::audiofx::detect_beats(&ffmpeg, &src).map_err(err)).await
+}
+
 /// 動画のプロキシを作り、そのパスを返す（できていればすぐ返る）。進捗は "proxy-progress"
 #[tauri::command]
 pub async fn make_proxy(app: AppHandle, state: State<'_, AppState>, src: PathBuf, duration_ms: u64) -> CmdResult<PathBuf> {
