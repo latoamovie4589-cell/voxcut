@@ -553,6 +553,38 @@ async def main():
         check("音の加工の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+        # ── スタンプ・効果音・場面ごとに分ける・手ぶれ補正・テンプレートのファイル
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts');
+          s.setState({playhead:60}); const id=s.addSticker('bubble'); const c=s.getState().project.clips.find(x=>x.id===id);
+          const sizes=m.STICKERS.map(st=>{const im=v.shapeImage({id:'s',type:'shape',shape:st.kind,width:st.w,height:st.h,fill:st.fill,stroke:st.stroke,strokeWidth:st.strokeWidth}); const d=im.getContext('2d').getImageData(0,0,im.width,im.height).data; let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; return n>100});
+          return [c.shape, c.width, c.height, c.fill, sizes.every(Boolean), sizes.length]}""")
+        check("スタンプ：決まった大きさと色で置け、どのスタンプも描ける", r == ['bubble', 520, 300, '#FFFFFF', True, 11], str(r))
+        n = await q.get_by_role("button", name="スタンプ").count() + await q.get_by_role("button", name="効果音").count()
+        check("スタンプ・効果音：タイムラインの上にメニューがある", n >= 2, str(n))
+        r = await q.evaluate("""async()=>{const A=await import('/src/actions.ts'); const s=await import('/src/store.ts'); s.setState({playhead:900});
+          await A.addSfx('pop'); const c=s.getState().project.clips.find(x=>x.type==='media' && x.src==='/sfx/pop.wav'); return c ? [c.mediaKind, c.start] : null}""")
+        check("効果音：作った音を再生位置に音声素材として置く", r == ['audio', 900], str(r))
+        r = await q.evaluate("""async()=>{const A=await import('/src/actions.ts'); const s=await import('/src/store.ts');
+          const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/scene.mp4', hasAudio:false, linkId:null, mediaKind:'video'};
+          s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>!(c.trackId==='V1' && c.start<2000)), {...base, id:'sc', start:0, duration:150}]}));
+          window.__mockScenes=[1, 2.5, 9]; const n=await A.splitAtScenes('sc');
+          const parts=s.getState().project.clips.filter(c=>c.type==='media' && c.src==='/m/scene.mp4').map(c=>[c.start,c.duration,c.inPoint]).sort((a,b)=>a[0]-b[0]);
+          return [n, parts]}""")
+        check("場面ごとに分ける：変わり目（素材の範囲の外は除く）で分ける", r == [2, [[0, 30, 0], [30, 45, 30], [75, 75, 75]]], str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.src==='/m/scene.mp4'); s.setState({selectedClipId:c.id, selectedClipIds:[c.id]})}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_label("手ぶれを抑える").click(); await q.wait_for_timeout(400)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.src==='/m/scene.mp4' && c.start===0); return [!!c.stabilize, !!s.getState().proxies['/m/scene.mp4#stab']]}")
+        check("手ぶれ補正：付けると、補正したプレビュー用の動画を作り始める", r == [True, True], str(r))
+        r = await q.evaluate("""async()=>{const T=await import('/src/templates.ts'); const n0=T.getTemplates().length; T.saveTemplate('placement','左下',{x:-500,y:300,scale:0.8,opacity:1});
+          const text=T.templatesToFile(); const n1=T.getTemplates().length; const added=T.templatesFromFile(text); let bad=''; try{T.templatesFromFile('{}')}catch(e){bad=e.message}
+          return [n1-n0, added, T.getTemplates().length-n1, bad.includes('テンプレート')]}""")
+        check("テンプレート：ファイルに書き出して、読み込むと（名前を変えて）足される", r[0] == 1 and r[1] == r[2] and r[1] >= 1 and r[3], str(r))
+        await q.wait_for_timeout(300)
+        check("スタンプ・効果音の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
