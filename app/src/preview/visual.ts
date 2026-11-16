@@ -65,8 +65,10 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
     else if (m.kind === 'slideDown') tr.y += fh * v;
     else tr.scale *= 1 - v;
   };
-  apply(l?.enter, len => (1 - c01(sec / len)) ** 2);
-  apply(l?.exit, len => c01((sec - Math.max(0, d - len)) / len) ** 2);
+  // なめらか（押し出し）は 3p²−2p³（出ていく側と入る側の和がいつも 1）。書き出しと同じ式
+  const smooth = (p: number) => p * p * (3 - 2 * p);
+  apply(l?.enter, len => (l?.enter?.smooth ? 1 - smooth(c01(sec / len)) : (1 - c01(sec / len)) ** 2));
+  apply(l?.exit, len => (l?.exit?.smooth ? smooth(c01((sec - Math.max(0, d - len)) / len)) : c01((sec - Math.max(0, d - len)) / len) ** 2));
   const filters: string[] = [];
   let blur = 0;
   for (const fx of l?.effects ?? []) {
