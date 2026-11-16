@@ -11,8 +11,9 @@ import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/Segment
 import {Selector} from '@astryxdesign/core/Selector';
 import {Hint} from '../Hint';
 import {Text} from '@astryxdesign/core/Text';
+import {TextInput} from '@astryxdesign/core/TextInput';
 import {api, type Encoder, type ExportProgress} from '../ipc';
-import {collectCredits, framesToTimecode, overlappingLines, projectDuration, ENGINE_LABEL} from '../model';
+import {collectCredits, framesToTimecode, overlappingLines, projectDuration, timecodeToFrames, ENGINE_LABEL, type Project} from '../model';
 import {getState, setState, useStore} from '../store';
 import {cancelExport, exportSubtitles, openFile, pickExportPath, revealInFolder, runExport, type ExportKind} from '../actions';
 import {useEngineProblems} from './Sidebar';
@@ -25,6 +26,15 @@ const KIND_LABEL: Record<ExportKind, string> = {video: '動画', audio: '音声�
 function goToLine(id: string) {
   const c = getState().project?.clips.find(x => x.id === id);
   if (c) setState(st => ({selectedClipId: c.id, selectedClipIds: [c.id], playhead: c.start, revealSeq: st.revealSeq + 1}));
+}
+
+type Span = 'all' | 'selection' | 'custom';
+
+/** 選んでいるアイテムが占める範囲（始まりと終わりのフレーム）。選んでいなければ null */
+function selectionRange(p: Project, ids: string[]): [number, number] | null {
+  const cs = p.clips.filter(c => ids.includes(c.id));
+  if (!cs.length) return null;
+  return [Math.min(...cs.map(c => c.start)), Math.max(...cs.map(c => c.start + c.duration))];
 }
 
 const QUALITY = {high: {crf: 18, label: '高画質'}, normal: {crf: 20, label: '標準'}, light: {crf: 26, label: '軽量'}} as const;
@@ -84,12 +94,23 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const [encoders, setEncoders] = useState<Encoder[] | null>(null);
   const [encoder, setEncoder] = useState<Encoder>('x264');
   const [what, setWhat] = useState<ExportKind>('video');
+  const [span, setSpan] = useState<Span>('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const selIds = useStore(s => s.selectedClipIds);
   const errors = useStore(s => s.synthErrors);
   const problems = useEngineProblems();
 
   useEffect(() => {
     if (!isOpen) return;
     setPhase({kind: 'setup'});
+    // 範囲の初期値は、選んでいるアイテムがあればその範囲、なければ全体
+    const p = getState().project;
+    if (p) {
+      const sel = selectionRange(p, getState().selectedClipIds);
+      setFrom(framesToTimecode(sel?.[0] ?? 0, p.video.fps));
+      setTo(framesToTimecode(sel?.[1] ?? projectDuration(p), p.video.fps));
+    }
     void loadEncoders().then(list => {
       setEncoders(list);
       // グラフィックボードが使えるなら、はじめからそれにする（速い）
@@ -108,6 +129,14 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const failedIds = project.clips.filter(c => c.type === 'voice' && errors[c.id]).map(c => c.id);
   const overlaps = [...overlappingLines(project)];
   const needsVoice = what !== 'subtitle';
+  // 書き出す範囲（字幕だけは全体）
+  const total = projectDuration(project);
+  const selRange = selectionRange(project, selIds);
+  const fromF = timecodeToFrames(from, v.fps);
+  const toF = timecodeToFrames(to, v.fps);
+  const customBad = fromF === null || toF === null ? '時:分:秒:フレーム の形で入れてください' : toF <= fromF ? '終わりは始まりより後にしてください' : fromF >= total ? '動画の長さより後です' : null;
+  const range: [number, number] | null = what === 'subtitle' || span === 'all' ? null : span === 'selection' ? selRange : customBad ? null : [fromF!, Math.min(toF!, total)];
+  const rangeBad = what !== 'subtitle' && span !== 'all' && !range;
 
   const start = async () => {
     const out = await pickExportPath(what);
@@ -115,7 +144,10 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
     setPhase({kind: 'running', progress: null});
     try {
       if (what === 'subtitle') await exportSubtitles(out);
-      else await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height), encoder}, p => setPhase({kind: 'running', progress: p}));
+      else
+        await runExport(out, {crf: QUALITY[quality].crf, height: height === 'same' ? null : Number(height), encoder, ...(range ? {rangeFrames: range} : {})}, p =>
+          setPhase({kind: 'running', progress: p}),
+        );
       setPhase({kind: 'done', out, what});
     } catch (e) {
       setPhase(String(e).includes('cancelled') ? {kind: 'cancelled'} : {kind: 'error', message: String(e).replace(/^Error:\s*/, '')});
@@ -143,8 +175,27 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                   ))}
                 </SegmentedControl>
               </VStack>
+              {what !== 'subtitle' && (
+                <VStack gap={2}>
+                  <Text type="label">書き出す範囲</Text>
+                  <SegmentedControl label="書き出す範囲" layout="fill" value={span} onChange={k => setSpan(k as Span)}>
+                    <SegmentedControlItem value="all" label="全体" />
+                    <SegmentedControlItem value="selection" label="選んだアイテム" isDisabled={!selRange} />
+                    <SegmentedControlItem value="custom" label="時刻で指定" />
+                  </SegmentedControl>
+                  {span === 'selection' && !selRange && <Hint>タイムラインでアイテムを選ぶと、その範囲だけを書き出せます</Hint>}
+                  {span === 'custom' && (
+                    <HStack gap={2}>
+                      <TextInput label="始まり" value={from} onChange={setFrom} status={fromF === null ? {type: 'error', message: '時:分:秒:フレーム'} : undefined} />
+                      <TextInput label="終わり" value={to} onChange={setTo} status={customBad && fromF !== null ? {type: 'error', message: customBad} : undefined} />
+                    </HStack>
+                  )}
+                </VStack>
+              )}
               <MetadataList>
-                <MetadataListItem label="長さ">{framesToTimecode(projectDuration(project), v.fps)}</MetadataListItem>
+                <MetadataListItem label="長さ">
+                  {range ? `${framesToTimecode(range[1] - range[0], v.fps)}（${framesToTimecode(range[0], v.fps)} から）` : framesToTimecode(total, v.fps)}
+                </MetadataListItem>
                 <MetadataListItem label="形式">
                   {what === 'video' ? `MP4（H.264 / AAC）・${v.width}×${v.height}・${v.fps} fps` : what === 'audio' ? 'WAV（PCM 16bit）' : 'SRT（字幕の文と時刻だけ。見た目は付きません）'}
                 </MetadataListItem>
@@ -231,7 +282,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
               <Credits />
               <HStack gap={2} hAlign="end">
                 <Button label="キャンセル" variant="ghost" onClick={() => close(false)} />
-                <Button label="保存先を選んで書き出す…" variant="primary" isDisabled={needsVoice && failedIds.length > 0} onClick={() => void start()} />
+                <Button label="保存先を選んで書き出す…" variant="primary" isDisabled={(needsVoice && failedIds.length > 0) || rangeBad} onClick={() => void start()} />
               </HStack>
             </>
           )}
