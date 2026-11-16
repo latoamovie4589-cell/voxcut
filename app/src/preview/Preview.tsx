@@ -6,6 +6,7 @@ import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
 import {wrapSubtitle} from '../subtitleWrap';
+import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 import type {Character, Effect, MediaClip, PortraitClip, Project, Transform} from '../model';
 import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks, withTransitions} from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
@@ -170,68 +171,117 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
   const st = ch?.subtitle;
   const fps = p.video.fps;
   const anim = st?.animation ?? 'none';
-  const size = (st?.fontSize ?? 56) * scale;
-  // 改行の位置は書き出しと同じ（画面の幅から左右の余白 40px ずつを引いた幅で切る）
-  text = wrapSubtitle(text, st?.fontSize ?? 56, Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
-  ctx.font = `600 ${size}px ${st?.fontFamily ? `"${st.fontFamily}",` : ''} -apple-system, "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif`;
+  const fs = st?.fontSize ?? 56;
+  const size = fs * scale;
+  // ルビの書き方を外した文で改行する。改行の位置は書き出しと同じ（画面の幅から左右の余白 40px ずつを引いた幅で切る）
+  const segs = parseRuby(text);
+  const ruby = hasRuby(segs);
+  text = wrapSubtitle(rubyBase(text), fs, Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
+  if (ruby) text = keepRubyWords(segs, text);
+  const rows = ruby ? rubyRows(segs, text) : null;
+  const family = `${st?.fontFamily ? `"${st.fontFamily}",` : ''} -apple-system, "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif`;
+  const fontAt = (px: number) => `600 ${px}px ${family}`;
+  ctx.font = fontAt(size);
   ctx.lineJoin = 'round';
   const lines = text.split('\n');
   const lh = size * 1.25;
+  // ルビは文字の半分の大きさで、行の上に小さい行として置く（書き出しの ASS と同じ）
+  const rs = Math.max(1, Math.round(fs * 0.5)) * scale;
+  const extra = lines.map((_, i) => (rows?.[i]?.some(r => r.ruby !== undefined) ? rs * 1.25 : 0));
   const w = p.video.width * scale;
   const h = p.video.height * scale;
   const margin = (st?.marginV ?? 60) * scale;
   const pos = st?.position ?? 'bottom';
-  let y = pos === 'top' ? margin + size : pos === 'middle' ? h / 2 - ((lines.length - 1) * lh) / 2 : h - margin - (lines.length - 1) * lh;
+  // 各行の文字の基準の高さ
+  const ys: number[] = new Array(lines.length);
+  if (pos === 'bottom') {
+    ys[lines.length - 1] = h - margin;
+    for (let i = lines.length - 2; i >= 0; i--) ys[i] = ys[i + 1] - lh - extra[i + 1];
+  } else if (pos === 'top') {
+    ys[0] = margin + size + extra[0];
+    for (let i = 1; i < lines.length; i++) ys[i] = ys[i - 1] + lh + extra[i];
+  } else {
+    let top = h / 2 - lines.reduce((a, _, i) => a + lh + extra[i], 0) / 2;
+    lines.forEach((_, i) => {
+      ys[i] = top + extra[i] + lh / 2;
+      top += lh + extra[i];
+    });
+  }
   ctx.textBaseline = pos === 'middle' ? 'middle' : 'alphabetic';
 
   ctx.save();
   if (anim === 'fade') ctx.globalAlpha = fadeAlpha(f, duration, fps);
   if (anim === 'pop') {
     // 字幕のかたまりの中心を基準に拡大
-    const cy = y + ((lines.length - 1) * lh) / 2 - (pos === 'middle' ? 0 : size * 0.35);
+    const cy = (ys[0] + ys[lines.length - 1]) / 2 - (pos === 'middle' ? 0 : size * 0.35);
     const k = popScale(f, fps);
     ctx.translate(w / 2, cy);
     ctx.scale(k, k);
     ctx.translate(-w / 2, -cy);
   }
-  let remaining = anim === 'typewriter' ? typewriterCount([...text.replace(/\n/g, '')].length, duration, f) : Infinity;
-  for (const line of lines) {
-    const chars = [...line];
-    const shown = remaining === Infinity ? line : chars.slice(0, Math.max(0, remaining)).join('');
-    if (remaining !== Infinity) remaining -= chars.length;
-    // 全文の幅で左端を決め、左揃えで描く（中央揃えのまま文字だけ増やす）
-    const x0 = w / 2 - ctx.measureText(line).width / 2;
-    ctx.textAlign = 'left';
-    if (shown) {
-      // 帯（書き出しの ASS の BorderStyle 3 と同じく、出ている文字の幅＋余白。縁取りの代わり）
-      const boxed = !!st?.boxColor;
-      const pad = (st?.boxPadding ?? 12) * scale;
-      const top = pos === 'middle' ? y - size * 0.5 : y - size * 0.88;
-      const boxRect = (dx: number, dy: number) => ctx.fillRect(x0 - pad + dx, top - pad + dy, ctx.measureText(shown).width + pad * 2, size * (pos === 'middle' ? 1 : 1.12) + pad * 2);
-      const body = (dx: number, dy: number, color?: string) => {
-        if (boxed) {
-          ctx.save();
-          ctx.fillStyle = color ?? st!.boxColor!;
-          if (!color) ctx.globalAlpha *= Math.max(0, Math.min(1, st?.boxOpacity ?? 1));
-          boxRect(dx, dy);
-          ctx.restore();
-        } else if (st?.outlineWidth) {
-          ctx.lineWidth = st.outlineWidth * 2 * scale;
-          ctx.strokeStyle = color ?? st.outlineColor;
-          ctx.strokeText(shown, x0 + dx, y + dy);
-        }
-        ctx.fillStyle = color ?? st?.color ?? '#fff';
-        ctx.fillText(shown, x0 + dx, y + dy);
-      };
-      // 影は、縁（帯）まで含めた形をずらして落とす
-      if (st?.shadowColor) {
-        const o = (st.shadowOffset ?? 4) * scale;
-        body(o, o, st.shadowColor);
+  const total = [...text.replace(/\n/g, '')].length;
+  const count = anim === 'typewriter' ? typewriterCount(total, duration, f) : Infinity;
+  // 文字を 1 かたまり描く（帯・縁・影も）。px は文字の大きさ、sx は横の縮め
+  const run = (s: string, x: number, y: number, px: number, sx = 1) => {
+    if (!s) return;
+    ctx.save();
+    ctx.font = fontAt(px);
+    ctx.translate(x, y);
+    ctx.scale(sx, 1);
+    const k = px / size;
+    // 帯（書き出しの ASS の BorderStyle 3 と同じく、出ている文字の幅＋余白。縁取りの代わり）
+    const boxed = !!st?.boxColor;
+    const pad = (st?.boxPadding ?? 12) * scale * k;
+    const top = pos === 'middle' ? -px * 0.5 : -px * 0.88;
+    const body = (dx: number, dy: number, color?: string) => {
+      if (boxed) {
+        ctx.save();
+        ctx.fillStyle = color ?? st!.boxColor!;
+        if (!color) ctx.globalAlpha *= Math.max(0, Math.min(1, st?.boxOpacity ?? 1));
+        ctx.fillRect(-pad + dx, top - pad + dy, ctx.measureText(s).width + pad * 2, px * (pos === 'middle' ? 1 : 1.12) + pad * 2);
+        ctx.restore();
+      } else if (st?.outlineWidth) {
+        ctx.lineWidth = st.outlineWidth * 2 * scale * k;
+        ctx.strokeStyle = color ?? st.outlineColor;
+        ctx.strokeText(s, dx, dy);
       }
-      body(0, 0);
+      ctx.fillStyle = color ?? st?.color ?? '#fff';
+      ctx.fillText(s, dx, dy);
+    };
+    // 影は、縁（帯）まで含めた形をずらして落とす
+    if (st?.shadowColor) {
+      const o = (st.shadowOffset ?? 4) * scale * k;
+      body(o, o, st.shadowColor);
     }
-    y += lh;
-  }
+    body(0, 0);
+    ctx.restore();
+  };
+  ctx.textAlign = 'left';
+  let seen = 0;
+  lines.forEach((line, i) => {
+    const chars = [...line];
+    const shown = chars.slice(0, Math.max(0, Math.min(chars.length, count - seen))).join('');
+    seen += chars.length;
+    const y = ys[i];
+    // 全文の幅で左端を決め、左揃えで描く（中央揃えのまま文字だけ増やす）
+    ctx.font = fontAt(size);
+    const x0 = w / 2 - ctx.measureText(line).width / 2;
+    run(shown, x0, y, size);
+    // ルビ（語の頭の文字が出たら出す。語より長ければ語の幅に縮める）
+    let x = x0;
+    for (const piece of rows?.[i] ?? []) {
+      ctx.font = fontAt(size);
+      const wb = ctx.measureText(piece.text).width;
+      if (piece.ruby && piece.at < count) {
+        ctx.font = fontAt(rs);
+        const wr = ctx.measureText(piece.ruby).width;
+        const ry = pos === 'middle' ? y - lh / 2 - (rs * 1.25) / 2 : y - size * 0.95 - rs * 0.12;
+        if (wr <= wb) run(piece.ruby, x + (wb - wr) / 2, ry, rs);
+        else run(piece.ruby, x, ry, rs, wb / wr);
+      }
+      x += wb;
+    }
+  });
   ctx.restore();
 }
 

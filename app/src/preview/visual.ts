@@ -4,6 +4,7 @@
 
 import type {Ease, Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
 import {lineOfSubtitle} from '../model';
+import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 
 function ease(e: Ease, p: number): number {
   const q = Math.min(1, Math.max(0, p));
@@ -221,7 +222,7 @@ const PUNCT_V = new Set([...'、。，．']);
 const ROTATE_V = new Set([...'ー－―〜～…‥（）「」『』【】〔〕()[]{}<>＜＞-=＝']);
 
 /** 1 文字ずつ出すときに数える文字の数（改行は数えない） */
-export const textCharCount = (text: string) => Array.from(text.replace(/\n/g, '')).length;
+export const textCharCount = (text: string) => Array.from(rubyBase(text).replace(/\n/g, '')).length;
 
 /** 文字の画像が同じになるかを決める値（書き出しの画像の名前にも使う） */
 export const textKey = (c: TextClip) => [
@@ -262,7 +263,10 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     // 折り返し（文字単位。縦書きでは列の高さ）
     const wrap = ex.wrapWidth ?? 0;
     const lines: string[] = [];
-    for (const para of (c.text || ' ').split('\n')) {
+    // ルビは書き方を外した文の上（縦書きは右）に小さく出す
+    const segs = parseRuby(c.text || ' ');
+    const ruby = hasRuby(segs);
+    for (const para of (ruby ? rubyBase(c.text) : c.text || ' ').split('\n')) {
       if (wrap <= 0) {
         lines.push(para);
         continue;
@@ -278,6 +282,14 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
       }
       lines.push(cur);
     }
+    if (ruby && wrap > 0) lines.splice(0, lines.length, ...keepRubyWords(segs, lines.join('\n')).split('\n'));
+    const rows = ruby ? rubyRows(segs, lines.join('\n')) : null;
+    const rs = Math.max(1, Math.round(c.fontSize * 0.5));
+    const rk = rs / c.fontSize;
+    // ルビのある行だけ、ルビの分だけ広げる（off は行の頭までの距離）
+    const rhOf = lines.map((_, i) => (rows?.[i]?.some(pc => pc.ruby !== undefined) ? Math.round(rs * 1.25) : 0));
+    const off = rhOf.map((_, i) => rhOf.slice(0, i).reduce((a, r) => a + lineH + r, 0));
+    const extraAll = rhOf.reduce((a, r) => a + r, 0);
     // テキストアイテムの飾り（字幕の「個別に設定」の飾りとは別）
     const o2 = c.outline2Color && (c.outline2Width ?? 0) > 0 ? c.outline2Width! : 0;
     const shadowOn = !!c.shadowColor && ((c.shadowBlur ?? 0) > 0 || (c.shadowX ?? 0) !== 0 || (c.shadowY ?? 0) !== 0);
@@ -290,8 +302,8 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const widths = lines.map(l => m.measureText(l).width);
     const longest = Math.max(1, ...lines.map(l => Array.from(l).length));
     // 文字が占める大きさ
-    const tw = ex.vertical ? lineH * lines.length : Math.ceil(Math.max(...widths));
-    const th = ex.vertical ? Math.ceil(longest * charStep) : lineH * lines.length;
+    const tw = ex.vertical ? lineH * lines.length + extraAll : Math.ceil(Math.max(...widths));
+    const th = ex.vertical ? Math.ceil(longest * charStep) : lineH * lines.length + extraAll;
     const edge = pad + box;
     const cv = document.createElement('canvas');
     cv.width = Math.max(1, tw + edge * 2 + sh + glow * 2);
@@ -314,21 +326,45 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     x.miterLimit = 2;
     // 出す文字の位置（1 文字ずつ出すときも位置は全部出したときと同じ）
     let left = ex.visible ?? Infinity;
-    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean}[] = [];
+    // k はルビの縮め（文字の大きさの比）、sx は横の縮め
+    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number}[] = [];
+    const shownAll = ex.visible ?? Infinity;
     lines.forEach((l, i) => {
       const chars = Array.from(l);
       const n = Math.max(0, Math.min(chars.length, left));
       left -= chars.length;
       if (!n) return;
+      const pieces = rows?.[i] ?? [];
+      const at0 = pieces[0]?.at ?? 0;
       if (ex.vertical) {
-        // 右の列から左へ。揃えは列の中の上・中央・下
-        const colX = edge + tw - lineH * i - lineH / 2;
+        // 右の列から左へ。揃えは列の中の上・中央・下。ルビは列の右
+        const rh = rhOf[i];
+        const colX = edge + tw - off[i] - rh - lineH / 2;
         const colH = chars.length * charStep;
         const y0 = edge + (c.align === 'left' ? 0 : c.align === 'right' ? th - colH : (th - colH) / 2);
         for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k])});
+        for (const pc of pieces) {
+          if (!pc.ruby || pc.at >= shownAll) continue;
+          const rc = Array.from(pc.ruby);
+          const span = Array.from(pc.text).length * charStep;
+          const step = Math.min(rs + ls * rk, span / rc.length);
+          const top = y0 + (pc.at - at0) * charStep + (span - step * rc.length) / 2;
+          rc.forEach((r, k) => glyphs.push({s: r, px: colX + lineH / 2 + rh / 2, py: top + step * k + step / 2, rot: ROTATE_V.has(r), k: rk}));
+        }
       } else {
         const lx = edge + (c.align === 'left' ? 0 : c.align === 'right' ? tw - widths[i] : (tw - widths[i]) / 2);
-        glyphs.push({s: chars.slice(0, n).join(''), px: lx, py: edge + lineH * i + lineH / 2, rot: false});
+        const rh = rhOf[i];
+        const py = edge + off[i] + rh + lineH / 2;
+        glyphs.push({s: chars.slice(0, n).join(''), px: lx, py, rot: false});
+        let x0 = lx;
+        for (const pc of pieces) {
+          const wb = m.measureText(pc.text).width;
+          if (pc.ruby && pc.at < shownAll) {
+            const wr = m.measureText(pc.ruby).width * rk;
+            glyphs.push({s: pc.ruby, px: wr <= wb ? x0 + (wb - wr) / 2 : x0, py: py - lineH / 2 - rh / 2, rot: false, k: rk, sx: wr <= wb ? 1 : wb / wr});
+          }
+          x0 += wb;
+        }
       }
     });
     const outline = c.outlineWidth > 0 && c.outlineColor ? c.outlineWidth : 0;
@@ -337,6 +373,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         x.save();
         // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
         x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
+        if (g.k) x.scale(g.k * (g.sx ?? 1), g.k);
         if (g.rot) x.rotate(Math.PI / 2);
         x.textAlign = ex.vertical ? 'center' : 'left';
         // 影・光は、縁まで含めた形で落とす
