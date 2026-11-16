@@ -675,6 +675,9 @@ pub struct Motion {
     pub kind: MotionKind,
     /// 掛ける長さ（フレーム）
     pub frames: Frame,
+    /// なめらかに動く（ゆっくり出て、ゆっくり止まる）。切り替えの「流す」で、前と次の場面がくっついて動くように
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub smooth: bool,
 }
 
 /// 登場・退場の種類。slide は「その方向から入る／その方向へ出る」
@@ -812,11 +815,11 @@ impl Project {
                 }
                 TransitionKind::Zoom => {
                     set_a(&mut p, &|l| {
-                        l.exit = Some(Motion { kind: MotionKind::Zoom, frames: out_f });
+                        l.exit = Some(Motion { kind: MotionKind::Zoom, frames: out_f, smooth: false });
                         l.fade_out = out_f;
                     });
                     set_b(&mut p, &|l| {
-                        l.enter = Some(Motion { kind: MotionKind::Zoom, frames: in_f });
+                        l.enter = Some(Motion { kind: MotionKind::Zoom, frames: in_f, smooth: false });
                         l.fade_in = in_f;
                     });
                 }
@@ -828,14 +831,27 @@ impl Project {
                         TransitionKind::SlideUp => (MotionKind::SlideUp, MotionKind::SlideDown),
                         _ => (MotionKind::SlideDown, MotionKind::SlideUp),
                     };
-                    set_a(&mut p, &|l| {
-                        l.exit = Some(Motion { kind: go, frames: out_f });
-                        l.fade_out = 0;
-                    });
-                    set_b(&mut p, &|l| {
-                        l.enter = Some(Motion { kind: come, frames: in_f });
-                        l.fade_in = 0;
-                    });
+                    if extendable {
+                        // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
+                        p.clips[ai].duration = cut - a.start + d;
+                        set_a(&mut p, &|l| {
+                            l.exit = Some(Motion { kind: go, frames: d, smooth: true });
+                            l.fade_out = 0;
+                        });
+                        set_b(&mut p, &|l| {
+                            l.enter = Some(Motion { kind: come, frames: d, smooth: true });
+                            l.fade_in = 0;
+                        });
+                    } else {
+                        set_a(&mut p, &|l| {
+                            l.exit = Some(Motion { kind: go, frames: out_f, smooth: false });
+                            l.fade_out = 0;
+                        });
+                        set_b(&mut p, &|l| {
+                            l.enter = Some(Motion { kind: come, frames: in_f, smooth: false });
+                            l.fade_in = 0;
+                        });
+                    }
                 }
             }
         }
@@ -1903,12 +1919,13 @@ mod transition_tests {
             let c = p.clips.iter_mut().find(|c| c.id == id).unwrap();
             visual_look_mut(c).unwrap().transition = Some(Transition { kind, frames });
         };
-        // 押し出し：前は左へ出て、次は右から入る（半分ずつ）
+        // 押し出し：前を延ばして、前は左へ・次は右から、同じ長さでなめらかに同時に動く
         set(&mut p, "b", TransitionKind::SlideLeft, 20);
         let q = p.with_transitions();
         let get = |q: &Project, id: &str| q.clips.iter().find(|c| c.id == id).cloned().unwrap();
-        assert_eq!(look(&get(&q, "a")).exit, Some(Motion { kind: MotionKind::SlideLeft, frames: 10 }));
-        assert_eq!(look(&get(&q, "b")).enter, Some(Motion { kind: MotionKind::SlideRight, frames: 10 }));
+        assert_eq!(get(&q, "a").duration, 80);
+        assert_eq!(look(&get(&q, "a")).exit, Some(Motion { kind: MotionKind::SlideLeft, frames: 20, smooth: true }));
+        assert_eq!(look(&get(&q, "b")).enter, Some(Motion { kind: MotionKind::SlideRight, frames: 20, smooth: true }));
         // 離れたアイテムには掛からない
         set(&mut p, "far", TransitionKind::Zoom, 20);
         assert!(look(&get(&p.with_transitions(), "far")).enter.is_none());

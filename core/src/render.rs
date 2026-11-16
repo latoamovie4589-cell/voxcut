@@ -853,9 +853,19 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
     let fpsf = fps as f64;
     let enter = look.enter.as_ref().filter(|m| m.frames > 0).map(|m| (m.kind, (m.frames as f64 / fpsf).min(dur.max(1e-3))));
     let exit = look.exit.as_ref().filter(|m| m.frames > 0).map(|m| (m.kind, (m.frames as f64 / fpsf).min(dur.max(1e-3))));
+    let enter_smooth = look.enter.as_ref().is_some_and(|m| m.smooth);
+    let exit_smooth = look.exit.as_ref().is_some_and(|m| m.smooth);
     // 登場の残り（1 → 0。だんだん遅く）と、退場の進み（0 → 1。だんだん速く）。lt はアイテムの頭からの秒の式
-    let enter_k = |lt: &str, d: f64| format!("pow(1-clip({lt}/{d:.4},0,1),2)");
-    let exit_k = |lt: &str, d: f64| format!("pow(clip(({lt}-{s:.4})/{d:.4},0,1),2)", s = (dur - d).max(0.0));
+    // なめらか（押し出し）：3p²−2p³ で、出ていく側と入る側の和がいつも 1（くっついたまま動く）
+    let smooth = |p: String| format!("(({p})*({p})*(3-2*({p})))");
+    let enter_k = |lt: &str, d: f64| {
+        let p = format!("clip({lt}/{d:.4},0,1)");
+        if enter_smooth { format!("(1-{})", smooth(p)) } else { format!("pow(1-{p},2)") }
+    };
+    let exit_k = |lt: &str, d: f64| {
+        let p = format!("clip(({lt}-{s:.4})/{d:.4},0,1)", s = (dur - d).max(0.0));
+        if exit_smooth { smooth(p) } else { format!("pow({p},2)") }
+    };
     let slide = |lt: &str, horizontal: bool| -> String {
         let mut out = String::new();
         let dim = if horizontal { "W" } else { "H" };
@@ -1501,6 +1511,42 @@ mod tests {
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
     }
 
+    /// 押し出し（なめらかな登場・退場）の式を FFmpeg が読める（FFmpeg があれば実際に 1 枚書く）
+    #[test]
+    fn smooth_push_expression_runs() {
+        use crate::model::{Clip, Look, Motion, MotionKind, ShapeClip};
+        let mut p = Project::sample();
+        p.video.width = 320;
+        p.video.height = 180;
+        p.clips.retain(|c| c.as_voice().is_none());
+        let shape = |id: &str, start, look: Look| Clip {
+            id: id.into(),
+            track_id: "V6".into(),
+            start,
+            duration: 30,
+            link_id: None,
+            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 320.0, height: 180.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look }),
+        };
+        p.clips.push(shape("a", 0, Look { exit: Some(Motion { kind: MotionKind::SlideLeft, frames: 10, smooth: true }), ..Default::default() }));
+        p.clips.push(shape("b", 30, Look { enter: Some(Motion { kind: MotionKind::SlideRight, frames: 10, smooth: true }), ..Default::default() }));
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("s.png");
+        let out = d.path().join("still.png");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        opt.item_images.insert("a".into(), png.clone());
+        opt.item_images.insert("b".into(), png.clone());
+        opt.still_at = Some(1.1);
+        let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+        let g = args.join(" ");
+        assert!(g.contains("+W*(1-((clip((t-1.000)/0.3333,0,1))*(clip((t-1.000)/0.3333,0,1))*(3-2*(clip((t-1.000)/0.3333,0,1)))))") || g.contains("*(3-2*("), "{g}");
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x180", "-frames:v", "1", png.to_str().unwrap()]).status().unwrap().success());
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+
     /// 一部だけの書き出し：出力側で頭を飛ばして、その長さだけ書く（音だけのときも）
     #[test]
     fn range_export_cuts_output() {
@@ -1540,8 +1586,8 @@ mod tests {
                         ease: Ease::Linear,
                         mid: Some(AnimMid { at: 0.5, transform: Transform { x: -50.0, y: 40.0, scale: 1.5, opacity: 1.0 }, rotation: 0.0 }),
                     }),
-                    enter: Some(Motion { kind: MotionKind::SlideLeft, frames: 10 }),
-                    exit: Some(Motion { kind: MotionKind::Zoom, frames: 10 }),
+                    enter: Some(Motion { kind: MotionKind::SlideLeft, frames: 10, smooth: false }),
+                    exit: Some(Motion { kind: MotionKind::Zoom, frames: 10, smooth: false }),
                     ..Default::default()
                 },
                 ..serde_json::from_str(r##"{"text":"","fontFamily":"a","fontSize":10,"color":"#fff","outlineColor":"#000","outlineWidth":0}"##).unwrap()
