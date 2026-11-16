@@ -305,6 +305,8 @@ export interface MediaClip extends ClipBase {
   transform: Transform;
   /** 回転・アニメーション・フェード・映像エフェクト */
   look?: Look;
+  /** 音を鳴らす長さ（頭から数えたフレーム）。切り替えで映像だけを延ばしたときに付く。保存しない */
+  audioUntil?: Frame;
 }
 
 /** 見た目の動きと効果（画像・動画・テキスト・図形で共通。Rust の Look と同じ） */
@@ -554,15 +556,17 @@ export function withTransitions(p: Project): Project {
     const d = transitionFrames(t, a, b);
     const outF = Math.max(1, Math.floor(d / 2));
     const inF = Math.max(1, d - Math.floor(d / 2));
-    const extendable = !(a.type === 'media' && a.mediaKind === 'video');
-    if (t.kind === 'dissolve' && extendable) {
+    // 前の場面を後ろへ延ばす。動画の音は元の長さで切る（延ばすのは映像だけ）
+    const extendA = () => {
+      const c = byId.get(a.id)!;
+      if (c.type === 'media' && c.mediaKind === 'video') c.audioUntil = a.duration;
+      c.duration = cut - a.start + d;
+    };
+    if (t.kind === 'dissolve') {
       // 前の場面を後ろへ延ばして、次の場面の下で消していく
-      byId.get(a.id)!.duration = cut - a.start + d;
+      extendA();
       edit(a.id, () => ({exit: null, fadeOut: d}));
       edit(b.id, () => ({enter: null, fadeIn: d}));
-    } else if (t.kind === 'dissolve') {
-      edit(a.id, () => ({exit: null, fadeOut: outF}));
-      edit(b.id, () => ({enter: null, fadeIn: inF}));
     } else if (t.kind === 'black' || t.kind === 'white') {
       // 画面を覆う図形を、つなぎ目の前で濃くし、後で薄くする（同じレイヤーの上に重ねる）
       const cover = (id: string, start: number, duration: number, look: Partial<Look>): ShapeClip => ({
@@ -594,15 +598,10 @@ export function withTransitions(p: Project): Project {
         slideDown: ['slideDown', 'slideUp'],
       };
       const [go, come] = pair[t.kind];
-      if (extendable) {
-        // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
-        byId.get(a.id)!.duration = cut - a.start + d;
-        edit(a.id, () => ({exit: {kind: go, frames: d, smooth: true}, fadeOut: 0}));
-        edit(b.id, () => ({enter: {kind: come, frames: d, smooth: true}, fadeIn: 0}));
-      } else {
-        edit(a.id, () => ({exit: {kind: go, frames: outF}, fadeOut: 0}));
-        edit(b.id, () => ({enter: {kind: come, frames: inF}, fadeIn: 0}));
-      }
+      // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
+      extendA();
+      edit(a.id, () => ({exit: {kind: go, frames: d, smooth: true}, fadeOut: 0}));
+      edit(b.id, () => ({enter: {kind: come, frames: d, smooth: true}, fadeIn: 0}));
     }
   }
   // 重なりの順（同じレイヤーでは頭の早い順に描く）。覆う図形は同じ時刻のアイテムより手前に
