@@ -371,6 +371,14 @@ async def main():
         check("声・範囲・字幕の飾りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+
+        # ── 字幕の改行：書き出し（Rust の wrap_subtitle）と同じ位置で切る
+        q = await fresh(b, sample=False)
+        r = await q.evaluate("""async()=>{const w=(await import('/src/subtitleWrap.ts')).wrapSubtitle;
+          return [w('あいうえおかきくけこ',10,50), w('あいうえお。かきくけこ',10,50), w('あいう「えおか」き',10,40), w('これはVOICEVOXです',10,60), w('あいうえおかきく',56,1840,3), w('短い\\n改行',56,1840)]}""")
+        check("字幕の改行：幅・句読点・括弧・英単語の扱いが書き出しと同じ", r == ["あいうえお\nかきくけこ", "あいうえお。\nかきくけこ", "あいう\n「えおか」\nき", "これは\nVOICEVOXで\nす", "あいう\nえおか\nきく", "短い\n改行"], str(r))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
