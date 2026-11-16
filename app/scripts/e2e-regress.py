@@ -585,6 +585,37 @@ async def main():
         check("スタンプ・効果音の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+        # ── AI：自動字幕・背景を消す（モデルは初めて使うときにダウンロード）
+        q = await fresh(b)
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const tr=(p.tracks.find(t=>t.kind==='audio')??p.tracks[p.tracks.length-1]).id;
+          window.__mockSegments=[{start:2,end:3,text:'こんにちは'},{start:4,end:5,text:'さようなら'},{start:20,end:21,text:'範囲の外'}];
+          const base={trackId:tr, type:'media', volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/talk.wav', hasAudio:true, linkId:null};
+          s.commit(pr=>({...pr, clips:[...pr.clips, {...base, id:'tk', start:100, duration:120, inPoint:30, speed:2, mediaKind:'audio'}]})); s.setState({selectedClipId:'tk', selectedClipIds:['tk']})}""")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_role("button", name="モデルをダウンロード").click(); await q.wait_for_timeout(800)
+        await q.get_by_role("button", name="文字起こしして字幕を作る").click(); await q.wait_for_timeout(800)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const t=p.tracks.find(t=>t.name==='字幕');
+          return t ? p.clips.filter(c=>c.trackId===t.id).map(c=>[c.type, c.start, c.duration, c.text]).sort((a,b)=>a[1]-b[1]) : null}""")
+        check("自動字幕：ダウンロードしてから文字起こしし、速さを変えた素材でも聞こえる時刻に字幕を並べる", r == [['text', 115, 15, 'こんにちは'], ['text', 145, 15, 'さようなら']], str(r))
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts'); const {api}=await import('/src/ipc.ts'); const a=await api;
+          await a.downloadModel('matte-fast'); const url=await a.makeMatte('/m/p.png', null, 'matte-fast', true, 0); const im=new Image(); im.src=url; await im.decode();
+          const src=document.createElement('canvas'); src.width=64; src.height=36; const g=src.getContext('2d'); g.fillStyle='#f00'; g.fillRect(0,0,64,36);
+          const m={id:'x', type:'media', mediaKind:'image', src:'/m/p.png', crop:{left:0.25,top:0,right:0,bottom:0}};
+          const sv=v.sourceView(src,[64,36],m,false,'',im); const d=sv.img.getContext('2d').getImageData(0,0,sv.img.width,sv.img.height).data;
+          const al=(x)=>d[(18*sv.img.width+x)*4+3]; return [sv.img.width, al(4), al(40)]}""")
+        check("背景を消す：型の白いところだけ残す（切り抜きと合わせても書き出しと同じ位置）", r[0] == 48 and r[1] > 240 and r[2] < 10, str(r))
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts');
+          const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/person.png', hasAudio:false, linkId:null, mediaKind:'image'};
+          s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>!(c.trackId==='V1' && c.start<300)), {...base, id:'pp', start:0, duration:150}]})); s.setState({selectedClipId:'pp', selectedClipIds:['pp']})}""")
+        await q.wait_for_timeout(500)
+        await q.get_by_role("button", name="モデルをダウンロード").click(); await q.wait_for_timeout(800)
+        await q.get_by_label("背景を消す", exact=True).click(); await q.wait_for_timeout(400)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id==='pp'); return [c.matte, !!s.getState().proxies['/m/person.png#matte:matte-fast']?.url]}")
+        check("背景を消す：付けると型を作り、プレビューで使う", r == ['matte-fast', True], str(r))
+        await q.wait_for_timeout(300)
+        check("AI の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
