@@ -8,6 +8,7 @@ import {Button} from '@astryxdesign/core/Button';
 import {Divider} from '@astryxdesign/core/Divider';
 import {Icon} from '@astryxdesign/core/Icon';
 import {RubyButton} from './RubyButton';
+import {SpeedSection} from './SpeedSection';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
@@ -786,6 +787,8 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
         {linked.length > 0 && <Text type="supporting">{clip.mediaKind === 'audio' ? '映像とリンクしています（一緒に動きます）' : '音声とリンクしています（一緒に動きます）'}</Text>}
       </Section>
       <Divider />
+      {clip.mediaKind !== 'image' && <SpeedSection clip={clip} notify={notify} />}
+      {clip.mediaKind !== 'image' && <Divider />}
       {clip.mediaKind !== 'audio' && <LookEditor clip={clip} />}
       {sound && (
         <Section title="音">

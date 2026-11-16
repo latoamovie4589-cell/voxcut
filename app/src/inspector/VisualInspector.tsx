@@ -23,6 +23,7 @@ import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
 import {getNotify} from '../actions';
 import {itemTemplateName, saveTemplate} from '../templates';
 import {QuickEffects} from './QuickEffects';
+import {KeyframeBar} from './KeyframeBar';
 import {TextDecoFields, TextDecoPicker} from './TextDeco';
 import {
   SHAPE_LABEL,
@@ -77,6 +78,8 @@ export function LookEditor({clip}: {clip: VisualClip}) {
   return (
     <>
       <QuickEffects clip={clip} fps={fps} />
+      <Divider />
+      <KeyframeBar clip={clip} />
       <Divider />
       <LookFields
         transform={clip.transform}
