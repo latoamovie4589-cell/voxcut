@@ -8,11 +8,12 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {Plus, X} from 'lucide-react';
+import {Download, Plus, Upload, X} from 'lucide-react';
+import {api} from '../ipc';
 import type {Notify} from '../actions';
 import {isVisual, type PortraitClip} from '../model';
 import {insertItemTemplate, setState, updateCharacter, updateClip, useStore} from '../store';
-import {itemTemplateName, removeTemplate, renameTemplate, saveTemplate, useTemplates, type Template, type TemplateKind} from '../templates';
+import {itemTemplateName, removeTemplate, renameTemplate, saveTemplate, templatesFromFile, templatesToFile, useTemplates, type Template, type TemplateKind} from '../templates';
 
 function Rows({kind, list, action, onUse, disabled}: {kind: TemplateKind; list: Template[]; action: string; onUse: (t: Template) => void; disabled?: string | null}) {
   const rows = list.filter(t => t.kind === kind);
@@ -54,6 +55,44 @@ export function TemplatesDialog({notify}: {notify: Notify}) {
       <div style={{maxHeight: 'calc(92dvh - 72px)', overflowY: 'auto'}}>
         <VStack gap={5} padding={4}>
           <Text type="supporting">よく使う見た目を名前を付けて取っておけます。この PC に覚えるので、ほかのプロジェクトでも使えます。</Text>
+          <HStack gap={2} wrap="wrap">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Icon icon={Download} />}
+              label="ファイルに書き出す"
+              tooltip="テンプレートを .voxtpl ファイルにまとめます。ほかの PC に持っていったり、人に渡したりできます"
+              isDisabled={!list.length}
+              onClick={async () => {
+                const a = await api;
+                const path = await a.pickTemplatePath('save');
+                if (!path) return;
+                try {
+                  await a.writeTextFile(path, templatesToFile());
+                  notify(`テンプレート ${list.length} 個を書き出しました`);
+                } catch (e) {
+                  notify(String(e), 'error');
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Icon icon={Upload} />}
+              label="ファイルから読み込む"
+              onClick={async () => {
+                const a = await api;
+                const path = await a.pickTemplatePath('open');
+                if (!path) return;
+                try {
+                  const n = templatesFromFile(await a.readTextFile(path));
+                  notify(`テンプレート ${n} 個を読み込みました`);
+                } catch (e) {
+                  notify(String(e instanceof Error ? e.message : e), 'error');
+                }
+              }}
+            />
+          </HStack>
           <VStack gap={2}>
             <Heading level={3}>アイテム（テキスト・図形・画像・動画）</Heading>
             <Rows
