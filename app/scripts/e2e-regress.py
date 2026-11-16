@@ -401,6 +401,30 @@ async def main():
         check("字幕の改行：幅・句読点・括弧・英単語の扱いが書き出しと同じ", r == ["あいうえお\nかきくけこ", "あいうえお。\nかきくけこ", "あいう\n「えおか」\nき", "これは\nVOICEVOXで\nす", "あいう\nえおか\nきく", "短い\n改行"], str(r))
         await q.close()
 
+        # ── ルビ：書き方の読み取りと改行が書き出し（Rust）と同じ／ボタンで入れられる／プレビューと画像に出る
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const R=await import('/src/ruby.ts'); const segs=R.parseRuby('今日は夕暮《ゆうぐれ》時｜VoxCut《ボックスカット》です');
+          const s2=R.parseRuby('ああ漢字《かんじ》いい'); const s3=R.parseRuby('漢字《かんじ》いい\\n\\nう');
+          return [segs.map(s=>[s.base, s.ruby??null]), R.rubyBase('明日《あした》、｜Ｃ《シー》'), R.rubyReading('明日《あした》は晴れ'), R.rubyBase('《注》と|と《あ'), R.rubyBase('ひらがな《かな》'),
+            R.keepRubyWords(s2,'ああ漢\\n字いい'), R.keepRubyWords(s3,'漢\\n字いい\\n\\nう'), R.rubyRows(s2,'ああ漢\\n字いい').map(r=>r.map(p=>[p.text,p.ruby??null,p.at]))]}""")
+        check("ルビ：書き方の読み取り・外した文・読み・改行の扱いが書き出しと同じ", r == [[["今日は", None], ["夕暮", "ゆうぐれ"], ["時", None], ["VoxCut", "ボックスカット"], ["です", None]], "明日、Ｃ", "あしたは晴れ", "《注》と|と《あ", "ひらがな《かな》",
+            "ああ\n漢字いい", "漢字\nいい\n\nう", [[["ああ", None, 0], ["漢", "かんじ", 2]], [["字", None, 3], ["いい", None, 4]]]], str(r))
+        v = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const v=s.getState().project.clips.find(c=>c.type==='voice'); s.updateClip(v.id,{text:'今日は晴れ', subtitle:null}); s.setState({selectedClipId:v.id, selectedClipIds:[v.id], playhead:v.start+5}); return v.id}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        ta = q.get_by_label("セリフ", exact=True)
+        await ta.evaluate("t=>{t.focus(); t.setSelectionRange(0,2)}")
+        await q.get_by_role("button", name="ルビを付ける").first.click(); await q.wait_for_timeout(300)
+        await q.keyboard.type("きょう"); await q.wait_for_timeout(200)
+        r = await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); const v=s.getState().project.clips.find(c=>c.id==='{v}'); return [v.subtitle, document.activeElement?.value]}}")
+        check("ルビ：ボタンで選んだ文字に《》を付け、読みをそのまま打てる", r[0] == "今日《きょう》は晴れ" and r[1] == r[0], str(r))
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts'); const t={id:'t',trackId:'V1',start:0,duration:30,linkId:null,type:'text',text:'夕暮《ゆうぐれ》',fontFamily:'sans-serif',fontSize:60,color:'#fff',outlineColor:'#000',outlineWidth:2,bold:false,italic:false,align:'center',transform:{x:0,y:0,scale:1,opacity:1}};
+          const a=v.textImage(t), b=v.textImage({...t, text:'夕暮'}); const c=v.textImage(t,{vertical:true}), d=v.textImage({...t, text:'夕暮'},{vertical:true});
+          return [a.height>b.height, a.width===b.width, c.width>d.width, v.textCharCount('夕暮《ゆうぐれ》です')]}""")
+        check("ルビ：テキストは上（縦書きは右）にルビの分だけ広がり、文字数はルビを数えない", r == [True, True, True, 4], str(r))
+        await q.wait_for_timeout(300)
+        check("ルビの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
