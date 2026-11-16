@@ -200,13 +200,32 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
     const x0 = w / 2 - ctx.measureText(line).width / 2;
     ctx.textAlign = 'left';
     if (shown) {
-      if (st?.outlineWidth) {
-        ctx.lineWidth = st.outlineWidth * 2 * scale;
-        ctx.strokeStyle = st.outlineColor;
-        ctx.strokeText(shown, x0, y);
+      // 帯（書き出しの ASS の BorderStyle 3 と同じく、出ている文字の幅＋余白。縁取りの代わり）
+      const boxed = !!st?.boxColor;
+      const pad = (st?.boxPadding ?? 12) * scale;
+      const top = pos === 'middle' ? y - size * 0.5 : y - size * 0.88;
+      const boxRect = (dx: number, dy: number) => ctx.fillRect(x0 - pad + dx, top - pad + dy, ctx.measureText(shown).width + pad * 2, size * (pos === 'middle' ? 1 : 1.12) + pad * 2);
+      const body = (dx: number, dy: number, color?: string) => {
+        if (boxed) {
+          ctx.save();
+          ctx.fillStyle = color ?? st!.boxColor!;
+          if (!color) ctx.globalAlpha *= Math.max(0, Math.min(1, st?.boxOpacity ?? 1));
+          boxRect(dx, dy);
+          ctx.restore();
+        } else if (st?.outlineWidth) {
+          ctx.lineWidth = st.outlineWidth * 2 * scale;
+          ctx.strokeStyle = color ?? st.outlineColor;
+          ctx.strokeText(shown, x0 + dx, y + dy);
+        }
+        ctx.fillStyle = color ?? st?.color ?? '#fff';
+        ctx.fillText(shown, x0 + dx, y + dy);
+      };
+      // 影は、縁（帯）まで含めた形をずらして落とす
+      if (st?.shadowColor) {
+        const o = (st.shadowOffset ?? 4) * scale;
+        body(o, o, st.shadowColor);
       }
-      ctx.fillStyle = st?.color ?? '#fff';
-      ctx.fillText(shown, x0, y);
+      body(0, 0);
     }
     y += lh;
   }
