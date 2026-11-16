@@ -145,7 +145,7 @@ export interface State {
   /** 「マーカーと概要欄」「テンプレート」「素材の場所と整理」の画面を開いているか */
   descriptionOpen: boolean;
   /** かんたんエフェクトで開いている種類 */
-  fxTab: 'in' | 'out' | 'move' | 'fx' | 'trans';
+  fxTab: 'in' | 'out' | 'move' | 'fx' | 'filter' | 'trans';
   templatesOpen: boolean;
   mediaOpen: boolean;
   /** 見つからない素材（プロジェクトに書いてあるパスのまま） */

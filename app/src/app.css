@@ -1705,3 +1705,8 @@ dialog.astryx-dialog[open] {
   max-height: 82%;
   object-fit: contain;
 }
+
+/* フィルターの色見本（空・肌・緑の帯。タイルにそのフィルターを掛けて見せる） */
+.vx-grade-demo {
+  background: linear-gradient(180deg, #6fa8dc 0 34%, #e8b48a 34% 67%, #6aa84f 67% 100%);
+}

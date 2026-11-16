@@ -316,6 +316,101 @@ export interface MediaClip extends ClipBase {
   reverse?: boolean;
   /** 静止（inPoint のコマを出し続ける。音は出さない） */
   freeze?: boolean;
+  /** 切り抜き（それぞれの辺から削る、幅・高さに対する割合 0〜1） */
+  crop?: Crop;
+  /** 形で切り抜く（マスク） */
+  mask?: Mask;
+  /** 色を抜く（クロマキー） */
+  chroma?: Chroma;
+  /** 背景をぼかして埋める（画面いっぱいに広げてぼかした同じ素材を後ろに敷く。値はぼかしの強さ px） */
+  fillBlur?: number;
+  /** 音の加工（雑音を減らす・声を変える・音量をそろえる） */
+  audioFx?: MediaAudioFx;
+}
+
+export type VoiceFx = 'high' | 'low' | 'robot' | 'radio' | 'echo' | 'megaphone';
+/** 素材の音の加工（Rust の audiofx::MediaAudioFx と同じ） */
+export interface MediaAudioFx {
+  denoise?: boolean;
+  voice?: VoiceFx;
+  /** 音量をそろえるための増減（dB）。「音量を均一に」で素材を測って決める */
+  gainDb?: number;
+}
+export const hasAudioFx = (m: MediaClip) => !!m.audioFx && (!!m.audioFx.denoise || !!m.audioFx.voice || Math.abs(m.audioFx.gainDb ?? 0) > 1e-6);
+
+export interface Crop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+/** 形の切り抜き。位置・大きさは（切り抜いた後の）素材の幅・高さに対する割合 */
+export interface Mask {
+  shape: 'rect' | 'ellipse';
+  /** 中心のずれ（-0.5〜0.5） */
+  x: number;
+  y: number;
+  /** 幅・高さ（0〜1） */
+  w: number;
+  h: number;
+  /** 四角の角の丸み（0〜0.5） */
+  radius: number;
+  /** ぼかし（0〜0.5。短い辺に対する割合） */
+  feather: number;
+  /** 外側を残す */
+  invert: boolean;
+}
+/** 色を抜く。similarity が大きいほど近い色まで抜き、blend が大きいほど境目がなだらか */
+export interface Chroma {
+  color: string;
+  similarity: number;
+  blend: number;
+}
+
+/** 色を抜く係数（書き出しの render.rs の chroma_weights と同じ）。抜く色らしさ = wr·R + wg·G + wb·B（0〜1） */
+export function chromaWeights(color: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return null;
+  const c = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255);
+  const mean = (c[0] + c[1] + c[2]) / 3;
+  const d = c.map(v => v - mean);
+  const n = d.reduce((a, v) => a + v * v, 0);
+  if (n < 1e-3) return null;
+  return [d[0] / n, d[1] / n, d[2] / n];
+}
+
+/** 形の内側がマイナスになる、縁からの距離（px）。W・H は切り抜いた後の大きさ（書き出しの spatial_filters と同じ式） */
+export function maskDistance(mk: Mask, X: number, Y: number, W: number, H: number): number {
+  const w = Math.min(2, Math.max(0.01, mk.w));
+  const h = Math.min(2, Math.max(0.01, mk.h));
+  const cx = W * (0.5 + mk.x);
+  const cy = H * (0.5 + mk.y);
+  const hw = (W * w) / 2;
+  const hh = (H * h) / 2;
+  const mn = Math.min(hw, hh);
+  if (mk.shape === 'ellipse') return (Math.hypot((X - cx) / hw, (Y - cy) / hh) - 1) * mn;
+  const r = mn * Math.min(1, Math.min(0.5, Math.max(0, mk.radius)) * 2);
+  const qx = Math.abs(X - cx) - hw + r;
+  const qy = Math.abs(Y - cy) - hh + r;
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+}
+
+/** 形の切り抜きの不透明度（0〜1） */
+export function maskAlpha(mk: Mask, X: number, Y: number, W: number, H: number): number {
+  const sd = maskDistance(mk, X, Y, W, H);
+  const f = Math.min(0.5, Math.max(0, mk.feather));
+  const a = f > 1e-6 ? Math.min(1, Math.max(0, 0.5 - sd / (Math.min(W, H) * f))) : sd <= 0 ? 1 : 0;
+  return mk.invert ? 1 - a : a;
+}
+
+/** 切り抜いた後の大きさの割合 */
+export function cropKeep(c: Crop | undefined): [number, number, number, number] {
+  if (!c) return [0, 0, 1, 1];
+  const l = Math.min(0.95, Math.max(0, c.left));
+  const t = Math.min(0.95, Math.max(0, c.top));
+  const w = Math.max(0.05, 1 - l - Math.min(0.95, Math.max(0, c.right)));
+  const h = Math.max(0.05, 1 - t - Math.min(0.95, Math.max(0, c.bottom)));
+  return [l, t, w, h];
 }
 
 // ───────────── 速さ・逆再生・静止（書き出しの render.rs の source_filters と同じ対応） ─────────────
@@ -513,7 +608,95 @@ export type Effect =
   | {kind: 'mono'}
   | {kind: 'invert'}
   | {kind: 'wave'; amount: number; length: number; speed: number}
-  | {kind: 'swirl'; angle: number};
+  | {kind: 'swirl'; angle: number}
+  /** フィルター（色の雰囲気。name は GRADES の名前、strength は 0〜1） */
+  | {kind: 'grade'; name: string; strength: number}
+  /** 色温度（warm：-1 で青く 〜 1 で黄色く）と色合い（tint：-1 で緑 〜 1 で赤紫） */
+  | {kind: 'temperature'; warm: number; tint: number};
+
+/**
+ * フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。
+ * 書き出しの model.rs の grade_table と同じ数
+ */
+type Gamma = [number, number, number];
+const ID_G: Gamma = [1, 1, 0];
+export const GRADES: Record<string, {label: string; m: number[]; g: [Gamma, Gamma, Gamma]}> = {
+  vivid: {
+    label: 'ビビッド',
+    m: [1.2755, -0.2503, -0.0252, -0.0746, 1.0998, -0.0252, -0.0746, -0.2503, 1.3248],
+    g: [
+      [1.06, 1.1, -0.03],
+      [1.06, 1.1, -0.03],
+      [1.06, 1.1, -0.03],
+    ],
+  },
+  warm: {label: 'あたたか', m: [1.1225, -0.0386, -0.0039, -0.0107, 1.0143, -0.0036, -0.0092, -0.0307, 0.8999], g: [ID_G, ID_G, ID_G]},
+  cool: {label: 'クール', m: [0.8646, 0.0322, 0.0032, 0.0104, 0.966, 0.0035, 0.0119, 0.04, 1.068], g: [ID_G, ID_G, ID_G]},
+  sepia: {label: 'セピア', m: [0.393, 0.769, 0.189, 0.349, 0.686, 0.168, 0.272, 0.534, 0.131], g: [ID_G, ID_G, ID_G]},
+  vintage: {
+    label: 'ビンテージ',
+    m: [0.6662, 0.423, 0.104, 0.192, 0.8273, 0.0924, 0.1496, 0.2937, 0.522],
+    g: [
+      [0.85, 0.95, 0.08],
+      [0.85, 0.95, 0.08],
+      [0.8, 1, 0.1],
+    ],
+  },
+  film: {
+    label: 'フィルム',
+    m: [0.8927, 0.1338, 0.0135, 0.0376, 0.9297, 0.0127, 0.036, 0.121, 0.783],
+    g: [
+      [0.94, 1.05, 0.05],
+      [0.94, 1.05, 0.04],
+      [0.92, 1, 0.06],
+    ],
+  },
+  noir: {
+    label: 'ノワール',
+    m: [0.213, 0.715, 0.072, 0.213, 0.715, 0.072, 0.213, 0.715, 0.072],
+    g: [
+      [1.15, 1.25, -0.05],
+      [1.15, 1.25, -0.05],
+      [1.15, 1.25, -0.05],
+    ],
+  },
+  dream: {
+    label: 'ふんわり',
+    m: [0.882, 0.1072, 0.0108, 0.032, 0.9572, 0.0108, 0.032, 0.1072, 0.8608],
+    g: [
+      [0.82, 0.8, 0.15],
+      [0.82, 0.8, 0.15],
+      [0.82, 0.8, 0.15],
+    ],
+  },
+  night: {
+    label: '夜',
+    m: [0.6572, 0.1115, 0.0112, 0.0375, 0.8298, 0.0127, 0.0477, 0.1602, 0.9121],
+    g: [
+      [0.9, 1.25, 0],
+      [0.9, 1.25, 0],
+      [0.9, 1.25, 0],
+    ],
+  },
+};
+
+/** フィルター（強さを掛けた後）・色温度の、色の混ぜ方と曲線（書き出しの color_grade と同じ） */
+export function colorGrade(fx: Effect): {m: number[]; g: [Gamma, Gamma, Gamma]} | null {
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const c = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  if (fx.kind === 'grade') {
+    const t = GRADES[fx.name];
+    if (!t) return null;
+    const s = c(fx.strength, 0, 1);
+    return {m: I.map((v, i) => v + (t.m[i] - v) * s), g: t.g.map(([a, e, o]) => [1 + (a - 1) * s, 1 + (e - 1) * s, o * s]) as [Gamma, Gamma, Gamma]};
+  }
+  if (fx.kind === 'temperature') {
+    const w = c(fx.warm, -1, 1);
+    const t = c(fx.tint, -1, 1);
+    return {m: [1 + 0.18 * w, 0, 0, 0, 1 - 0.12 * t, 0, 0, 0, 1 - 0.18 * w], g: [ID_G, ID_G, ID_G]};
+  }
+  return null;
+}
 
 export const plainLook = (): Look => ({rotation: 0, anim: null, fadeIn: 0, fadeOut: 0, effects: []});
 

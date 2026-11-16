@@ -1,7 +1,7 @@
 // Rust（src-tauri/src/commands.rs）との窓口。
 // ブラウザで開いたとき（Tauri 外）は、デザイン確認用の模擬実装に切り替わる。
 
-import type {AccentPhrase, Character, EngineId, EngineStatus, Project, VoiceClip, VoiceInfo} from './model';
+import type {AccentPhrase, Character, EngineId, EngineStatus, MediaAudioFx, Project, VoiceClip, VoiceInfo} from './model';
 import {defaultParams, newLayer, reflowAll} from './model';
 
 export interface SynthProgress {
@@ -108,6 +108,12 @@ export interface Api {
   allowPaths(paths: string[]): Promise<void>;
   /** 動画のプロキシを作り、画面で読める URL を返す */
   makeProxy(src: string, projectPath: string | null, durationMs: number): Promise<string>;
+  /** 素材の音を加工した WAV（プレビュー用）の URL */
+  processAudio(src: string, projectPath: string | null, fx: MediaAudioFx): Promise<string>;
+  /** 素材の音の大きさと、そろえるための増減（dB） */
+  measureAudio(src: string, projectPath: string | null): Promise<{meanDb: number; maxDb: number; gainDb: number}>;
+  /** 素材の拍の時刻（秒、素材の頭から） */
+  detectBeats(src: string, projectPath: string | null): Promise<number[]>;
   onProxyProgress(cb: (p: {src: string; ratio: number}) => void): Promise<Unlisten>;
   /** この PC で使える書き出しの方法（先頭は CPU） */
   videoEncoders(): Promise<Encoder[]>;
@@ -273,6 +279,9 @@ async function tauriApi(): Promise<Api> {
     mediaUrl: (path, projectPath) => convertFileSrc(resolvePath(path, projectPath)),
     allowPaths: paths => invoke('allow_paths', {paths}),
     makeProxy: async (src, projectPath, durationMs) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs})),
+    processAudio: async (src, projectPath, fx) => convertFileSrc(await invoke<string>('process_audio', {src: resolvePath(src, projectPath), fx})),
+    measureAudio: (src, projectPath) => invoke('measure_audio', {src: resolvePath(src, projectPath)}),
+    detectBeats: (src, projectPath) => invoke('detect_beats', {src: resolvePath(src, projectPath)}),
     onProxyProgress: cb => listen<{src: string; ratio: number}>('proxy-progress', e => cb(e.payload)),
     videoEncoders: () => invoke('video_encoders'),
     addRecent: path => invoke('add_recent', {path}),
@@ -539,6 +548,13 @@ function mockApi(): Api {
       path.endsWith('.mp4') ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360} : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
     mediaUrl: path => path,
     allowPaths: async () => {},
+    processAudio: async src => {
+      await sleep(50);
+      (globalThis as {__lastProcessed?: string}).__lastProcessed = src;
+      return src;
+    },
+    measureAudio: async () => ({meanDb: -30, maxDb: -6, gainDb: 5}),
+    detectBeats: async () => (globalThis as {__mockBeats?: number[]}).__mockBeats ?? [0.5, 1, 1.5, 2],
     makeProxy: async src => {
       for (let i = 1; i <= 10; i++) {
         await sleep(80);
