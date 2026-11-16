@@ -117,9 +117,15 @@ async def main():
         check("再生：タイムラインが再生位置を追いかける", sl > 300, str(sl))
         box = await pg.locator(".vx-timeline-scroll").bounding_box()
         await pg.mouse.move(box["x"] + 300, box["y"] + 60)
-        await pg.mouse.wheel(-600, 0); await pg.wait_for_timeout(900)
+        # 1 回目のホイールが追いかけのなめらかなスクロールと重なることがあるので、少し間を空けて 2 回に分ける
+        sl = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
+        await pg.mouse.wheel(-400, 0); await pg.wait_for_timeout(150)
+        await pg.mouse.wheel(-400, 0); await pg.wait_for_timeout(900)
         sl2 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
-        check("再生：ホイールで戻したら 2 秒は引き戻さない", sl2 < sl - 200, f"{sl}->{sl2}")
+        await pg.wait_for_timeout(700)
+        sl3 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
+        # 戻した位置から、追いかけで前へ引き戻されていない（再生は続いている）
+        check("再生：ホイールで戻したら 2 秒は引き戻さない", sl2 < sl - 100 and sl3 <= sl2 + 2, f"{sl}->{sl2}->{sl3}")
         await pg.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
 
         # ── メニューを閉じるとき跳ねない（閉じている途中に動きが走らない）
@@ -287,7 +293,15 @@ async def main():
         r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const p=s.getState().project;
           const t=p.clips.find(c=>c.id==='{B}').look.transition; const d=m.withTransitions(p); const ga=d.clips.find(c=>c.id==='{A}'), gb=d.clips.find(c=>c.id==='{B}');
           return {{t, ex: ga.look.exit, en: gb.look.enter, pressed: !!document.querySelector(".vx-fx-tile[data-fx='tr-left'][aria-pressed='true']")}}}}""")
-        check("切り替え：「左へ流す」で前は左へ出て、次は右から入る", r["t"]["kind"] == "slideLeft" and r["ex"]["kind"] == "slideLeft" and r["en"]["kind"] == "slideRight" and r["ex"]["frames"] + r["en"]["frames"] == r["t"]["frames"] and r["pressed"], str(r))
+        check("切り替え：「左へ流す」で前は左へ出て、次は右から入る（同じ長さで同時に）", r["t"]["kind"] == "slideLeft" and r["ex"]["kind"] == "slideLeft" and r["en"]["kind"] == "slideRight" and r["ex"]["frames"] == r["en"]["frames"] == r["t"]["frames"] and r["ex"].get("smooth") and r["pressed"], str(r))
+        r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts'); const p=s.getState().project;
+          const d=m.withTransitions(p); const ga=d.clips.find(c=>c.id==='{A}'), gb=d.clips.find(c=>c.id==='{B}'); const fps=p.video.fps, W=p.video.width; const out=[];
+          for (const k of [0.25,0.5,0.75]) {{ const t=gb.start+Math.round(gb.look.enter.frames*k);
+            const xa=v.visualAt(ga.transform, ga.look, t-ga.start, ga.duration, fps, t/fps, [W,p.video.height]).transform.x;
+            const xb=v.visualAt(gb.transform, gb.look, t-gb.start, gb.duration, fps, t/fps, [W,p.video.height]).transform.x;
+            out.push(Math.abs((xb-gb.transform.x)-(xa-ga.transform.x)-W)<1e-6 && xa<ga.transform.x && xb>gb.transform.x) }}
+          return out}}""")
+        check("切り替え：押し出しの途中も、前と次の場面がくっついたまま動く", all(r), str(r))
         await q.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
         r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts');
           const lk=k=>{{const p=s.getState().project; const c=p.clips.find(c=>c.id==='{B}'); s.updateClip('{B}',{{look:{{...c.look, transition:{{kind:k, frames:20}}}}}}); return m.withTransitions(s.getState().project)}};
