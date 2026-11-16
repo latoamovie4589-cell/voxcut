@@ -7,8 +7,26 @@ import type {Api} from '../ipc';
 import {api} from '../ipc';
 import {wrapSubtitle} from '../subtitleWrap';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
-import type {Character, Effect, MediaClip, PortraitClip, Project, Transform} from '../model';
-import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks, withTransitions} from '../model';
+import type {Character, Clip, Effect, MediaClip, PortraitClip, Project, Transform, VisualClip} from '../model';
+import {
+  audibleTracks,
+  lineOfSubtitle,
+  expressionFor,
+  expressionIndex,
+  isVisual,
+  lineExpression,
+  lineVariants,
+  plainLook,
+  projectDuration,
+  startOffsetOf,
+  videoTracks,
+  withTransitions,
+  isRetimed,
+  speedAt,
+  srcFrameAt,
+  animStateAt,
+  setKeyframe,
+} from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
@@ -134,7 +152,10 @@ function selectTarget(t: Target) {
   }
 }
 
-function commitTransform(t: Target, transform: Transform, mergeKey?: string) {
+/** ドラッグを始めたときのアイテム（キーフレームの点を動かすときの基準） */
+let dragBase: {key: string; clip: Clip} | null = null;
+
+export function commitTransform(t: Target, transform: Transform, mergeKey?: string) {
   if (t.kind === 'subtitle') {
     commit(
       p => ({
@@ -147,7 +168,24 @@ function commitTransform(t: Target, transform: Transform, mergeKey?: string) {
     commit(
       p => ({
         ...p,
-        clips: p.clips.map(c => (c.id === t.id && (isVisual(c) || c.type === 'portrait') ? {...c, transform} : c)),
+        clips: p.clips.map(c => {
+          if (c.id !== t.id || !(isVisual(c) || c.type === 'portrait')) return c;
+          // キーフレームのあるアイテムは、再生位置の点を動かす（なければ足す）。ずれは動かし始めたときの状態から測る
+          if (isVisual(c) && c.look?.anim) {
+            if (mergeKey && dragBase?.key !== mergeKey) dragBase = {key: mergeKey, clip: c};
+            const o = (mergeKey && dragBase?.clip.id === c.id ? dragBase.clip : c) as VisualClip;
+            const frac = Math.min(1, Math.max(0, (getState().playhead - o.start) / Math.max(1, o.duration)));
+            const cur = animStateAt(o.transform, o.look, frac);
+            const nt: Transform = {
+              ...cur.transform,
+              x: cur.transform.x + transform.x - o.transform.x,
+              y: cur.transform.y + transform.y - o.transform.y,
+              scale: Math.max(0.01, (cur.transform.scale * transform.scale) / Math.max(0.01, o.transform.scale)),
+            };
+            return setKeyframe(o, frac, nt, cur.rotation) as Clip;
+          }
+          return {...c, transform};
+        }),
       }),
       mergeKey,
     );
@@ -456,7 +494,8 @@ export function Preview() {
       for (const c of p.clips) {
         if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
         // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
-        const look = (key: string, tr: Transform) => visualAt(tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+        // キーフレームのあるアイテムは、ドラッグ中も確定した値（点を動かした結果）で描く
+        const look = (key: string, tr: Transform) => visualAt(c.look?.anim ? tr : tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
         // 波・渦巻き（元の大きさで掛ける。時刻はアイテムの頭から）
         const warp = (img: CanvasImageSource, size: [number, number]) => distort(img, size, c.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, c.transform.scale));
         if (c.type === 'text' || c.type === 'shape') {
@@ -492,7 +531,9 @@ export function Preview() {
             // 切り替えで映像だけを延ばした部分は音を出さない
             const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
             const vol = m.hasAudio && audible.has(t.id) && voiced ? m.volume * duck : 0;
-            if (syncVideo(v, (m.inPoint + playhead - m.start) / fps, isPlaying, vol, playRate)) {
+            // 速さ・逆再生・静止（書き出しと同じ対応。逆再生と静止は止めたままコマを合わせ、音は出さない）
+            const sp = speedAt(m, playhead - m.start);
+            if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
               const key = `m:${m.id}`;
               const rect = drawVisual(ctx, warp(v, [info.width, info.height]), [info.width, info.height], look(key, m.transform), w, h, scale);
               if (!locked.has(m.trackId))
@@ -545,6 +586,17 @@ export function Preview() {
         drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
       }
     }
+    // 速さを変えた音声素材は、音の高さを変えずに速さを変えられる <audio> で鳴らす（そのほかは playback.ts の Web Audio）
+    if (isPlaying)
+      for (const c of p.clips) {
+        if (c.type !== 'media' || c.mediaKind !== 'audio' || !isRetimed(c) || !audible.has(c.trackId) || !at(c)) continue;
+        const el = videoFor(apiNow ? apiNow.mediaUrl(c.src, projectPath) : c.src, () => {});
+        const t = p.tracks.find(x => x.id === c.trackId);
+        const duck = t?.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
+        const sp = speedAt(c, playhead - c.start);
+        syncVideo(el, srcFrameAt(c, playhead - c.start) / fps, true, sp > 0 ? c.volume * duck : 0, playRate * sp);
+        activeVideos.add(el);
+      }
     pauseExcept(activeVideos);
 
     // セーフエリア（外側＝アクション 93%、内側＝タイトル 90%）。書き出しには入らない

@@ -40,7 +40,8 @@ export function syncVideo(v: HTMLVideoElement, t: number, playing: boolean, volu
   const target = Math.max(0, Math.min(t, (v.duration || Infinity) - 0.001));
   // 逆再生は <video> ではできないので、止めたまま 1 コマずつシークする（音は出さない）
   if (playing && rate > 0) {
-    v.playbackRate = rate;
+    // <video> の速さは 1/16〜16 倍まで
+    v.playbackRate = Math.min(16, Math.max(0.0625, rate));
     v.muted = volume <= 0;
     v.volume = Math.min(1, Math.max(0, volume));
     if (v.paused) {

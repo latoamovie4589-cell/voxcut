@@ -2,17 +2,9 @@
 // 書き出し（core/src/render.rs の visual_filters）と同じ計算になるようにそろえる。
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
-import type {Ease, Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {lineOfSubtitle} from '../model';
+import type {Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
+import {animStateAt, lineOfSubtitle} from '../model';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
-
-function ease(e: Ease, p: number): number {
-  const q = Math.min(1, Math.max(0, p));
-  if (e === 'in') return q * q;
-  if (e === 'out') return 1 - (1 - q) * (1 - q);
-  if (e === 'inOut') return q < 0.5 ? 2 * q * q : 1 - 2 * (1 - q) * (1 - q);
-  return q;
-}
 
 export interface VisualState {
   transform: Transform;
@@ -31,25 +23,12 @@ export interface VisualState {
 export function visualAt(t: Transform, look: Look | undefined, local: number, dur: number, fps: number, abs: number, frame?: [number, number]): VisualState {
   const l = look;
   const d = dur / fps;
-  const an = l?.anim;
   const p = Math.min(1, Math.max(0, local / fps / Math.max(1e-3, d)));
-  const mid = an?.mid;
-  const at = mid ? Math.min(0.99, Math.max(0.01, mid.at)) : 0;
-  // 始まり a →（途中 m）→ 終わり b。区間ごとに動き方を掛ける（書き出しの tween3 と同じ）
-  const mix = (a: number, m: number | undefined, b: number | undefined) => {
-    if (!an || b === undefined) return a;
-    if (m === undefined) return a + (b - a) * ease(an.ease, p);
-    return p < at ? a + (m - a) * ease(an.ease, p / at) : m + (b - m) * ease(an.ease, (p - at) / (1 - at));
-  };
+  // 始まり →（キーフレーム…）→ 終わり。区間ごとに動き方を掛ける（書き出しの tween3 と同じ）
+  const st = animStateAt(t, l, p);
+  const tr: Transform = st.transform;
+  const rotation = st.rotation;
   const c01 = (v: number) => Math.min(1, Math.max(0, v));
-  const to = an?.to;
-  const tr: Transform = {
-    x: mix(t.x, mid?.transform.x, to?.x),
-    y: mix(t.y, mid?.transform.y, to?.y),
-    scale: mix(t.scale, mid?.transform.scale, to?.scale),
-    opacity: mix(c01(t.opacity), mid ? c01(mid.transform.opacity) : undefined, to ? c01(to.opacity) : undefined),
-  };
-  const rotation = mix(l?.rotation ?? 0, mid?.rotation, an ? an.rotation : undefined);
   let alpha = tr.opacity;
   const sec = local / fps;
   if (l?.fadeIn) alpha *= Math.min(1, sec / (l.fadeIn / fps));
