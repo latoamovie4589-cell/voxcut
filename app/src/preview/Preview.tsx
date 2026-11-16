@@ -6,7 +6,7 @@ import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
 import type {Character, Effect, MediaClip, PortraitClip, Project, Transform} from '../model';
-import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks} from '../model';
+import {audibleTracks, lineOfSubtitle, expressionFor, expressionIndex, isVisual, lineExpression, lineVariants, plainLook, projectDuration, startOffsetOf, videoTracks, withTransitions} from '../model';
 import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
@@ -213,6 +213,13 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
   ctx.restore();
 }
 
+/** 切り替えを置き換えた写し（同じプロジェクトなら作り直さない） */
+let lastTrans: [Project, Project] | null = null;
+function transitionsOf(p: Project): Project {
+  if (lastTrans?.[0] !== p) lastTrans = [p, withTransitions(p)];
+  return lastTrans[1];
+}
+
 export function Preview() {
   const project = useStore(s => s.project);
   const projectPath = useStore(s => s.projectPath);
@@ -283,8 +290,10 @@ export function Preview() {
   useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
-    const p = getState().project;
-    if (!canvas || !wrap || !p) return;
+    const p0 = getState().project;
+    if (!canvas || !wrap || !p0) return;
+    // つなぎ目の切り替えは、前後のアイテムの動きと覆う図形に置き換えて描く（書き出しと同じ）
+    const p = transitionsOf(p0);
     const bump = () => setTick(t => t + 1);
     const ar = p.video.width / p.video.height;
     // 表示の大きさ：「全体」は枠に収める、ほかは動画の大きさの倍率（はみ出したらスクロール）
@@ -382,7 +391,7 @@ export function Preview() {
           const img = itemImage(c)!;
           const key = `m:${c.id}`;
           const rect = drawVisual(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale);
-          if (!locked.has(c.trackId)) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
+          if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
           continue;
         }
         const m = c as MediaClip;

@@ -221,9 +221,34 @@ const ROTATE_V = new Set([...'ー－―〜～…‥（）「」『』【】〔�
 /** 1 文字ずつ出すときに数える文字の数（改行は数えない） */
 export const textCharCount = (text: string) => Array.from(text.replace(/\n/g, '')).length;
 
+/** 文字の画像が同じになるかを決める値（書き出しの画像の名前にも使う） */
+export const textKey = (c: TextClip) => [
+  't',
+  c.text,
+  c.fontFamily,
+  c.fontSize,
+  c.color,
+  c.outlineColor,
+  c.outlineWidth,
+  c.bold,
+  c.italic,
+  c.align,
+  c.shadowColor ?? '',
+  c.shadowBlur ?? 0,
+  c.shadowX ?? 0,
+  c.shadowY ?? 0,
+  c.outline2Color ?? '',
+  c.outline2Width ?? 0,
+  c.boxColor ?? '',
+  c.boxOpacity ?? 1,
+  c.boxPadding ?? 0,
+  c.boxRadius ?? 0,
+  c.gradientColor ?? '',
+];
+
 /** テキストアイテムの画像（大きさは文字に合わせる。縁取りの分だけ余白を足す）。字幕の「個別に設定」では組み方と飾りも */
 export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
-  const key = JSON.stringify(['t', c.text, c.fontFamily, c.fontSize, c.color, c.outlineColor, c.outlineWidth, c.bold, c.italic, c.align, ex]);
+  const key = JSON.stringify([...textKey(c), ex]);
   return cached(key, () => {
     const font = `${c.italic ? 'italic ' : ''}${c.bold ? 'bold ' : ''}${c.fontSize}px "${c.fontFamily}", "Yu Gothic UI", sans-serif`;
     const ls = ex.letterSpacing ?? 0;
@@ -251,8 +276,14 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
       }
       lines.push(cur);
     }
-    const pad = Math.ceil(c.outlineWidth + c.fontSize * 0.1);
-    const box = ex.boxColor ? Math.max(0, ex.boxPadding ?? 16) : 0;
+    // テキストアイテムの飾り（字幕の「個別に設定」の飾りとは別）
+    const o2 = c.outline2Color && (c.outline2Width ?? 0) > 0 ? c.outline2Width! : 0;
+    const shadowOn = !!c.shadowColor && ((c.shadowBlur ?? 0) > 0 || (c.shadowX ?? 0) !== 0 || (c.shadowY ?? 0) !== 0);
+    // 影と光は四方に同じだけ余白を取る（文字の中心がずれないように）
+    const glow = shadowOn ? Math.ceil((c.shadowBlur ?? 0) * 2 + Math.max(Math.abs(c.shadowX ?? 0), Math.abs(c.shadowY ?? 0))) : 0;
+    const pad = Math.ceil(c.outlineWidth + o2 + c.fontSize * 0.1);
+    const boxColor = ex.boxColor ?? (c.boxColor || undefined);
+    const box = boxColor ? Math.max(0, ex.boxColor ? (ex.boxPadding ?? 16) : (c.boxPadding ?? 16)) : 0;
     const sh = ex.shadowColor ? Math.abs(ex.shadowOffset ?? 4) : 0;
     const widths = lines.map(l => m.measureText(l).width);
     const longest = Math.max(1, ...lines.map(l => Array.from(l).length));
@@ -261,14 +292,18 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const th = ex.vertical ? Math.ceil(longest * charStep) : lineH * lines.length;
     const edge = pad + box;
     const cv = document.createElement('canvas');
-    cv.width = Math.max(1, tw + edge * 2 + sh);
-    cv.height = Math.max(1, th + edge * 2 + sh);
+    cv.width = Math.max(1, tw + edge * 2 + sh + glow * 2);
+    cv.height = Math.max(1, th + edge * 2 + sh + glow * 2);
     const x = cv.getContext('2d')!;
+    x.translate(glow, glow);
     if (box) {
-      x.fillStyle = ex.boxColor!;
+      x.save();
+      x.fillStyle = boxColor!;
+      if (!ex.boxColor) x.globalAlpha = Math.max(0, Math.min(1, c.boxOpacity ?? 1));
       x.beginPath();
-      x.roundRect(pad, pad, tw + box * 2 + sh, th + box * 2 + sh, Math.min(box, c.fontSize * 0.3));
+      x.roundRect(pad, pad, tw + box * 2 + sh, th + box * 2 + sh, ex.boxColor ? Math.min(box, c.fontSize * 0.3) : Math.max(0, c.boxRadius ?? Math.min(box, c.fontSize * 0.3)));
       x.fill();
+      x.restore();
     }
     x.font = font;
     x.letterSpacing = `${ls}px`;
@@ -294,24 +329,50 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         glyphs.push({s: chars.slice(0, n).join(''), px: lx, py: edge + lineH * i + lineH / 2, rot: false});
       }
     });
-    const paint = (dx: number, dy: number, fill: string, stroke: boolean) => {
+    const outline = c.outlineWidth > 0 && c.outlineColor ? c.outlineWidth : 0;
+    const paint = (dx: number, dy: number, fill: string, stroke: boolean, all = false) => {
       for (const g of glyphs) {
         x.save();
         // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
         x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
         if (g.rot) x.rotate(Math.PI / 2);
         x.textAlign = ex.vertical ? 'center' : 'left';
-        if (stroke && c.outlineWidth > 0 && c.outlineColor) {
-          x.strokeStyle = c.outlineColor;
-          x.lineWidth = c.outlineWidth * 2;
+        // 影・光は、縁まで含めた形で落とす
+        if (all && outline + o2 > 0) {
+          x.strokeStyle = fill;
+          x.lineWidth = (outline + o2) * 2;
           x.strokeText(g.s, 0, 0);
         }
-        x.fillStyle = fill;
+        if (stroke && o2) {
+          x.strokeStyle = c.outline2Color!;
+          x.lineWidth = (outline + o2) * 2;
+          x.strokeText(g.s, 0, 0);
+        }
+        if (stroke && outline) {
+          x.strokeStyle = c.outlineColor;
+          x.lineWidth = outline * 2;
+          x.strokeText(g.s, 0, 0);
+        }
+        if (stroke && c.gradientColor) {
+          // 1 行ごとに、上は文字の色・下はグラデーションの色
+          const gr = x.createLinearGradient(0, -c.fontSize / 2, 0, c.fontSize / 2);
+          gr.addColorStop(0, c.color);
+          gr.addColorStop(1, c.gradientColor);
+          x.fillStyle = gr;
+        } else x.fillStyle = fill;
         x.fillText(g.s, 0, 0);
         x.restore();
       }
     };
     if (sh) paint(ex.shadowOffset ?? 4, ex.shadowOffset ?? 4, ex.shadowColor!, false);
+    if (shadowOn) {
+      x.save();
+      if ((c.shadowBlur ?? 0) > 0) x.filter = `blur(${c.shadowBlur}px)`;
+      paint(c.shadowX ?? 0, c.shadowY ?? 0, c.shadowColor!, false, true);
+      // 光（ずらさない影）は 2 回重ねて濃くする
+      if ((c.shadowBlur ?? 0) > 0 && !(c.shadowX ?? 0) && !(c.shadowY ?? 0)) paint(0, 0, c.shadowColor!, false, true);
+      x.restore();
+    }
     paint(0, 0, c.color, true);
     return cv;
   });
@@ -452,10 +513,7 @@ export async function bakeItemImages(project: Project): Promise<Record<string, s
   const items: {id: string; img: HTMLCanvasElement; key: unknown}[] = [];
   for (const c of project.clips) {
     if (c.type === 'text' || c.type === 'shape') {
-      const key =
-        c.type === 'text'
-          ? ['t', c.text, c.fontFamily, c.fontSize, c.color, c.outlineColor, c.outlineWidth, c.bold, c.italic, c.align]
-          : ['s', c.shape, c.width, c.height, c.fill, c.stroke, c.strokeWidth];
+      const key = c.type === 'text' ? textKey(c) : ['s', c.shape, c.width, c.height, c.fill, c.stroke, c.strokeWidth];
       items.push({id: c.id, img: itemImage(c)!, key});
     }
     const v = lineOfSubtitle(project, c);
