@@ -425,6 +425,64 @@ async def main():
         check("ルビの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+        # ── 速さ・だんだん速く・逆再生・静止（素材の対応は書き出しの render.rs と同じ）
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const m=await import('/src/model.ts');
+          const base={id:'x', trackId:'V1', linkId:null, type:'media', src:'/m/a.mp4', mediaKind:'video', hasAudio:true, volume:1, transform:{x:0,y:0,scale:1,opacity:1}};
+          const sp={...base, start:100, duration:60, inPoint:30, speed:2};
+          const rv={...base, start:100, duration:60, inPoint:0, reverse:true};
+          const rp={...base, start:100, duration:60, inPoint:0, speed:1, speedTo:3};
+          const L=m.retime(rp,100,30), R=m.retime(rp,130,30), T=m.retime(rv,100,40), H=m.retime(rv,120,40);
+          return [m.srcFrameAt(sp,10), m.retime(sp,130,30).inPoint, m.srcFrameAt(rv,0), m.srcFrameAt(rv,59), m.srcFrameAt(T,0)===m.srcFrameAt(rv,0), m.srcFrameAt(H,0)===m.srcFrameAt(rv,20),
+            m.srcSpan(rp), [L.speed,L.speedTo,m.srcSpan(L)], [R.speed,R.speedTo,R.inPoint,m.srcSpan(R)], m.withSpeed(sp,1).duration, m.withSpeed({...base,start:0,duration:60,inPoint:0},1,3).duration, m.speedAt(rv,5)]}""")
+        check("速さ：素材の位置・分けたときの切り出し・逆再生の端・だんだん速くの分け方・長さの変わり方", r == [50, 90, 60, 1, True, True, 120, [1, 2, 45], [2, 3, 45, 75], 120, 30, -1], str(r))
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const fps=p.video.fps;
+          const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/a.mp4', hasAudio:false};
+          const later=p.clips.filter(c=>c.start>=1000).map(c=>[c.id,c.start]);
+          s.commit(pr=>({...pr, clips:[...pr.clips, {...base, id:'sv', start:900, duration:120, mediaKind:'video', linkId:'lkS'}, {...base, id:'sa', trackId:(pr.tracks.find(t=>t.kind==='audio')??pr.tracks[pr.tracks.length-1]).id, start:900, duration:120, mediaKind:'audio', linkId:'lkS'}]}));
+          s.setMediaSpeed('sv', 2); const a=s.getState().project.clips; const sv=a.find(c=>c.id==='sv'), sa=a.find(c=>c.id==='sa');
+          const ok1=sv.duration===60 && sa.duration===60 && sa.speed===2;
+          s.setMediaSpeed('sv', 1); s.freezeFrame('sv', 930, 2); const b2=s.getState().project.clips;
+          const still=b2.find(c=>c.freeze); const right=b2.filter(c=>c.linkId && c.linkId!=='lkS' && c.start===930+2*fps);
+          const moved=later.every(([id,st])=>b2.find(c=>c.id===id).start===st+2*fps);
+          return [ok1, !!still && still.start===930 && still.duration===2*fps && still.inPoint===30, right.length===2 && right.every(c=>c.inPoint===30), moved]}""")
+        check("速さ：リンクした音も一緒に変わる／再生位置で止めると間に静止したコマが入り、後ろがずれる", r == [True, True, True, True], str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({selectedClipId:'sv', selectedClipIds:['sv']})}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_role("radio", name="2×").click(); await q.wait_for_timeout(300)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id==='sv'); return [c.speed, c.duration]}")
+        check("速さ：プロパティの 2× で倍速になり、長さが半分になる", r == [2, 15], str(r))
+        await q.wait_for_timeout(300)
+        check("速さの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── キーフレーム：何点でも、点から点へ。再生位置に追加・その点の値を変える・ドラッグで点を動かす
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const m=await import('/src/model.ts'); const T=(x)=>({x,y:0,scale:1,opacity:1});
+          const look={...m.plainLook(), anim:{to:T(60), rotation:0, ease:'linear', keys:[{at:0.5,transform:T(-40),rotation:0},{at:0.25,transform:T(100),rotation:0}]}};
+          const c={transform:T(0), look:{...m.plainLook()}};
+          const a=m.setKeyframe(c,0.5,T(80),10); const b2=m.setKeyframe(a,0.501,T(90),0); const d=m.removeKeyframe(b2,0.5);
+          return [m.animStateAt(T(0),look,0.375).transform.x, m.animStateAt(T(0),look,0.125).transform.x, m.keyframeTimes(look),
+            [a.look.anim.to.x, a.look.anim.keys.length, m.animStateAt(a.transform,a.look,0.5).transform.x, m.animStateAt(a.transform,a.look,0.5).rotation], [b2.look.anim.keys.length, b2.look.anim.keys[0].transform.x], d.look.anim.keys.length]}""")
+        check("キーフレーム：点から点へ動く・同じ時点の点は置き換え・消せる", r == [30, 50, [0, 0.25, 0.5, 1], [0, 1, 80, 10], [1, 90], 0], str(r))
+        tid = await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({playhead:300}); const id=s.addVisualItem('shape'); const c=s.getState().project.clips.find(x=>x.id===id); s.setState({selectedClipId:id, selectedClipIds:[id], playhead:c.start+Math.round(c.duration/2)}); return id}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_role("button", name="再生位置に追加").click(); await q.wait_for_timeout(300)
+        n = await q.get_by_text("点 3 個（頭と終わりを含む）").count()
+        r = await q.evaluate(f"async()=>{{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(x=>x.id==='{tid}'); return [c.look.anim.keys.length, Math.abs(c.look.anim.keys[0].at-0.5)<0.02]}}")
+        check("キーフレーム：プロパティの「再生位置に追加」で点が増え、数が出る", n == 1 and r == [1, True], f"{n} {r}")
+        # プレビューでドラッグしたつもり（矢印キーと同じ道）で、再生位置の点だけが動く
+        r = await q.evaluate(f"""async()=>{{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const P=await import('/src/preview/Preview.tsx');
+          const c=s.getState().project.clips.find(x=>x.id==='{tid}'); const f=(s.getState().playhead-c.start)/c.duration; const st=m.animStateAt(c.transform,c.look,f).transform;
+          const target={{kind:'media', id:c.id, key:'m:'+c.id, rect:{{x:0,y:0,w:1,h:1}}, transform:c.transform}};
+          P.commitTransform(target,{{...c.transform, x:c.transform.x+20}},'drag:k:1'); P.commitTransform(target,{{...c.transform, x:c.transform.x+50}},'drag:k:1');
+          const d=s.getState().project.clips.find(x=>x.id==='{tid}');
+          return [d.look.anim.keys.length, d.look.anim.keys[0].transform.x-st.x, d.transform.x===c.transform.x, d.look.anim.to.x===c.look.anim.to.x]}}""")
+        check("キーフレーム：ドラッグは再生位置の点だけを、動かし始めからのずれの分だけ動かす", r == [1, 50, True, True], str(r))
+        await q.wait_for_timeout(300)
+        check("キーフレームの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
