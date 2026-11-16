@@ -548,35 +548,48 @@ pub fn build_args(
                         vec!["-loop".into(), "1".into(), "-framerate".into(), v.fps.to_string(), "-t".into(), format!("{dur:.3}")],
                         img.to_string_lossy().into_owned(),
                     );
-                    last_v = visual_filters(&mut fc, idx, &last_v, v.fps, transform, look, start, dur);
+                    last_v = visual_filters(&mut fc, idx, &format!("{idx}:v"), &last_v, v.fps, transform, look, start, dur);
                     idx += 1;
                 }
                 ClipBody::Media(m) => {
                     let src = resolve(&opt.project_dir, &m.src);
                     let in_s = v.frames_to_secs(m.in_point);
+                    // 速さ・逆再生・静止：素材から切り出す長さと、映像・音の前処理
+                    let fx = &m.src_fx;
+                    let span = if fx.freeze { 1.0 / v.fps as f64 } else { fx.advance(dur, dur) };
+                    let (vpre, apre) = source_filters(fx, dur);
                     match m.media_kind {
                         MediaKind::Audio => {
-                            push_input(&mut args, vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{dur:.3}")], src);
-                            let l = format!("a{idx}");
-                            fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
-                            audio_labels.push(l);
+                            push_input(&mut args, vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{span:.3}")], src);
+                            if !fx.freeze {
+                                let l = format!("a{idx}");
+                                fc.push(format!("[{idx}:a]{apre}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
+                                audio_labels.push(l);
+                            }
                         }
                         MediaKind::Image | MediaKind::Video => {
                             let pre = if m.media_kind == MediaKind::Image {
                                 vec!["-loop".into(), "1".into(), "-framerate".into(), v.fps.to_string(), "-t".into(), format!("{dur:.3}")]
                             } else {
-                                vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{dur:.3}")]
+                                // 静止は 1 コマあれば足りるが、読み損ねないよう少し長めに取る
+                                vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{:.3}", if fx.freeze { 0.5 } else { span })]
                             };
                             push_input(&mut args, pre, src);
                             // 映像と音が 1 つのクリップの動画（分離した動画の音は、音声トラックのクリップで鳴らす）
-                            if m.media_kind == MediaKind::Video && m.has_audio && track_audible {
+                            if m.media_kind == MediaKind::Video && m.has_audio && track_audible && !fx.freeze {
                                 let l = format!("a{idx}");
                                 // 切り替えで映像だけを延ばしたときは、音を元の長さで切る
                                 let cut = m.audio_frames.map(|f| format!("atrim=0:{:.3},", v.frames_to_secs(f))).unwrap_or_default();
-                                fc.push(format!("[{idx}:a]{cut}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
+                                fc.push(format!("[{idx}:a]{apre}{cut}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
-                            last_v = visual_filters(&mut fc, idx, &last_v, v.fps, &m.transform, &m.look, start, dur);
+                            let input = if m.media_kind == MediaKind::Video && !vpre.is_empty() {
+                                fc.push(format!("[{idx}:v]{}[s{idx}]", vpre.trim_end_matches(',')));
+                                format!("s{idx}")
+                            } else {
+                                format!("{idx}:v")
+                            };
+                            last_v = visual_filters(&mut fc, idx, &input, &last_v, v.fps, &m.transform, &m.look, start, dur);
                         }
                     }
                     idx += 1;
@@ -601,7 +614,7 @@ pub fn build_args(
                         img.to_string_lossy().into_owned(),
                     ),
                 }
-                last_v = visual_filters(&mut fc, idx, &last_v, v.fps, &sc.transform, &sc.look, start, dur);
+                last_v = visual_filters(&mut fc, idx, &format!("{idx}:v"), &last_v, v.fps, &sc.transform, &sc.look, start, dur);
                 idx += 1;
             }
             if let Some((_, a)) = captions.iter().find(|(t, _)| *t == track.id) {
@@ -805,16 +818,68 @@ fn tween(a: f64, b: f64, e: Ease, t: &str, dur: f64) -> String {
     format!("({a:.4}+({d:.4})*{e})", d = b - a, e = ease_expr(e, &p))
 }
 
-/// 始まり a →（途中 m = (通る割合, 値)）→ 終わり b。区間ごとに e の動き方を掛ける
-fn tween3(a: f64, m: Option<(f64, f64)>, b: f64, e: Ease, t: &str, dur: f64) -> String {
-    let Some((at, mv)) = m else { return tween(a, b, e, t, dur) };
-    if (a - mv).abs() < 1e-9 && (mv - b).abs() < 1e-9 {
+/// 始まり a →（途中 m = [(通る割合, 値)…]、割合の順）→ 終わり b。区間ごとに e の動き方を掛ける（キーフレーム）
+fn tween3(a: f64, m: &[(f64, f64)], b: f64, e: Ease, t: &str, dur: f64) -> String {
+    if m.is_empty() {
+        return tween(a, b, e, t, dur);
+    }
+    if m.iter().all(|(_, v)| (a - v).abs() < 1e-9) && (a - b).abs() < 1e-9 {
         return format!("{a:.4}");
     }
     let p = format!("clip({t}/{d:.4},0,1)", d = dur.max(1e-3));
-    let p1 = format!("clip({p}/{at:.4},0,1)");
-    let p2 = format!("clip(({p}-{at:.4})/{r:.4},0,1)", r = 1.0 - at);
-    format!("if(lt({p},{at:.4}),{a:.4}+({d1:.4})*{e1},{mv:.4}+({d2:.4})*{e2})", d1 = mv - a, d2 = b - mv, e1 = ease_expr(e, &p1), e2 = ease_expr(e, &p2))
+    let pts: Vec<(f64, f64)> = std::iter::once((0.0, a)).chain(m.iter().copied()).chain(std::iter::once((1.0, b))).collect();
+    // 後ろの区間から入れ子にする：if(p<次の点, この区間, それより後)
+    let seg = |i: usize| {
+        let ((p0, v0), (p1, v1)) = (pts[i], pts[i + 1]);
+        let q = format!("clip(({p}-{p0:.4})/{r:.4},0,1)", r = (p1 - p0).max(1e-6));
+        format!("{v0:.4}+({:.4})*{}", v1 - v0, ease_expr(e, &q))
+    };
+    let mut out = seg(pts.len() - 2);
+    for i in (0..pts.len() - 2).rev() {
+        out = format!("if(lt({p},{:.4}),{},{out})", pts[i + 1].0, seg(i));
+    }
+    out
+}
+
+/// 素材の速さ・逆再生・静止の前処理（映像、音）。どちらも末尾に「,」が付く（なければ空）。d はクリップの長さ（秒）
+pub fn source_filters(fx: &crate::model::SourceFx, d: f64) -> (String, String) {
+    if !fx.is_retimed() {
+        return (String::new(), String::new());
+    }
+    if fx.freeze {
+        // 頭の 1 コマを、クリップの長さだけ出し続ける
+        return (format!("trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={d:.3},"), String::new());
+    }
+    let (a, b) = fx.speeds();
+    let mut vf = String::new();
+    let mut af = String::new();
+    if fx.reverse {
+        vf.push_str("reverse,");
+        af.push_str("areverse,");
+    }
+    if (a - b).abs() < 1e-9 {
+        if (a - 1.0).abs() > 1e-9 {
+            vf.push_str(&format!("setpts=(PTS-STARTPTS)/{a:.6},"));
+        }
+    } else {
+        // だんだん変わる速さ：素材の T 秒目は、t = (√(a²+2kT) − a) / k 秒目に出る（k は速さの変わり方）
+        let k = (b - a) / d.max(1e-6);
+        vf.push_str(&format!("setpts='(sqrt({:.6}+{:.6}*(PTS-STARTPTS)*TB)-{a:.6})/{k:.6}/TB',", a * a, 2.0 * k));
+    }
+    // 音は平均の速さで（音の高さは変えない）。atempo は 1 段で 0.5〜2 倍なので重ねる
+    let mut f = fx.advance(d, d) / d.max(1e-6);
+    if (f - 1.0).abs() > 1e-6 {
+        while f > 2.0 {
+            af.push_str("atempo=2,");
+            f /= 2.0;
+        }
+        while f < 0.5 {
+            af.push_str("atempo=0.5,");
+            f /= 0.5;
+        }
+        af.push_str(&format!("atempo={f:.6},"));
+    }
+    (vf, af)
 }
 
 /// 画像・動画・テキスト・図形を重ねるフィルター（入力 idx の映像を last_v に重ね、新しいラベルを返す）。
@@ -822,7 +887,7 @@ fn tween3(a: f64, m: Option<(f64, f64)>, b: f64, e: Ease, t: &str, dur: f64) -> 
 /// 大きさの変化に対応しないフィルターを通さない）→ 時刻をずらす → 位置（揺れを含む）で重ねる。
 /// 画面（preview/visual.ts）と同じ計算になるようにそろえる
 #[allow(clippy::too_many_arguments)]
-pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, t: &Transform, look: &Look, start: f64, dur: f64) -> String {
+pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &str, fps: u32, t: &Transform, look: &Look, start: f64, dur: f64) -> String {
     let plain = look.is_plain();
     let src_l = format!("v{idx}");
     let out_l = format!("ov{idx}");
@@ -830,7 +895,7 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
     if plain {
         // 今までどおり（動きも効果もないとき）
         fc.push(format!(
-            "[{idx}:v]fps={fps},scale=iw*{s:.4}:ih*{s:.4},format=rgba,colorchannelmixer=aa={o:.3},setpts=PTS-STARTPTS+{start:.3}/TB[{src_l}]",
+            "[{input}]fps={fps},scale=iw*{s:.4}:ih*{s:.4},format=rgba,colorchannelmixer=aa={o:.3},setpts=PTS-STARTPTS+{start:.3}/TB[{src_l}]",
             s = t.scale,
             o = t.opacity.clamp(0.0, 1.0)
         ));
@@ -845,12 +910,11 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
     let e = to.map(|a| a.ease).unwrap_or_default();
     let (sx, sy, ss, so, sr) = (t.x, t.y, t.scale, t.opacity.clamp(0.0, 1.0), look.rotation);
     let (ex, ey, es, eo, er) = to.map(|a| (a.to.x, a.to.y, a.to.scale, a.to.opacity.clamp(0.0, 1.0), a.rotation)).unwrap_or((sx, sy, ss, so, sr));
-    // 途中の状態（あれば 始まり → 途中 → 終わり）
-    let mid = to.and_then(|a| a.mid.as_ref());
-    let at = mid.map(|m| m.at.clamp(0.01, 0.99));
-    let via = |pick: &dyn Fn(&crate::model::AnimMid) -> f64| mid.map(|m| (at.unwrap(), pick(m)));
+    // 途中の状態（キーフレーム。始まり → 途中…→ 終わりの順に通る）
+    let pts = to.map(|a| a.waypoints()).unwrap_or_default();
+    let via = |pick: &dyn Fn(&crate::model::AnimMid) -> f64| pts.iter().map(|m| (m.at, pick(m))).collect::<Vec<_>>();
     let (mx, my, ms, mo, mr) = (via(&|m| m.transform.x), via(&|m| m.transform.y), via(&|m| m.transform.scale), via(&|m| m.transform.opacity.clamp(0.0, 1.0)), via(&|m| m.rotation));
-    let moving = |a: f64, m: Option<(f64, f64)>, b: f64| (a - b).abs() > 1e-9 || m.is_some_and(|(_, v)| (a - v).abs() > 1e-9);
+    let moving = |a: f64, m: &[(f64, f64)], b: f64| (a - b).abs() > 1e-9 || m.iter().any(|(_, v)| (a - v).abs() > 1e-9);
     // 登場・退場（滑り込む向きのずれと、大きさの倍率）
     let fpsf = fps as f64;
     let enter = look.enter.as_ref().filter(|m| m.frames > 0).map(|m| (m.kind, (m.frames as f64 / fpsf).min(dur.max(1e-3))));
@@ -921,15 +985,15 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
             }
         }
     }
-    if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.is_some_and(|(_, v)| v.abs() > 1e-9) {
-        chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween3(sr, mr, er, e, "t", dur)));
+    if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.iter().any(|(_, v)| v.abs() > 1e-9) {
+        chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween3(sr, &mr, er, e, "t", dur)));
     }
     if blur > 0.0 {
         // 半径は画面上の px。この時点では元の大きさなので、始まりの大きさで割る
         chain.push(format!("gblur=sigma={:.3}", blur / ss.max(0.01)));
     }
-    if moving(so, mo, eo) {
-        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween3(so, mo, eo, e, "T", dur)));
+    if moving(so, &mo, eo) {
+        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween3(so, &mo, eo, e, "T", dur)));
     } else if so < 1.0 {
         chain.push(format!("colorchannelmixer=aa={so:.3}"));
     }
@@ -940,17 +1004,17 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, last_v: &str, fps: u32, 
         let d = look.fade_out as f64 / fps as f64;
         chain.push(format!("fade=t=out:st={:.3}:d={d:.3}:alpha=1", (dur - d).max(0.0)));
     }
-    if moving(ss, ms, es) || !zoom.is_empty() {
-        let k = format!("{}{zoom}", tween3(ss, ms, es, e, "t", dur));
+    if moving(ss, &ms, es) || !zoom.is_empty() {
+        let k = format!("{}{zoom}", tween3(ss, &ms, es, e, "t", dur));
         chain.push(format!("scale=w='max(1,iw*{k})':h='max(1,ih*{k})':eval=frame"));
     } else {
         chain.push(format!("scale=iw*{ss:.4}:ih*{ss:.4}"));
     }
     chain.push(format!("setpts=PTS-STARTPTS+{start:.3}/TB"));
-    fc.push(format!("[{idx}:v]{}[{src_l}]", chain.join(",")));
+    fc.push(format!("[{input}]{}[{src_l}]", chain.join(",")));
     let lt = format!("(t-{start:.3})");
-    let mut x = format!("(W-w)/2+{}{}", tween3(sx, mx, ex, e, &lt, dur), slide(&lt, true));
-    let mut y = format!("(H-h)/2+{}{}", tween3(sy, my, ey, e, &lt, dur), slide(&lt, false));
+    let mut x = format!("(W-w)/2+{}{}", tween3(sx, &mx, ex, e, &lt, dur), slide(&lt, true));
+    let mut y = format!("(H-h)/2+{}{}", tween3(sy, &my, ey, e, &lt, dur), slide(&lt, false));
     if shake.0 > 0.0 {
         x.push_str(&format!("+{a:.3}*sin(2*PI*{f:.4}*t)", a = shake.0, f = shake.1));
         y.push_str(&format!("+{a:.3}*cos(2*PI*{f:.4}*t*1.37)", a = shake.0, f = shake.1));
@@ -1017,6 +1081,7 @@ mod tests {
                 transform: Transform { scale: 0.5, ..Default::default() },
                 look: Default::default(),
                 audio_frames: None,
+                src_fx: Default::default(),
             }),
         });
         p
@@ -1040,6 +1105,7 @@ mod tests {
                 transform: Transform::default(),
                 look: Default::default(),
                 audio_frames: None,
+                src_fx: Default::default(),
             }),
         };
         p.clips.push(vid("va", 0, MediaKind::Video));
@@ -1074,6 +1140,7 @@ mod tests {
                 transform: Transform::default(),
                 look: Default::default(),
                 audio_frames: None,
+                src_fx: Default::default(),
             }),
         });
         // サンプルの 3 行は続いているので 1 つにまとまる
@@ -1155,7 +1222,7 @@ mod tests {
 
     /// 分離した動画：映像（音を使わない）と、リンクした音声クリップ（音声トラック）
     fn video_with_audio(p: &mut Project, track: &str, src: &str, start: Frame, in_point: Frame, volume: f64) {
-        let media = |kind| MediaClip { src: src.into(), media_kind: kind, has_audio: kind == MediaKind::Audio, in_point, volume, transform: Transform::default(), look: Default::default(), audio_frames: None };
+        let media = |kind| MediaClip { src: src.into(), media_kind: kind, has_audio: kind == MediaKind::Audio, in_point, volume, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: Default::default() };
         p.clips.push(Clip { id: "v1".into(), track_id: track.into(), start, duration: 60, link_id: Some("lkv".into()), body: ClipBody::Media(media(MediaKind::Video)) });
         p.clips.push(Clip { id: "v1a".into(), track_id: "V6".into(), start, duration: 60, link_id: Some("lkv".into()), body: ClipBody::Media(media(MediaKind::Audio)) });
     }
@@ -1418,7 +1485,7 @@ mod tests {
         let mut p = Project::sample();
         let look = Look {
             rotation: 10.0,
-            anim: Some(Anim { to: Transform { x: 100.0, y: 0.0, scale: 2.0, opacity: 0.5 }, rotation: 90.0, ease: Ease::InOut, mid: None }),
+            anim: Some(Anim { to: Transform { x: 100.0, y: 0.0, scale: 2.0, opacity: 0.5 }, rotation: 90.0, ease: Ease::InOut, mid: None, keys: vec![] }),
             fade_in: 15,
             fade_out: 0,
             enter: None,
@@ -1521,7 +1588,7 @@ mod tests {
                 transform: Transform { x: -50.0, y: 0.0, scale: 0.5, opacity: 1.0 },
                 look: Look {
                     rotation: 0.0,
-                    anim: Some(Anim { to: Transform { x: 50.0, y: 10.0, scale: 1.5, opacity: 0.3 }, rotation: 180.0, ease: Ease::Out, mid: None }),
+                    anim: Some(Anim { to: Transform { x: 50.0, y: 10.0, scale: 1.5, opacity: 0.3 }, rotation: 180.0, ease: Ease::Out, mid: None, keys: vec![] }),
                     fade_in: 5,
                     fade_out: 5,
                     enter: None,
@@ -1585,6 +1652,60 @@ mod tests {
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     }
 
+    /// 速さ・だんだん速く・逆再生・静止：実際に ffmpeg で書き出して、出たコマの明るさで素材のどこかを確かめる
+    #[test]
+    fn retimed_media_shows_the_right_frame() {
+        use crate::model::{Clip, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        // 2 秒の素材。明るさが時間とともに 20 → 220 に上がる（音も入れる）
+        let src = d.path().join("ramp.mp4");
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=2,format=gray,geq=lum='20+100*T',format=yuv420p", "-f", "lavfi", "-i", "sine=f=440:d=2", "-shortest", "-c:v", "libx264", "-g", "1", "-c:a", "aac"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let shot = |fx: SourceFx, in_point: Frame, duration: Frame, at: f64| -> f64 {
+            let mut p = Project::sample();
+            p.video.width = 64;
+            p.video.height = 36;
+            p.video.fps = 30;
+            p.clips.clear();
+            p.clips.push(Clip {
+                id: "m".into(),
+                track_id: "V1".into(),
+                start: 0,
+                duration,
+                link_id: None,
+                body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Video, has_audio: true, in_point, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }),
+            });
+            let out = d.path().join("o.mp4");
+            let opt = ExportOptions::new("ffmpeg", &out, d.path());
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let o = std::process::Command::new("ffmpeg").args(["-v", "error", "-ss", &format!("{at:.3}"), "-i"]).arg(&out).args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]).output().unwrap();
+            assert!(!o.stdout.is_empty());
+            o.stdout.iter().map(|&b| b as f64).sum::<f64>() / o.stdout.len() as f64
+        };
+        // 明るさ（limited range の誤差込み）から、素材の何秒目かを逆算
+        let secs = |lum: f64| ((lum - 16.0) * 255.0 / 219.0 - 20.0) / 100.0;
+        let near = |got: f64, want: f64| assert!((secs(got) - want).abs() < 0.12, "want {want}s, got {:.3}s", secs(got));
+        // 2 倍速：0.5 秒目に素材の 1 秒目
+        near(shot(SourceFx { speed: 2.0, ..Default::default() }, 0, 30, 0.5), 1.0);
+        // 逆再生：0.5 秒目に素材の 1.5 秒目
+        near(shot(SourceFx { reverse: true, ..Default::default() }, 0, 60, 0.5), 1.5);
+        // 静止：ずっと切り出し位置（0.5 秒目）のコマ
+        near(shot(SourceFx { freeze: true, ..Default::default() }, 15, 30, 0.8), 0.5);
+        // だんだん速く（1 → 3 倍、1 秒で素材 2 秒）：0.5 秒目に素材の 0.75 秒目
+        near(shot(SourceFx { speed: 1.0, speed_to: Some(3.0), ..Default::default() }, 0, 30, 0.5), 0.75);
+        // 逆再生の 2 倍速：0.5 秒目に素材の 1 秒目
+        near(shot(SourceFx { speed: 2.0, reverse: true, ..Default::default() }, 0, 30, 0.5), 1.0);
+    }
+
     /// 一部だけの書き出し：出力側で頭を飛ばして、その長さだけ書く（音だけのときも）
     #[test]
     fn range_export_cuts_output() {
@@ -1601,6 +1722,25 @@ mod tests {
     }
 
     /// 途中の状態・登場・退場の式と、静止画の書き出し（FFmpeg があれば実際に 1 枚書く）
+    /// キーフレーム：何点でも、通る順に入れ子の式になる（画面の animStateAt と同じ値）
+    #[test]
+    fn keyframes_nest_in_order() {
+        let e = tween3(0.0, &[(0.25, 100.0), (0.5, -40.0)], 60.0, Ease::Linear, "t", 2.0);
+        assert_eq!(e.matches("if(lt(").count(), 2, "{e}");
+        assert!(e.starts_with("if(lt(clip(t/2.0000,0,1),0.2500),0.0000+(100.0000)*"), "{e}");
+        // ffmpeg の式として評価して、点と点の間の値を確かめる（0.75 秒 = 37.5% → -40 と 100 の真ん中の 30）
+        let ev = |t: f64| {
+            let p = (t / 2.0f64).clamp(0.0, 1.0);
+            let pts = [(0.0, 0.0), (0.25, 100.0), (0.5, -40.0), (1.0, 60.0)];
+            let i = pts.windows(2).position(|w| p < w[1].0).unwrap_or(2);
+            let (a, b) = (pts[i], pts[i + 1]);
+            a.1 + (b.1 - a.1) * ((p - a.0) / (b.0 - a.0))
+        };
+        assert!((ev(0.75) - 30.0).abs() < 1e-9);
+        let a = crate::model::Anim { to: Transform::default(), rotation: 0.0, ease: Ease::Linear, mid: Some(crate::model::AnimMid { at: 0.5, transform: Transform::default(), rotation: 0.0 }), keys: vec![crate::model::AnimMid { at: 0.2, transform: Transform::default(), rotation: 0.0 }, crate::model::AnimMid { at: 0.5, transform: Transform::default(), rotation: 1.0 }] };
+        assert_eq!(a.waypoints().iter().map(|k| k.at).collect::<Vec<_>>(), vec![0.2, 0.5]);
+    }
+
     #[test]
     fn mid_point_enter_exit_and_still() {
         use crate::model::{Anim, AnimMid, Clip, Ease, Look, Motion, MotionKind, TextClip};
@@ -1623,6 +1763,7 @@ mod tests {
                         rotation: 0.0,
                         ease: Ease::Linear,
                         mid: Some(AnimMid { at: 0.5, transform: Transform { x: -50.0, y: 40.0, scale: 1.5, opacity: 1.0 }, rotation: 0.0 }),
+                        keys: vec![],
                     }),
                     enter: Some(Motion { kind: MotionKind::SlideLeft, frames: 10, smooth: false }),
                     exit: Some(Motion { kind: MotionKind::Zoom, frames: 10, smooth: false }),

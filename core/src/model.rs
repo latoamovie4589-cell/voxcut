@@ -618,6 +618,53 @@ pub struct MediaClip {
     /// 音を鳴らす長さ（切り替えで映像だけを延ばしたとき。保存しない）
     #[serde(skip)]
     pub audio_frames: Option<Frame>,
+    /// 素材そのものへの加工（速さ・逆再生・静止など）
+    #[serde(flatten)]
+    pub src_fx: SourceFx,
+}
+
+/// 素材そのものへの加工（CapCut の「速度」「逆再生」「フリーズ」など）。画面側の model.ts の MediaClip と同じ
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFx {
+    /// 速さ（1 が等速）。speed_to があれば、頭の速さ
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub speed: f64,
+    /// 終わりの速さ（だんだん速く・遅く）。なければ speed のまま
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_to: Option<f64>,
+    /// 逆再生
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reverse: bool,
+    /// 静止（in_point のコマを出し続ける。音は出さない）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub freeze: bool,
+}
+
+impl Default for SourceFx {
+    fn default() -> Self {
+        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false }
+    }
+}
+
+impl SourceFx {
+    /// 頭と終わりの速さ
+    pub fn speeds(&self) -> (f64, f64) {
+        let a = self.speed.max(0.05);
+        (a, self.speed_to.unwrap_or(a).max(0.05))
+    }
+    /// クリップの頭から t 進んだとき、元の素材で進む量（速さを積分。単位は t と同じ）。d はクリップの長さ
+    pub fn advance(&self, t: f64, d: f64) -> f64 {
+        if self.freeze {
+            return 0.0;
+        }
+        let (a, b) = self.speeds();
+        a * t + (b - a) * t * t / (2.0 * d.max(1e-9))
+    }
+    pub fn is_retimed(&self) -> bool {
+        let (a, b) = self.speeds();
+        self.freeze || self.reverse || (a - 1.0).abs() > 1e-9 || (b - 1.0).abs() > 1e-9
+    }
 }
 
 /// 見た目の動きと効果（画像・動画・テキスト・図形で共通。YMM4 のアニメーション・映像エフェクトに当たる）
@@ -864,6 +911,22 @@ pub struct Anim {
     /// 途中の状態（始まり → 途中 → 終わりの順に動く。区間ごとに ease を掛ける）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mid: Option<AnimMid>,
+    /// そのほかの途中の状態（キーフレーム。何点でも）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<AnimMid>,
+}
+
+impl Anim {
+    /// 途中の状態をすべて、通る順に（mid と keys。近すぎるものは 1 つに。画面側の animKeys と同じ）
+    pub fn waypoints(&self) -> Vec<AnimMid> {
+        let mut v: Vec<AnimMid> = self.mid.iter().chain(self.keys.iter()).cloned().map(|mut k| {
+            k.at = k.at.clamp(0.001, 0.999);
+            k
+        }).collect();
+        v.sort_by(|a, b| a.at.total_cmp(&b.at));
+        v.dedup_by(|b, a| (b.at - a.at).abs() < 1e-6);
+        v
+    }
 }
 
 /// アニメーションの途中の状態
@@ -1891,6 +1954,7 @@ mod transition_tests {
                 transform: Transform::default(),
                 look: Look::default(),
                 audio_frames: None,
+                src_fx: Default::default(),
             }),
         }
     }
