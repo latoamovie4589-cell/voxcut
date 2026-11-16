@@ -16,7 +16,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, X} from 'lucide-react';
+import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, Volume2, X} from 'lucide-react';
 import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import type {AudioFilter, LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
@@ -66,7 +66,7 @@ import {
   setAftertime,
   setLineAudio,
 } from '../store';
-import {loadVoices, synthesize, type Notify} from '../actions';
+import {getNotify, loadVoices, previewVoice, synthesize, type Notify} from '../actions';
 
 /**
  * セリフと発音（YMM4 と同じ）。セリフ＝字幕に出す文、発音＝読み上げる文。
@@ -961,6 +961,40 @@ function ColorField({label, value, onChange, isLabelHidden}: {label: string; val
 }
 
 /** キャラクターの声：ソフト・話者・調声・セリフ後の余韻・声のプリセット（プロパティとキャラクター設定ウィンドウで使う） */
+/** 声を試しに聞く（今の声と調声で、短い文を合成して鳴らす） */
+function VoiceAudition({character}: {character: Character}) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fallback = `こんにちは。${character.name}です。よろしくお願いします。`;
+  const listen = async () => {
+    setBusy(true);
+    try {
+      await previewVoice(getNotify(), character.id, text);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <HStack gap={2} vAlign="end">
+      <div style={{flex: 1, minWidth: 0}}>
+        <TextInput
+          label="試しに読ませる文"
+          value={text}
+          placeholder={fallback}
+          onChange={setText}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !busy) {
+              e.preventDefault();
+              void listen();
+            }
+          }}
+        />
+      </div>
+      <Button label={busy ? '合成しています…' : '声を聞く'} icon={<Icon icon={Volume2} />} isDisabled={busy} onClick={() => void listen()} />
+    </HStack>
+  );
+}
+
 export function CharacterVoiceTab({character}: {character: Character}) {
   const update = (patch: Partial<Character>) => updateCharacter(character.id, patch);
   const setVoice = (patch: Partial<Character['voice']>) => update({voice: {...character.voice, ...patch}});
@@ -993,6 +1027,7 @@ export function CharacterVoiceTab({character}: {character: Character}) {
           }}
           width="100%"
         />
+        <VoiceAudition character={character} />
         {character.voice.engine === 'voicevox' && <Text type="supporting">VOICEVOX を起動しておくと使えます。動画には「VOICEVOX:キャラクター名」の表記が必要です（書き出し画面に出ます）。</Text>}
         {missing && <Banner status="warning" title="この話者はこのPCに入っていません" description={`${ENGINE_LABEL[character.voice.engine]} に入っている話者を選び直してください`} />}
         <VoiceTuner voice={character.voice} value={character.voice.params} onChange={params => setVoice({params})} />
@@ -1076,7 +1111,67 @@ export function CharacterSubtitleTab({character}: {character: Character}) {
       </HStack>
       <ColorField label="文字の色" value={character.subtitle.color} onChange={color => update({subtitle: {...character.subtitle, color}})} />
       <ColorField label="縁の色" value={character.subtitle.outlineColor} onChange={outlineColor => update({subtitle: {...character.subtitle, outlineColor}})} />
+      <SubtitleDeco character={character} />
     </Section>
+  );
+}
+
+/** 字幕の影と帯（書き出しの ASS でも描ける飾りだけ） */
+function SubtitleDeco({character}: {character: Character}) {
+  const st = character.subtitle;
+  const set = (patch: Partial<Character['subtitle']>) => updateCharacter(character.id, {subtitle: {...st, ...patch}});
+  return (
+    <>
+      <Switch
+        label="影を付ける"
+        value={!!st.shadowColor}
+        onChange={on => set({shadowColor: on ? '#000000' : '', shadowOffset: st.shadowOffset ?? 4})}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {st.shadowColor && (
+        <HStack gap={2} vAlign="end">
+          <div style={{flex: 1}}>
+            <ColorField label="影の色" value={st.shadowColor} onChange={shadowColor => set({shadowColor})} />
+          </div>
+          <div style={{width: 132}}>
+            <NumberInput label="影のずれ" units="px" value={st.shadowOffset ?? 4} min={1} max={40} onChange={shadowOffset => set({shadowOffset})} />
+          </div>
+        </HStack>
+      )}
+      <Switch
+        label="文字の後ろに帯を敷く"
+        description="帯を敷くと、縁取りの代わりになります"
+        value={!!st.boxColor}
+        onChange={on => set({boxColor: on ? '#000000' : '', boxOpacity: st.boxOpacity ?? 0.7, boxPadding: st.boxPadding ?? 12})}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {st.boxColor && (
+        <>
+          <ColorField label="帯の色" value={st.boxColor} onChange={boxColor => set({boxColor})} />
+          <HStack gap={2}>
+            <div style={{flex: 1}}>
+              <Slider
+                label="帯の不透明度"
+                value={st.boxOpacity ?? 1}
+                min={0.1}
+                max={1}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={v => `${Math.round(v * 100)}%`}
+                onChange={(boxOpacity: number) => set({boxOpacity})}
+              />
+            </div>
+            <div style={{width: 132}}>
+              <NumberInput label="帯の余白" units="px" value={st.boxPadding ?? 12} min={0} max={80} onChange={boxPadding => set({boxPadding})} />
+            </div>
+          </HStack>
+        </>
+      )}
+    </>
   );
 }
 
