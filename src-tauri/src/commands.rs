@@ -617,6 +617,9 @@ pub async fn export_video(
         opt.out_height = options.height;
         opt.encoder = options.encoder.unwrap_or_default();
         opt.still_at = still;
+        // 一部だけ書き出すとき（始まりと終わりのフレーム）
+        let range = options.range_frames.filter(|(a, b)| b > a).map(|(a, b)| (project.video.frames_to_secs(a.max(0)), project.video.frames_to_secs(b)));
+        opt.range = range;
         // 静止画では音のないプロジェクトとして組み立てる（まだ合成していないセリフがあっても書き出せるように）
         let silent = still.map(|_| {
             let mut q = project.clone();
@@ -626,7 +629,10 @@ pub async fn export_video(
         let lookup = |id: &str| {
             project.clips.iter().find(|c| c.id == id).and_then(|c| c.as_voice()).and_then(|v| v.audio.as_ref()).and_then(|a| cache.get(&a.cache_key))
         };
-        let total = still.map(|t| t.max(0.04)).unwrap_or_else(|| project.video.frames_to_secs(project.duration()));
+        let total = still
+            .map(|t| t.max(0.04))
+            .or_else(|| range.map(|(a, b)| (b - a).max(0.04)))
+            .unwrap_or_else(|| project.video.frames_to_secs(project.duration()));
         let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
         let run = |opt: &ExportOptions| -> CmdResult<()> {
             let mut args = render::build_args(silent.as_ref().unwrap_or(&project), &lookup, &portraits, &captions, opt).map_err(err)?;
@@ -656,6 +662,8 @@ pub struct ExportRequest {
     encoder: Option<Encoder>,
     /// 静止画を 1 枚だけ書き出すときのフレーム（出力は .png / .jpg）
     still_frame: Option<voxcut_core::model::Frame>,
+    /// 一部だけ書き出すときの範囲（始まりと終わりのフレーム）
+    range_frames: Option<(voxcut_core::model::Frame, voxcut_core::model::Frame)>,
     /// テキスト・図形アイテムの画像（クリップ id → PNG のパス）
     #[serde(default)]
     item_images: std::collections::HashMap<String, PathBuf>,
