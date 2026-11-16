@@ -571,7 +571,9 @@ pub fn build_args(
                             // 映像と音が 1 つのクリップの動画（分離した動画の音は、音声トラックのクリップで鳴らす）
                             if m.media_kind == MediaKind::Video && m.has_audio && track_audible {
                                 let l = format!("a{idx}");
-                                fc.push(format!("[{idx}:a]aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
+                                // 切り替えで映像だけを延ばしたときは、音を元の長さで切る
+                                let cut = m.audio_frames.map(|f| format!("atrim=0:{:.3},", v.frames_to_secs(f))).unwrap_or_default();
+                                fc.push(format!("[{idx}:a]{cut}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
                             last_v = visual_filters(&mut fc, idx, &last_v, v.fps, &m.transform, &m.look, start, dur);
@@ -1014,9 +1016,44 @@ mod tests {
                 volume: 1.0,
                 transform: Transform { scale: 0.5, ..Default::default() },
                 look: Default::default(),
+                audio_frames: None,
             }),
         });
         p
+    }
+
+    #[test]
+    fn transition_after_video_cuts_its_audio() {
+        let mut p = Project::sample();
+        let vid = |id: &str, start: Frame, kind: MediaKind| Clip {
+            id: id.into(),
+            track_id: "V1".into(),
+            start,
+            duration: 60,
+            link_id: None,
+            body: ClipBody::Media(MediaClip {
+                src: format!("/m/{id}.mp4"),
+                media_kind: kind,
+                has_audio: kind == MediaKind::Video,
+                in_point: 0,
+                volume: 1.0,
+                transform: Transform::default(),
+                look: Default::default(),
+                audio_frames: None,
+            }),
+        };
+        p.clips.push(vid("va", 0, MediaKind::Video));
+        let mut b = vid("vb", 60, MediaKind::Image);
+        if let ClipBody::Media(m) = &mut b.body {
+            m.look.transition = Some(Transition { kind: TransitionKind::Dissolve, frames: 20 });
+        }
+        p.clips.push(b);
+        let opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
+        let wav = |id: &str| Some(PathBuf::from(format!("/c/{id}.wav")));
+        let a = build_args(&p, &wav, &[], &[], &opt).unwrap();
+        let g = &a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1];
+        // 映像は延ばすが、音は元の 2 秒で切る
+        assert!(g.contains("atrim=0:2.000,aresample"), "{g}");
     }
 
     #[test]
@@ -1036,6 +1073,7 @@ mod tests {
                 volume: 1.0,
                 transform: Transform::default(),
                 look: Default::default(),
+                audio_frames: None,
             }),
         });
         // サンプルの 3 行は続いているので 1 つにまとまる
@@ -1117,7 +1155,7 @@ mod tests {
 
     /// 分離した動画：映像（音を使わない）と、リンクした音声クリップ（音声トラック）
     fn video_with_audio(p: &mut Project, track: &str, src: &str, start: Frame, in_point: Frame, volume: f64) {
-        let media = |kind| MediaClip { src: src.into(), media_kind: kind, has_audio: kind == MediaKind::Audio, in_point, volume, transform: Transform::default(), look: Default::default() };
+        let media = |kind| MediaClip { src: src.into(), media_kind: kind, has_audio: kind == MediaKind::Audio, in_point, volume, transform: Transform::default(), look: Default::default(), audio_frames: None };
         p.clips.push(Clip { id: "v1".into(), track_id: track.into(), start, duration: 60, link_id: Some("lkv".into()), body: ClipBody::Media(media(MediaKind::Video)) });
         p.clips.push(Clip { id: "v1a".into(), track_id: "V6".into(), start, duration: 60, link_id: Some("lkv".into()), body: ClipBody::Media(media(MediaKind::Audio)) });
     }

@@ -615,6 +615,9 @@ pub struct MediaClip {
     /// 回転・アニメーション・フェード・映像エフェクト
     #[serde(default, skip_serializing_if = "Look::is_plain")]
     pub look: Look,
+    /// 音を鳴らす長さ（切り替えで映像だけを延ばしたとき。保存しない）
+    #[serde(skip)]
+    pub audio_frames: Option<Frame>,
 }
 
 /// 見た目の動きと効果（画像・動画・テキスト・図形で共通。YMM4 のアニメーション・映像エフェクトに当たる）
@@ -756,7 +759,16 @@ impl Project {
             let d = t.frames.min(a.duration * 4 / 5).min(b.duration * 4 / 5).max(2);
             let h = d / 2;
             let (out_f, in_f) = (h.max(1), (d - h).max(1));
-            let extendable = !matches!(&a.body, ClipBody::Media(m) if m.media_kind == MediaKind::Video);
+            // 前の場面を後ろへ延ばす。動画の音は元の長さで切る（延ばすのは映像だけ）
+            let extend_a = |p: &mut Project| {
+                let orig = a.duration;
+                p.clips[ai].duration = cut - a.start + d;
+                if let ClipBody::Media(m) = &mut p.clips[ai].body {
+                    if m.media_kind == MediaKind::Video {
+                        m.audio_frames = Some(orig);
+                    }
+                }
+            };
             let set_a = |p: &mut Project, f: &dyn Fn(&mut Look)| {
                 if let Some(l) = visual_look_mut(&mut p.clips[ai]) {
                     f(l)
@@ -768,9 +780,9 @@ impl Project {
                 }
             };
             match t.kind {
-                TransitionKind::Dissolve if extendable => {
+                TransitionKind::Dissolve => {
                     // 前の場面を後ろへ延ばして、次の場面の下で消していく
-                    p.clips[ai].duration = a.duration + (cut - (a.start + a.duration)) + d;
+                    extend_a(&mut p);
                     set_a(&mut p, &|l| {
                         l.exit = None;
                         l.fade_out = d;
@@ -778,16 +790,6 @@ impl Project {
                     set_b(&mut p, &|l| {
                         l.enter = None;
                         l.fade_in = d;
-                    });
-                }
-                TransitionKind::Dissolve => {
-                    set_a(&mut p, &|l| {
-                        l.exit = None;
-                        l.fade_out = out_f;
-                    });
-                    set_b(&mut p, &|l| {
-                        l.enter = None;
-                        l.fade_in = in_f;
                     });
                 }
                 TransitionKind::Black | TransitionKind::White => {
@@ -831,27 +833,16 @@ impl Project {
                         TransitionKind::SlideUp => (MotionKind::SlideUp, MotionKind::SlideDown),
                         _ => (MotionKind::SlideDown, MotionKind::SlideUp),
                     };
-                    if extendable {
-                        // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
-                        p.clips[ai].duration = cut - a.start + d;
-                        set_a(&mut p, &|l| {
-                            l.exit = Some(Motion { kind: go, frames: d, smooth: true });
-                            l.fade_out = 0;
-                        });
-                        set_b(&mut p, &|l| {
-                            l.enter = Some(Motion { kind: come, frames: d, smooth: true });
-                            l.fade_in = 0;
-                        });
-                    } else {
-                        set_a(&mut p, &|l| {
-                            l.exit = Some(Motion { kind: go, frames: out_f, smooth: false });
-                            l.fade_out = 0;
-                        });
-                        set_b(&mut p, &|l| {
-                            l.enter = Some(Motion { kind: come, frames: in_f, smooth: false });
-                            l.fade_in = 0;
-                        });
-                    }
+                    // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
+                    extend_a(&mut p);
+                    set_a(&mut p, &|l| {
+                        l.exit = Some(Motion { kind: go, frames: d, smooth: true });
+                        l.fade_out = 0;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = Some(Motion { kind: come, frames: d, smooth: true });
+                        l.fade_in = 0;
+                    });
                 }
             }
         }
@@ -1899,6 +1890,7 @@ mod transition_tests {
                 volume: 1.0,
                 transform: Transform::default(),
                 look: Look::default(),
+                audio_frames: None,
             }),
         }
     }
@@ -1936,10 +1928,11 @@ mod transition_tests {
         assert_eq!((look(&get(&q, "a")).fade_out, look(&get(&q, "b")).fade_in), (20, 20));
         // 頭の早い順に並べ直す（後のアイテムが手前）
         assert_eq!(q.clips.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a", "b", "far"]);
-        // 動画は延ばせないので、前を消してから次を出す
+        // 動画も映像は延ばす。音は元の長さで切る
         p.clips[1] = image("a", 0, 60, MediaKind::Video);
         let q = p.with_transitions();
-        assert_eq!((get(&q, "a").duration, look(&get(&q, "a")).fade_out, look(&get(&q, "b")).fade_in), (60, 10, 10));
+        assert_eq!((get(&q, "a").duration, look(&get(&q, "a")).fade_out, look(&get(&q, "b")).fade_in), (80, 20, 20));
+        assert!(matches!(&get(&q, "a").body, ClipBody::Media(m) if m.audio_frames == Some(60)));
         // 暗転：覆う図形がつなぎ目の前後に 1 つずつ、最後に（手前に）付く
         set(&mut p, "b", TransitionKind::Black, 21);
         let q = p.with_transitions();
