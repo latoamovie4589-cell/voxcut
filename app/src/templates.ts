@@ -73,3 +73,21 @@ export function itemTemplateName(c: VisualClip): string {
   if (c.type === 'shape') return '図形';
   return (c.src.split(/[\\/]/).pop() ?? '素材').replace(/\.[^.]+$/, '');
 }
+
+/** テンプレートをファイルに書く形（ほかの PC へ持っていく・人に渡す） */
+export function templatesToFile(): string {
+  return JSON.stringify({voxcutTemplates: 1, templates: list}, null, 2);
+}
+
+/** ファイルのテンプレートを足す（同じ名前は番号を付ける）。足した数を返す */
+export function templatesFromFile(text: string): number {
+  const v = JSON.parse(text);
+  if (!v || v.voxcutTemplates !== 1 || !Array.isArray(v.templates)) throw new Error('VoxCut のテンプレートのファイルではありません');
+  let n = 0;
+  for (const t of v.templates) {
+    if (!t || typeof t.name !== 'string' || !['item', 'subtitle', 'placement'].includes(t.kind) || !t.data) continue;
+    saveTemplate(t.kind, t.name, t.data);
+    n++;
+  }
+  return n;
+}

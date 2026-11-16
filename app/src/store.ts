@@ -50,6 +50,7 @@ import {
   retime,
   srcFrameAt,
   withSpeed,
+  STICKERS,
 } from './model';
 
 export type InputMode = 'normal' | 'append' | 'join';
@@ -1227,6 +1228,14 @@ export function removeTrack(id: string): boolean {
 /** タイムラインの選択を見せる（スクロールで追従） */
 export function revealSelection() {
   setState(s => ({revealSeq: s.revealSeq + 1}));
+}
+
+/** スタンプを再生位置に置く（大きさと色はスタンプごとの決まり） */
+export function addSticker(kind: ShapeKind): string | null {
+  const st = STICKERS.find(x => x.kind === kind);
+  const id = addVisualItem('shape', kind);
+  if (id && st) updateClip(id, {width: st.w, height: st.h, fill: st.fill, stroke: st.stroke, strokeWidth: st.strokeWidth} as Partial<Clip>);
+  return id;
 }
 
 /** 素材と、リンクした素材（分けた動画の音など）の id */

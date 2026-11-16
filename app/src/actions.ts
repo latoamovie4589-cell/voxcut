@@ -2,8 +2,8 @@
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project, VoiceClip} from './model';
-import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, reflowAll, synthKey} from './model';
-import {addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState} from './store';
+import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, proxyKey, reflowAll, synthKey, timelineFrameOf} from './model';
+import {addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -48,25 +48,55 @@ export async function addMediaPaths(paths: string[]) {
 }
 
 let proxyListening = false;
-/** 動画のプロキシを用意する（作成中・作成済みなら何もしない） */
-export async function ensureProxy(src: string) {
+/** 動画のプロキシを用意する（作成中・作成済みなら何もしない）。stabilize なら手ぶれを補正したもの */
+export async function ensureProxy(src: string, stabilize = false) {
+  const key = proxyKey({src, stabilize});
   const s = getState();
-  if (s.proxies[src]) return;
+  if (s.proxies[key]) return;
   const a = await api;
   if (!proxyListening) {
     proxyListening = true;
     await a.onProxyProgress(p => setState(st => (st.proxies[p.src] && !st.proxies[p.src].url ? {proxies: {...st.proxies, [p.src]: {...st.proxies[p.src], ratio: p.ratio}}} : {})));
   }
-  setState(st => ({proxies: {...st.proxies, [src]: {ratio: 0, url: null}}}));
+  setState(st => ({proxies: {...st.proxies, [key]: {ratio: 0, url: null}}}));
   try {
     const info = getState().media[src] ?? (await a.probeMedia(src, getState().projectPath));
     setState(st => ({media: {...st.media, [src]: info}}));
-    const url = await a.makeProxy(src, getState().projectPath, info.durationMs ?? 0);
-    setState(st => ({proxies: {...st.proxies, [src]: {ratio: 1, url}}}));
+    const url = await a.makeProxy(src, getState().projectPath, info.durationMs ?? 0, stabilize);
+    setState(st => ({proxies: {...st.proxies, [key]: {ratio: 1, url}}}));
   } catch (e) {
-    setState(st => ({proxies: {...st.proxies, [src]: {ratio: 0, url: null, error: String(e)}}}));
+    setState(st => ({proxies: {...st.proxies, [key]: {ratio: 0, url: null, error: String(e)}}}));
     notifyRef(`プロキシを作れませんでした：${String(e)}`, 'error');
   }
+}
+
+/** 効果音を再生位置に置く（初めての効果音はここで作る） */
+export async function addSfx(name: string) {
+  try {
+    const path = await (await api).makeSfx(name);
+    await addMediaPaths([path]);
+  } catch (e) {
+    notifyRef(friendlyError(e), 'error');
+  }
+}
+
+/** 動画を場面の変わり目ごとに分ける（リンクした音も一緒に）。分けた数を返す */
+export async function splitAtScenes(id: string): Promise<number> {
+  const s0 = getState();
+  const c = s0.project?.clips.find(x => x.id === id);
+  if (!s0.project || !c || c.type !== 'media' || c.mediaKind !== 'video') return 0;
+  const times = await (await api).detectScenes(c.src, s0.projectPath, 0.35);
+  const fps = s0.project.video.fps;
+  const frames = [...new Set(times.map(t => timelineFrameOf(c, t, fps)).filter((f): f is number => f !== null && f > c.start + 1 && f < c.start + c.duration - 1))].sort((a, b) => a - b);
+  let cur = id;
+  let n = 0;
+  for (const f of frames) {
+    if (splitClip(cur, f)) {
+      n++;
+      cur = getState().selectedClipId ?? cur;
+    }
+  }
+  return n;
 }
 
 /** プロジェクト内のすべての動画のプロキシを用意する */
@@ -75,6 +105,9 @@ function ensureAllProxies() {
   if (!p) return;
   const srcs = new Set(p.clips.flatMap(c => (c.type === 'media' && c.mediaKind === 'video' ? [c.src] : [])));
   srcs.forEach(src => void ensureProxy(src));
+  // 手ぶれ補正を付けた動画は、補正したプロキシも
+  const stab = new Set(p.clips.flatMap(c => (c.type === 'media' && c.mediaKind === 'video' && c.stabilize ? [c.src] : [])));
+  stab.forEach(src => void ensureProxy(src, true));
 }
 
 /** キャラクター設定（声・字幕・立ち絵）をファイルに保存する */

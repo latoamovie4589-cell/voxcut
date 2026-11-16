@@ -107,7 +107,15 @@ export interface Api {
   mediaUrl(path: string, projectPath: string | null): string;
   allowPaths(paths: string[]): Promise<void>;
   /** 動画のプロキシを作り、画面で読める URL を返す */
-  makeProxy(src: string, projectPath: string | null, durationMs: number): Promise<string>;
+  makeProxy(src: string, projectPath: string | null, durationMs: number, stabilize?: boolean): Promise<string>;
+  /** 効果音のファイル（なければ作る）のパス */
+  makeSfx(name: string): Promise<string>;
+  /** 動画の場面の変わり目（秒、素材の頭から） */
+  detectScenes(src: string, projectPath: string | null, threshold: number): Promise<number[]>;
+  /** テンプレートのファイル（.voxtpl）を選ぶ */
+  pickTemplatePath(mode: 'save' | 'open'): Promise<string | null>;
+  writeTextFile(path: string, text: string): Promise<void>;
+  readTextFile(path: string): Promise<string>;
   /** 素材の音を加工した WAV（プレビュー用）の URL */
   processAudio(src: string, projectPath: string | null, fx: MediaAudioFx): Promise<string>;
   /** 素材の音の大きさと、そろえるための増減（dB） */
@@ -278,7 +286,20 @@ async function tauriApi(): Promise<Api> {
     probeMedia: (path, projectPath) => invoke('probe_media', {path: resolvePath(path, projectPath ?? null)}),
     mediaUrl: (path, projectPath) => convertFileSrc(resolvePath(path, projectPath)),
     allowPaths: paths => invoke('allow_paths', {paths}),
-    makeProxy: async (src, projectPath, durationMs) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs})),
+    makeProxy: async (src, projectPath, durationMs, stabilize) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs, stabilize: !!stabilize})),
+    makeSfx: name => invoke('make_sfx', {name}),
+    detectScenes: (src, projectPath, threshold) => invoke('detect_scenes', {src: resolvePath(src, projectPath), threshold}),
+    pickTemplatePath: async mode => {
+      const filters = [{name: 'VoxCut テンプレート', extensions: ['voxtpl']}];
+      if (mode === 'save') {
+        const path = await import('@tauri-apps/api/path');
+        return dialog.save({defaultPath: await path.join(await path.documentDir(), 'テンプレート.voxtpl'), filters});
+      }
+      const r = await dialog.open({filters});
+      return typeof r === 'string' ? r : null;
+    },
+    writeTextFile: (path, text) => invoke('write_text_file', {path, text}),
+    readTextFile: path => invoke('read_text_file', {path}),
     processAudio: async (src, projectPath, fx) => convertFileSrc(await invoke<string>('process_audio', {src: resolvePath(src, projectPath), fx})),
     measureAudio: (src, projectPath) => invoke('measure_audio', {src: resolvePath(src, projectPath)}),
     detectBeats: (src, projectPath) => invoke('detect_beats', {src: resolvePath(src, projectPath)}),
@@ -545,9 +566,20 @@ function mockApi(): Api {
     collectMedia: async project => ({project, copied: 0, dir: '素材'}),
     pickRelink: async () => (globalThis as {__mockRelink?: string}).__mockRelink ?? null,
     probeMedia: async path =>
-      path.endsWith('.mp4') ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360} : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
+      path.endsWith('.mp4')
+        ? {kind: 'video', hasAudio: true, durationMs: 4000, width: 640, height: 360}
+        : path.endsWith('.wav')
+          ? {kind: 'audio', hasAudio: true, durationMs: 500, width: null, height: null}
+          : {kind: 'image', hasAudio: false, durationMs: null, width: 400, height: 600},
     mediaUrl: path => path,
     allowPaths: async () => {},
+    makeSfx: async name => `/sfx/${name}.wav`,
+    detectScenes: async () => (globalThis as {__mockScenes?: number[]}).__mockScenes ?? [1, 2.5],
+    pickTemplatePath: async mode => (mode === 'save' ? '/tmp/t.voxtpl' : (globalThis as {__mockTemplateFile?: string}).__mockTemplateFile ? '/tmp/t.voxtpl' : null),
+    writeTextFile: async (_path, text) => {
+      (globalThis as {__mockTemplateFile?: string}).__mockTemplateFile = text;
+    },
+    readTextFile: async () => (globalThis as {__mockTemplateFile?: string}).__mockTemplateFile ?? '',
     processAudio: async src => {
       await sleep(50);
       (globalThis as {__lastProcessed?: string}).__lastProcessed = src;

@@ -326,7 +326,26 @@ export interface MediaClip extends ClipBase {
   fillBlur?: number;
   /** 音の加工（雑音を減らす・声を変える・音量をそろえる） */
   audioFx?: MediaAudioFx;
+  /** 手ぶれ補正（動画） */
+  stabilize?: boolean;
 }
+
+/** 効果音集（Rust の sfx::SFX と同じ名前と順） */
+export const SFX_LIST: {id: string; label: string}[] = [
+  {id: 'pop', label: 'ポン'},
+  {id: 'ding', label: 'ピコン'},
+  {id: 'whoosh', label: 'シュッ'},
+  {id: 'boom', label: 'ドン'},
+  {id: 'sparkle', label: 'キラーン'},
+  {id: 'buzzer', label: 'ブブー'},
+  {id: 'click', label: 'カチッ'},
+  {id: 'chime', label: 'ピンポーン'},
+  {id: 'stinger', label: 'ジャーン'},
+  {id: 'shock', label: 'ガーン'},
+];
+
+/** プレビューに使うプロキシの名前（手ぶれ補正したものは別） */
+export const proxyKey = (m: {src: string; stabilize?: boolean}) => (m.stabilize ? `${m.src}#stab` : m.src);
 
 export type VoiceFx = 'high' | 'low' | 'robot' | 'radio' | 'echo' | 'megaphone';
 /** 素材の音の加工（Rust の audiofx::MediaAudioFx と同じ） */
@@ -442,6 +461,23 @@ export function speedAt(m: MediaClip, t: number): number {
   const [a, b] = speedsOf(m);
   const v = a + ((b - a) * t) / Math.max(1e-9, m.duration);
   return m.reverse ? -v : v;
+}
+
+/** 素材の t 秒目が、タイムラインの何フレーム目に出るか（速さ・逆再生も考える。範囲の外なら null） */
+export function timelineFrameOf(m: MediaClip, srcSec: number, fps: number): number | null {
+  const target = srcSec * fps;
+  // 素材の位置はクリップの中で単調に動くので、二分探索で探す
+  let lo = 0;
+  let hi = m.duration;
+  const f = (t: number) => srcFrameAt(m, t);
+  const up = f(m.duration) >= f(0);
+  if (Math.min(f(0), f(m.duration)) > target + 0.5 || Math.max(f(0), f(m.duration)) < target - 0.5) return null;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) < target === up) lo = mid;
+    else hi = mid;
+  }
+  return Math.round(m.start + lo);
 }
 
 export const isRetimed = (m: MediaClip) => !!m.freeze || !!m.reverse || speedsOf(m).some(v => Math.abs(v - 1) > 1e-9);
@@ -732,8 +768,60 @@ export interface TextClip extends ClipBase {
   gradientColor?: string;
 }
 
-export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'line' | 'star';
-export const SHAPE_LABEL: Record<ShapeKind, string> = {rect: '四角', roundRect: '角丸四角', ellipse: '円', triangle: '三角', line: '線', star: '星'};
+export type ShapeKind =
+  | 'rect'
+  | 'roundRect'
+  | 'ellipse'
+  | 'triangle'
+  | 'line'
+  | 'star'
+  // スタンプ（CapCut のステッカー。どれもこのアプリで描く図形）
+  | 'heart'
+  | 'arrow'
+  | 'bubble'
+  | 'thought'
+  | 'sparkle'
+  | 'sweat'
+  | 'anger'
+  | 'exclaim'
+  | 'question'
+  | 'burst'
+  | 'speed';
+export const SHAPE_LABEL: Record<ShapeKind, string> = {
+  rect: '四角',
+  roundRect: '角丸四角',
+  ellipse: '円',
+  triangle: '三角',
+  line: '線',
+  star: '星',
+  heart: 'ハート',
+  arrow: '矢印',
+  bubble: '吹き出し',
+  thought: '考え中の吹き出し',
+  sparkle: 'キラキラ',
+  sweat: '汗',
+  anger: '怒りマーク',
+  exclaim: 'びっくり',
+  question: 'はてな',
+  burst: 'ドカン',
+  speed: '集中線',
+};
+/** 図形のメニューに出す基本の形 */
+export const BASIC_SHAPES: ShapeKind[] = ['rect', 'roundRect', 'ellipse', 'triangle', 'line', 'star'];
+/** スタンプ：置いたときの大きさと色 */
+export const STICKERS: {kind: ShapeKind; w: number; h: number; fill: string; stroke: string; strokeWidth: number}[] = [
+  {kind: 'heart', w: 240, h: 220, fill: '#FF4D6D', stroke: '#FFFFFF', strokeWidth: 8},
+  {kind: 'arrow', w: 320, h: 160, fill: '#FF3B30', stroke: '#FFFFFF', strokeWidth: 8},
+  {kind: 'bubble', w: 520, h: 300, fill: '#FFFFFF', stroke: '#222222', strokeWidth: 8},
+  {kind: 'thought', w: 480, h: 320, fill: '#FFFFFF', stroke: '#222222', strokeWidth: 8},
+  {kind: 'sparkle', w: 200, h: 200, fill: '#FFE14D', stroke: '', strokeWidth: 0},
+  {kind: 'sweat', w: 110, h: 170, fill: '#7EC8FF', stroke: '#FFFFFF', strokeWidth: 6},
+  {kind: 'anger', w: 200, h: 200, fill: '#E5193B', stroke: '', strokeWidth: 0},
+  {kind: 'exclaim', w: 120, h: 280, fill: '#FF3B30', stroke: '#FFFFFF', strokeWidth: 8},
+  {kind: 'question', w: 200, h: 280, fill: '#3B82F6', stroke: '#FFFFFF', strokeWidth: 8},
+  {kind: 'burst', w: 420, h: 340, fill: '#FFD400', stroke: '#E5193B', strokeWidth: 10},
+  {kind: 'speed', w: 1920, h: 1080, fill: '#111111', stroke: '', strokeWidth: 0},
+];
 /** 図形アイテム */
 export interface ShapeClip extends ClipBase {
   type: 'shape';
