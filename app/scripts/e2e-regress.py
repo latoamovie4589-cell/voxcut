@@ -122,6 +122,11 @@ async def main():
         await pg.mouse.wheel(-400, 0); await pg.wait_for_timeout(150)
         await pg.mouse.wheel(-400, 0); await pg.wait_for_timeout(900)
         sl2 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
+        if sl2 >= sl - 40:
+            # 負荷が高いとホイールが追いかけのスクロールに飲まれることがあるので、もう 1 回だけ
+            sl = sl2
+            await pg.mouse.wheel(-400, 0); await pg.wait_for_timeout(900)
+            sl2 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
         await pg.wait_for_timeout(700)
         sl3 = await pg.evaluate("document.querySelector('.vx-timeline-scroll').scrollLeft")
         # 戻した位置から、追いかけで前へ引き戻されていない（再生は続いている）
@@ -481,6 +486,71 @@ async def main():
         check("キーフレーム：ドラッグは再生位置の点だけを、動かし始めからのずれの分だけ動かす", r == [1, 50, True, True], str(r))
         await q.wait_for_timeout(300)
         check("キーフレームの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── 切り抜き・色を抜く・形で切り抜く：書き出しの試験（render.rs の crop_chroma_mask_cut_the_right_pixels）と同じ画素になる
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const src=document.createElement('canvas'); src.width=64; src.height=36; const x=src.getContext('2d'); x.fillStyle='#00ff00'; x.fillRect(0,0,64,36); x.fillStyle='#ff0000'; x.fillRect(16,9,32,18);
+          const base={id:'m', type:'media', mediaKind:'image', src:'x', inPoint:0, volume:1, hasAudio:false, transform:{x:0,y:0,scale:1,opacity:1}};
+          const at=(res,X,Y)=>{const c=document.createElement('canvas'); c.width=64; c.height=36; const g=c.getContext('2d'); g.fillStyle='#000'; g.fillRect(0,0,64,36);
+            const [w,h]=res.size; g.drawImage(res.img,(64-w)/2,(36-h)/2,w,h); const d=g.getImageData(X,Y,1,1).data; const [R,G]=[d[0],d[1]];
+            return R>150&&G<100?'R':G>150&&R<100?'G':R<40&&G<40?'K':'?'};
+          const run=(fx)=>v.sourceView(src,[64,36],{...base,...fx},false);
+          const k=run({chroma:{color:'#00ff00',similarity:0.4,blend:0.1}}), e=run({mask:{shape:'ellipse',x:0,y:0,w:0.6,h:0.6,radius:0,feather:0,invert:false}});
+          const iv=run({mask:{shape:'rect',x:0,y:0,w:0.6,h:0.6,radius:0.2,feather:0,invert:true}}), c=run({crop:{left:0,top:0,right:0.5,bottom:0}});
+          return [at(k,2,2),at(k,32,18),at(e,2,2),at(e,32,18),at(iv,2,2),at(iv,32,18),at(c,20,18),at(c,40,18),at(c,60,18), c.size]}""")
+        check("切り抜き・色抜き・形の切り抜き：プレビューも書き出しと同じ画素", r == ['K', 'R', 'K', 'R', 'G', 'K', 'G', 'R', 'K', [32, 36]], str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/a.png', hasAudio:false, linkId:null}; s.commit(pr=>({...pr, clips:[...pr.clips, {...base, id:'im', start:0, duration:60, mediaKind:'image'}]})); s.setState({selectedClipId:'im', selectedClipIds:['im']})}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_role("radio", name="丸").click(); await q.wait_for_timeout(200)
+        await q.get_by_label("背景の色を抜く").click(); await q.wait_for_timeout(200)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id==='im'); return [c.mask?.shape, c.chroma?.color]}")
+        check("切り抜き：プロパティで丸の形と色抜きを付けられる", r == ['ellipse', '#00FF00'], str(r))
+        await q.wait_for_timeout(300)
+        check("切り抜きの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── フィルター・色温度・背景をぼかして埋める（書き出しの render.rs の grade_temperature_fill_blur と同じ）
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const paint=(color,fx)=>{const c=document.createElement('canvas'); c.width=8; c.height=8; const g=c.getContext('2d'); const f=fx?v.gradeFilter(fx):null; if(f) g.filter=f; g.fillStyle=color; g.fillRect(0,0,8,8); return Array.from(g.getImageData(4,4,1,1).data).slice(0,3)};
+          const [nr,ng,nb]=paint('#ff0000',{kind:'grade',name:'noir',strength:1}); const z=paint('#ff0000',{kind:'grade',name:'noir',strength:0}); const [tr,,tb]=paint('#808080',{kind:'temperature',warm:1,tint:0});
+          const src=document.createElement('canvas'); src.width=16; src.height=36; const sg=src.getContext('2d'); sg.fillStyle='#ff0000'; sg.fillRect(0,0,16,36);
+          const out=document.createElement('canvas'); out.width=64; out.height=36; const og=out.getContext('2d'); og.fillStyle='#000'; og.fillRect(0,0,64,36); v.drawFillBlur(og,src,[16,36],64,36,1,20);
+          return [Math.abs(nr-ng)<12&&Math.abs(ng-nb)<12, z[0]>230&&z[1]<25, tr>tb+30, og.getImageData(2,18,1,1).data[0]>150]}""")
+        check("フィルター・色温度・背景ぼかし：プレビューも書き出しと同じ色", r == [True, True, True, True], str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/a.png', hasAudio:false, linkId:null}; s.commit(pr=>({...pr, clips:[...pr.clips, {...base, id:'gi', start:0, duration:60, mediaKind:'image'}]})); s.setState({selectedClipId:'gi', selectedClipIds:['gi'], fxTab:'filter'})}")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.locator('[data-fx="gr-film"]').click(); await q.wait_for_timeout(300)
+        await q.get_by_label("背景をぼかして埋める").click(); await q.wait_for_timeout(200)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id==='gi'); return [c.look?.effects?.map(e=>e.kind+':'+e.name), c.fillBlur]}")
+        n = await q.get_by_label("フィルターの強さ").count()
+        check("フィルター：タイルで付き、強さの欄が出る／背景ぼかしを付けられる", r == [['grade:film'], 30] and n >= 1, f"{r} {n}")
+        await q.wait_for_timeout(300)
+        check("フィルターの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── 音の加工（雑音・音量をそろえる・声を変える）と、拍に印を付ける
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const F=await import('/src/inspector/SoundFxFields.tsx'); const A=await import('/src/audioFx.ts');
+          const base={id:'x', trackId:'A1', linkId:null, type:'media', src:'/m/bgm.wav', mediaKind:'audio', hasAudio:true, volume:1, transform:{x:0,y:0,scale:1,opacity:1}};
+          const sp={...base, start:100, duration:60, inPoint:30, speed:2}; const rv={...base, start:0, duration:60, inPoint:0, reverse:true};
+          let ready=0; const u0=A.processedAudio({...base,start:0,duration:10,inPoint:0,audioFx:{voice:'robot'}}, null, ()=>ready++);
+          await new Promise(r=>setTimeout(r,150)); const u1=A.processedAudio({...base,start:0,duration:10,inPoint:0,audioFx:{voice:'robot'}}, null, ()=>{});
+          return [F.timelineFrameOf(sp,2,30), F.timelineFrameOf(rv,0.5,30), F.timelineFrameOf(sp,10,30), u0, ready, u1]}""")
+        check("音の加工：素材の時刻からタイムラインの位置（速さ・逆再生）／加工した音を作って使う", r == [115, 45, None, None, 1, '/m/bgm.wav'], str(r))
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const tr=(p.tracks.find(t=>t.kind==='audio')??p.tracks[p.tracks.length-1]).id;
+          const base={trackId:tr, type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/bgm.wav', hasAudio:true, linkId:null};
+          s.commit(pr=>({...pr, markers:[], clips:[...pr.clips, {...base, id:'bg', start:30, duration:300, mediaKind:'audio'}]})); s.setState({selectedClipId:'bg', selectedClipIds:['bg']})}""")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_label("雑音を減らす").click(); await q.wait_for_timeout(150)
+        await q.get_by_label("音量を均一に").click(); await q.wait_for_timeout(300)
+        await q.get_by_role("button", name="拍に印を付ける").click(); await q.wait_for_timeout(400)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const c=p.clips.find(c=>c.id==='bg'); return [c.audioFx, (p.markers??[]).map(m=>m.frame)]}")
+        check("音の加工：プロパティで雑音・音量をそろえる（測った増減）を付け、拍に印が付く", r == [{'denoise': True, 'gainDb': 5}, [45, 60, 75, 90]], str(r))
+        await q.wait_for_timeout(300)
+        check("音の加工の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
