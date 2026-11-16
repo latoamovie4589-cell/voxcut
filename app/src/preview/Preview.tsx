@@ -439,7 +439,9 @@ export function Preview() {
             // 映像と音が 1 つの動画は、ここで音も鳴らす（分離した動画の音は音声トラックのクリップで鳴らす）。
             // 「セリフ中は下げる」トラックは書き出しと同じ動きで下げる
             const duck = t.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
-            const vol = m.hasAudio && audible.has(t.id) ? m.volume * duck : 0;
+            // 切り替えで映像だけを延ばした部分は音を出さない
+            const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
+            const vol = m.hasAudio && audible.has(t.id) && voiced ? m.volume * duck : 0;
             if (syncVideo(v, (m.inPoint + playhead - m.start) / fps, isPlaying, vol, playRate)) {
               const key = `m:${m.id}`;
               const rect = drawVisual(ctx, warp(v, [info.width, info.height]), [info.width, info.height], look(key, m.transform), w, h, scale);
