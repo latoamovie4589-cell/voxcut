@@ -5,6 +5,7 @@
 // - 選んだクリップの内容は aria-live で読み上げる
 
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {showPanel} from '../dock/layout';
 import {Button} from '@astryxdesign/core/Button';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astryxdesign/core/DropdownMenu';
 import {ContextMenu, type ContextMenuOption} from '@astryxdesign/core/ContextMenu';
@@ -17,26 +18,27 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {VisuallyHidden} from '@astryxdesign/core/VisuallyHidden';
 import {
   Circle,
-  Minus,
-  RectangleHorizontal,
-  Square,
-  Star,
-  Triangle,
   Ellipsis,
-  Rows3,
   Eye,
   EyeOff,
   ImagePlus,
   Link2,
-  PersonStanding,
   Lock,
   LockOpen,
   Maximize2,
+  Minus,
+  PersonStanding,
   Plus,
+  RectangleHorizontal,
+  Rows3,
+  Shapes,
+  Sparkles,
+  Square,
+  Star,
+  Triangle,
+  Type,
   ZoomIn,
   ZoomOut,
-  Shapes,
-  Type,
 } from 'lucide-react';
 import type {Clip, Project, Track} from '../model';
 import {SHAPE_LABEL, type ShapeKind, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
@@ -492,6 +494,16 @@ const HEADER_W_IN_SCROLL = 0;
 const openPortraitSettings = (characterId: string) => setState({dialogCharacterId: characterId, inspectorTab: 'portrait', characterDialogOpen: true});
 
 // ───────────── 本体 ─────────────
+
+/** プロパティの「かんたんエフェクト」を見える位置に出して、最初の見本に移る */
+function openQuickEffects() {
+  showPanel('inspector');
+  window.setTimeout(() => {
+    const grid = document.querySelector('.vx-fx-grid');
+    grid?.scrollIntoView({block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+    grid?.querySelector<HTMLButtonElement>('.vx-fx-tile')?.focus({preventScroll: true});
+  }, 60);
+}
 
 export function Timeline() {
   const layerSize = useStore(s => s.layerSize);
@@ -1757,6 +1769,9 @@ export function Timeline() {
   const contentW = (projectDuration(project) + project.video.fps * 30) * zoom;
   const selClip = project.clips.find(c => c.id === selected);
   const zoomLog = Math.log(zoom);
+  // かんたんエフェクトは、見た目のあるアイテム（テキスト・図形・画像・動画）に付けられる
+  const fxOk = !!selClip && (selClip.type === 'text' || selClip.type === 'shape' || (selClip.type === 'media' && selClip.mediaKind !== 'audio'));
+  const fxTip = fxOk ? '登場・退場・動き・画面効果を、一覧から選んで付ける' : 'テキスト・図形・画像・動画を選ぶと、エフェクトを付けられます';
 
   return (
     <div className="vx-timeline" ref={rootRef}>
@@ -1801,6 +1816,11 @@ export function Timeline() {
           <IconButton label="素材を追加" tooltip="素材を再生位置に追加" size="sm" variant="ghost" icon={<Icon icon={ImagePlus} />} clickAction={addMedia} />
         ) : (
           <Button label="素材を追加" size="sm" variant="ghost" icon={<Icon icon={ImagePlus} />} tooltip="素材を再生位置に追加" clickAction={addMedia} />
+        )}
+        {compact ? (
+          <IconButton label="エフェクト" tooltip={fxTip} size="sm" variant="ghost" icon={<Icon icon={Sparkles} />} isDisabled={!fxOk} onClick={openQuickEffects} />
+        ) : (
+          <Button label="エフェクト" size="sm" variant="ghost" icon={<Icon icon={Sparkles} />} tooltip={fxTip} isDisabled={!fxOk} onClick={openQuickEffects} />
         )}
         <div style={{flex: 1}} />
         <DropdownMenu
