@@ -7,7 +7,7 @@
 import {api} from '../ipc';
 import type {MediaClip, VoiceClip} from '../model';
 import {scheduleDuck, voiceIntervals} from '../ducking';
-import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed} from '../model';
+import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed, hasAudioFx} from '../model';
 import {callRemote, getState, setState} from '../store';
 import {pauseAll} from './video';
 
@@ -155,8 +155,10 @@ export async function play(rate = 1) {
     // 素材の音声（BGM など）。「セリフ中は下げる」トラックは書き出しと同じ動きで音量を下げる
     const intervals = voiceIntervals(p);
     const a = await api;
-    // 速さ・逆再生・静止を付けた音声素材は Preview.tsx が <audio> で鳴らす
-    const audioClips = p.clips.filter((c): c is MediaClip => c.type === 'media' && c.mediaKind === 'audio' && !isRetimed(c) && audible.has(c.trackId) && c.start + c.duration > startFrame);
+    // 速さ・逆再生・静止・音の加工を付けた音声素材は Preview.tsx が <audio> で鳴らす
+    const audioClips = p.clips.filter(
+      (c): c is MediaClip => c.type === 'media' && c.mediaKind === 'audio' && !isRetimed(c) && !hasAudioFx(c) && audible.has(c.trackId) && c.start + c.duration > startFrame,
+    );
     for (const c of audioClips) {
       const track = p.tracks.find(t => t.id === c.trackId);
       void loadUrl(a.mediaUrl(c.src, s.projectPath)).then(buf => {

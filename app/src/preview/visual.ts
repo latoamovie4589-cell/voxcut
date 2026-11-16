@@ -3,7 +3,7 @@
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
 import type {Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {animStateAt, lineOfSubtitle} from '../model';
+import {animStateAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 
 export interface VisualState {
@@ -58,7 +58,10 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
       if (fx.saturation !== 1) filters.push(`saturate(${fx.saturation})`);
     } else if (fx.kind === 'mono') filters.push('saturate(0)');
     else if (fx.kind === 'invert') filters.push('invert(1)');
-    else if (fx.kind === 'blur') blur += Math.max(0, fx.radius);
+    else if (fx.kind === 'grade' || fx.kind === 'temperature') {
+      const f = gradeFilter(fx);
+      if (f) filters.push(f);
+    } else if (fx.kind === 'blur') blur += Math.max(0, fx.radius);
     else if (fx.kind === 'wave' || fx.kind === 'swirl')
       continue; // distort で
     else if (fx.kind === 'shake') {
@@ -136,6 +139,135 @@ export function distort(img: CanvasImageSource, size: [number, number], effects:
     src = cv;
   }
   return src;
+}
+
+// ───────────── 切り抜き・色を抜く・形で切り抜く（書き出しの render.rs の spatial_filters と同じ） ─────────────
+
+const maskCache = new Map<string, HTMLCanvasElement>();
+/** 形の切り抜きの不透明度を描いた画像（長い辺 512px まで。引き伸ばして使う） */
+function maskImage(m: NonNullable<MediaClip['mask']>, W: number, H: number): HTMLCanvasElement {
+  const k = Math.min(1, 512 / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * k));
+  const h = Math.max(1, Math.round(H * k));
+  const key = JSON.stringify([m, w, h]);
+  let cv = maskCache.get(key);
+  if (cv) return cv;
+  cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const x = cv.getContext('2d')!;
+  const d = x.createImageData(w, h);
+  for (let Y = 0; Y < h; Y++) for (let X = 0; X < w; X++) d.data[(Y * w + X) * 4 + 3] = Math.round(255 * maskAlpha(m, X + 0.5, Y + 0.5, w, h));
+  x.putImageData(d, 0, 0);
+  if (maskCache.size > 40) maskCache.delete(maskCache.keys().next().value!);
+  maskCache.set(key, cv);
+  return cv;
+}
+
+/** SVG フィルターを 1 つ用意して、Canvas の filter に渡す url() を返す（同じ id なら作り直さない） */
+function svgFilter(id: string, body: string): string {
+  if (!document.getElementById(id)) {
+    let svg = document.getElementById('vx-filters') as SVGSVGElement | null;
+    if (!svg) {
+      svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.id = 'vx-filters';
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.style.position = 'absolute';
+      document.body.appendChild(svg);
+    }
+    svg.insertAdjacentHTML('beforeend', `<filter id="${id}" color-interpolation-filters="sRGB">${body}</filter>`);
+  }
+  return `url(#${id})`;
+}
+
+/** フィルター・色温度の SVG フィルター（書き出しの colorchannelmixer → lutrgb と同じ数） */
+export function gradeFilter(fx: Effect): string | null {
+  const cg = colorGrade(fx);
+  if (!cg) return null;
+  const {m, g} = cg;
+  const id = `vx-grade-${[...m, ...g.flat()]
+    .map(v => v.toFixed(4))
+    .join('_')
+    .replace(/\./g, 'p')
+    .replace(/-/g, 'm')}`;
+  const fn = (t: string, [a, e, o]: number[]) => `<feFunc${t} type="gamma" amplitude="${a}" exponent="${e}" offset="${o}"/>`;
+  return svgFilter(
+    id,
+    `<feColorMatrix type="matrix" values="${m[0]} ${m[1]} ${m[2]} 0 0  ${m[3]} ${m[4]} ${m[5]} 0 0  ${m[6]} ${m[7]} ${m[8]} 0 0  0 0 0 1 0"/><feComponentTransfer>${fn('R', g[0])}${fn('G', g[1])}${fn('B', g[2])}</feComponentTransfer>`,
+  );
+}
+
+/** 色を抜く SVG フィルター（Canvas の filter に url() で渡す。画素を読み出さないので、別のオリジンの動画にも使える） */
+function chromaFilter(c: NonNullable<MediaClip['chroma']>): string | null {
+  const wts = chromaWeights(c.color);
+  if (!wts) return null;
+  const hi = 1 - Math.min(1, Math.max(0, c.similarity));
+  const b = Math.min(1, Math.max(0.01, c.blend));
+  const id = `vx-chroma-${[...wts, hi, b]
+    .map(v => v.toFixed(4))
+    .join('_')
+    .replace(/\./g, 'p')
+    .replace(/-/g, 'm')}`;
+  const [wr, wg, wb] = wts.map(v => -v / b);
+  return svgFilter(
+    id,
+    `<feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  ${wr} ${wg} ${wb} 0 ${hi / b}" result="k"/><feComposite in="SourceGraphic" in2="k" operator="in"/>`,
+  );
+}
+
+const viewCache = new Map<string, HTMLCanvasElement>();
+/**
+ * 素材を切り抜き・色抜き・形の切り抜きをした画像にする。size は元の素材の大きさ（プロキシの動画でも元の大きさ）。
+ * 返す大きさは切り抜いた後の元の大きさ。still（画像）なら結果を使い回す
+ */
+export function sourceView(img: CanvasImageSource, size: [number, number], m: MediaClip, still: boolean, key = ''): {img: CanvasImageSource; size: [number, number]} {
+  if (!m.crop && !m.mask && !m.chroma) return {img, size};
+  const [l, t, kw, kh] = cropKeep(m.crop);
+  const out: [number, number] = [size[0] * kw, size[1] * kh];
+  const iw = (img as HTMLVideoElement).videoWidth || (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
+  const ih = (img as HTMLVideoElement).videoHeight || (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
+  if (!iw || !ih) return {img, size};
+  const ck = still ? JSON.stringify([key, iw, ih, m.crop, m.mask, m.chroma]) : '';
+  const hit = ck && viewCache.get(ck);
+  if (hit) return {img: hit, size: out};
+  const cw = Math.max(1, Math.round(iw * kw));
+  const ch = Math.max(1, Math.round(ih * kh));
+  const cv = document.createElement('canvas');
+  cv.width = cw;
+  cv.height = ch;
+  const x = cv.getContext('2d')!;
+  const f = m.chroma ? chromaFilter(m.chroma) : null;
+  if (f) x.filter = f;
+  x.drawImage(img, iw * l, ih * t, cw, ch, 0, 0, cw, ch);
+  x.filter = 'none';
+  if (m.mask) {
+    x.globalCompositeOperation = 'destination-in';
+    x.drawImage(maskImage(m.mask, cw, ch), 0, 0, cw, ch);
+    x.globalCompositeOperation = 'source-over';
+  }
+  if (ck) {
+    if (viewCache.size > 30) viewCache.delete(viewCache.keys().next().value!);
+    viewCache.set(ck, cv);
+  }
+  return {img: cv, size: out};
+}
+
+/**
+ * 背景をぼかして埋める（書き出しと同じく、画面いっぱいに広げて切り取り、ぼかす）。
+ * 端が薄くならないよう、少し大きめに描いてからぼかす
+ */
+export function drawFillBlur(ctx: CanvasRenderingContext2D, img: CanvasImageSource, size: [number, number], w: number, h: number, viewScale: number, blur: number) {
+  // ぼかしの外側が透明にならないよう、ぼかしの幅の分だけはみ出して描く（書き出しの gblur は端の色を延ばす）
+  const pad = Math.max(0, blur) * viewScale * 3;
+  const k = Math.max((w + pad * 2) / size[0], (h + pad * 2) / size[1]);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, w, h);
+  ctx.clip();
+  ctx.filter = `blur(${Math.max(0, blur) * viewScale}px)`;
+  ctx.drawImage(img, (w - size[0] * k) / 2, (h - size[1] * k) / 2, size[0] * k, size[1] * k);
+  ctx.restore();
 }
 
 /** 回転した画像が収まる四角（書き出しの rotate の ow=oh=hypot(iw,ih) と同じ大きさ） */

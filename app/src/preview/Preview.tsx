@@ -26,14 +26,16 @@ import {
   srcFrameAt,
   animStateAt,
   setKeyframe,
+  hasAudioFx,
 } from '../model';
-import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt} from './visual';
+import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
 import {getPeaks, onPeaks} from '../peaks';
 import {commit, getState, revertMerge, setState, useStore} from '../store';
 import {pauseExcept, syncVideo, videoFor} from './video';
+import {processedAudio} from '../audioFx';
 import {PreviewControls, toggleFullscreen} from './PreviewControls';
 import {fadeAlpha, popScale, typewriterCount} from '../subtitleAnim';
 import './preview.css';
@@ -510,7 +512,10 @@ export function Preview() {
           const img = image(m.src, projectPath, bump);
           const key = `m:${m.id}`;
           if (img) {
-            const rect = drawVisual(ctx, warp(img, [img.naturalWidth, img.naturalHeight]), [img.naturalWidth, img.naturalHeight], look(key, m.transform), w, h, scale);
+            // 切り抜き・色抜き・形の切り抜き（書き出しと同じく、大きさを変える前に）
+            const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src);
+            if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
+            const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
             if (!locked.has(m.trackId))
               targets.push({
                 key,
@@ -530,12 +535,15 @@ export function Preview() {
             const duck = t.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
             // 切り替えで映像だけを延ばした部分は音を出さない
             const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
-            const vol = m.hasAudio && audible.has(t.id) && voiced ? m.volume * duck : 0;
+            // 音を加工した動画は、加工した音を別に鳴らす（下の <audio>）ので、動画の音は出さない
+            const vol = m.hasAudio && audible.has(t.id) && voiced && !hasAudioFx(m) ? m.volume * duck : 0;
             // 速さ・逆再生・静止（書き出しと同じ対応。逆再生と静止は止めたままコマを合わせ、音は出さない）
             const sp = speedAt(m, playhead - m.start);
             if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
               const key = `m:${m.id}`;
-              const rect = drawVisual(ctx, warp(v, [info.width, info.height]), [info.width, info.height], look(key, m.transform), w, h, scale);
+              const sv = sourceView(v, [info.width, info.height], m, false);
+              if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
+              const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
               if (!locked.has(m.trackId))
                 targets.push({
                   key,
@@ -586,11 +594,17 @@ export function Preview() {
         drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
       }
     }
-    // 速さを変えた音声素材は、音の高さを変えずに速さを変えられる <audio> で鳴らす（そのほかは playback.ts の Web Audio）
+    // 速さを変えた音声素材・音を加工した素材は <audio> で鳴らす（速さを変えても音の高さが変わらない。加工した音は書き出しと同じ WAV）。
+    // そのほかの音声素材は playback.ts の Web Audio
     if (isPlaying)
       for (const c of p.clips) {
-        if (c.type !== 'media' || c.mediaKind !== 'audio' || !isRetimed(c) || !audible.has(c.trackId) || !at(c)) continue;
-        const el = videoFor(apiNow ? apiNow.mediaUrl(c.src, projectPath) : c.src, () => {});
+        if (c.type !== 'media' || !audible.has(c.trackId) || !at(c)) continue;
+        const fxd = hasAudioFx(c) && (c.mediaKind === 'audio' || (c.mediaKind === 'video' && c.hasAudio));
+        if (!fxd && !(c.mediaKind === 'audio' && isRetimed(c))) continue;
+        if (c.freeze || (c.audioUntil !== undefined && playhead - c.start >= c.audioUntil)) continue;
+        const url = fxd ? processedAudio(c, projectPath, bump) : apiNow ? apiNow.mediaUrl(c.src, projectPath) : c.src;
+        if (!url) continue;
+        const el = videoFor(url, () => {});
         const t = p.tracks.find(x => x.id === c.trackId);
         const duck = t?.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
         const sp = speedAt(c, playhead - c.start);
