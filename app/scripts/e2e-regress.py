@@ -327,6 +327,50 @@ async def main():
         check("文字の飾りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+
+        # ── 声を聞く：今の声で短い文を合成して鳴らす（プロジェクトには何も足さない）
+        q = await fresh(b)
+        n0 = await q.evaluate("async()=>(await import('/src/store.ts')).getState().project.clips.length")
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; s.setState({characterDialogOpen:true, selectedCharacterId:p.characters[0].id})}")
+        await q.wait_for_timeout(500)
+        if await q.get_by_role("tab", name="声", exact=True).count():
+            await q.get_by_role("tab", name="声", exact=True).click(); await q.wait_for_timeout(300)
+        await q.get_by_role("textbox", name="試しに読ませる文").fill("テストの文です")
+        await q.get_by_role("button", name="声を聞く").click(); await q.wait_for_timeout(900)
+        r = await q.evaluate("async()=>[window.__lastAudition, (await import('/src/store.ts')).getState().project.clips.length, (await import('/src/store.ts')).getState().dirty]")
+        check("声を聞く：書いた文で合成し、プロジェクトは変えない", r[0] == "テストの文です" and r[1] == n0, str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(400)
+
+        # ── 範囲を指定して書き出す：始まりと終わりを時刻で入れると、その範囲だけを渡す
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({selectedClipId:null, selectedClipIds:[]})}")
+        await q.get_by_role("button", name="動画を書き出す…").click(); await q.wait_for_timeout(600)
+        await q.get_by_role("radio", name="時刻で指定").click(); await q.wait_for_timeout(200)
+        await q.get_by_role("textbox", name="始まり").fill("00:00:01:00")
+        await q.get_by_role("textbox", name="終わり").fill("2:15")
+        await q.wait_for_timeout(200)
+        fps = await q.evaluate("async()=>(await import('/src/store.ts')).getState().project.video.fps")
+        await q.get_by_role("button", name="保存先を選んで書き出す…").click(); await q.wait_for_timeout(2500)
+        ex = await q.evaluate("()=>window.__lastExport")
+        check("範囲の書き出し：時刻で入れた範囲（短い書き方も読む）だけを渡す", ex and ex.get("rangeFrames") == [fps, 2 * fps + 15], str(ex and ex.get("rangeFrames")))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(400)
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); const p=s.getState().project; const v=p.clips.find(c=>c.type==='voice'); s.setState({selectedClipId:v.id, selectedClipIds:[v.id]})}")
+        await q.get_by_role("button", name="動画を書き出す…").click(); await q.wait_for_timeout(600)
+        await q.get_by_role("radio", name="選んだアイテム").click(); await q.wait_for_timeout(200)
+        await q.get_by_role("textbox", name="始まり").count()
+        await q.get_by_role("button", name="保存先を選んで書き出す…").click(); await q.wait_for_timeout(2500)
+        r = await q.evaluate("async()=>{const p=(await import('/src/store.ts')).getState().project; const v=p.clips.find(c=>c.type==='voice'); return [window.__lastExport.rangeFrames, [v.start, v.start+v.duration]]}")
+        check("範囲の書き出し：選んだアイテムの範囲だけを渡す", r[0] == r[1], str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(400)
+
+        # ── 字幕の影と帯：キャラクターの字幕に付けられて、プレビューでも描ける
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const m=await import('/src/model.ts'); const p=s.getState().project; const ch=p.characters[0];
+          s.updateCharacter(ch.id,{subtitle:{...ch.subtitle, shadowColor:'#000000', shadowOffset:5, boxColor:'#202020', boxOpacity:0.6, boxPadding:14}});
+          const v=p.clips.find(c=>c.type==='voice' && c.characterId===ch.id); s.setState({playhead:v.start+2});
+          await new Promise(r=>setTimeout(r,300)); return [m.timecodeToFrames('00:00:08:06',30)===246, m.timecodeToFrames('8:40',30)===null, m.timecodeToFrames('x',30)===null]}""")
+        check("時刻の読み取り：時:分:秒:フレーム と、読めないものを見分ける", all(r), str(r))
+        check("声・範囲・字幕の飾りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
