@@ -12,7 +12,10 @@ thiserror.workspace = true
 sha2 = "0.10"
 hound = "3.5"
 # 同期 HTTP（VoiSona Talk 用）。小さく、TLS 不要の localhost 通信だけなので機能を絞る
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "tls", "native-certs", "proxy-from-env"] }
+# AI：自動字幕（whisper.cpp を静的に組み込む）と、背景を消す（ONNX を Rust だけで動かす）
+whisper-rs = "0.16"
+tract-onnx = "0.23"
 base64 = "0.22"
 
 [dev-dependencies]
