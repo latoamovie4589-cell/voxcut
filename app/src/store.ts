@@ -141,6 +141,8 @@ export interface State {
   dictionaryOpen: boolean;
   /** 「マーカーと概要欄」「テンプレート」「素材の場所と整理」の画面を開いているか */
   descriptionOpen: boolean;
+  /** かんたんエフェクトで開いている種類 */
+  fxTab: 'in' | 'out' | 'move' | 'fx' | 'trans';
   templatesOpen: boolean;
   mediaOpen: boolean;
   /** 見つからない素材（プロジェクトに書いてあるパスのまま） */
@@ -202,6 +204,7 @@ let state: State = {
   pasteText: '',
   dictionaryOpen: false,
   descriptionOpen: false,
+  fxTab: 'in',
   templatesOpen: false,
   mediaOpen: false,
   missingMedia: [],
@@ -368,7 +371,7 @@ function rescaleFrames(p: Project, from: number, to: number): Project {
   const f = (v: number) => Math.round(v * r);
   const motion = <M extends {frames: number} | null | undefined>(m: M): M => (m ? {...m, frames: Math.max(1, f(m.frames))} : m);
   const look = <T extends {look?: Look}>(c: T): T =>
-    c.look ? {...c, look: {...c.look, fadeIn: f(c.look.fadeIn), fadeOut: f(c.look.fadeOut), enter: motion(c.look.enter), exit: motion(c.look.exit)}} : c;
+    c.look ? {...c, look: {...c.look, fadeIn: f(c.look.fadeIn), fadeOut: f(c.look.fadeOut), enter: motion(c.look.enter), exit: motion(c.look.exit), transition: motion(c.look.transition)}} : c;
   return {
     ...p,
     markers: p.markers?.map(m => ({...m, frame: f(m.frame)})),

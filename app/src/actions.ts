@@ -2,7 +2,7 @@
 
 import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project, VoiceClip} from './model';
-import {ENGINE_LABEL, effectiveVoice, framesToTimecode, isSpeakerMissing, projectDuration, reflowAll, synthKey} from './model';
+import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, reflowAll, synthKey} from './model';
 import {addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState} from './store';
 import {forget, stop} from './preview/playback';
 
@@ -473,7 +473,8 @@ export async function runExport(out: string, options: ExportRequest, onProgress:
     }
     // テキスト・図形も画面側で描いた画像を渡す（画面と同じ見た目にするため）
     const {bakeItemImages} = await import('./preview/visual');
-    const itemImages = await bakeItemImages(s.project);
+    // 切り替えの覆う図形の画像も要るので、置き換えた写しから作る（書き出しも同じ写しを描く）
+    const itemImages = await bakeItemImages(withTransitions(s.project));
     const project = await a.exportVideo(s.project, s.projectPath, out, {...options, portraitFrames, itemImages});
     if (getState().project === s.project) replaceProject(project);
   } catch (e) {
@@ -661,7 +662,7 @@ export async function exportStill(notify: Notify): Promise<void> {
       portraitFrames = await bakePsdFrames(s.project, s.projectPath, () => {});
     }
     const {bakeItemImages} = await import('./preview/visual');
-    const itemImages = await bakeItemImages(s.project);
+    const itemImages = await bakeItemImages(withTransitions(s.project));
     const last = Math.max(0, projectDuration(s.project) - 1);
     await a.exportVideo(s.project, s.projectPath, out, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: Math.min(s.playhead, last)});
     notify(`画像を書き出しました：${baseName(out)}`, 'info', 'still', {label: '場所を開く', onClick: () => void a.revealInFolder(out)});

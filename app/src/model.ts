@@ -312,6 +312,15 @@ export interface Look {
   enter?: Motion | null;
   /** 退場のしかた（アイテムの終わりで、画面の外へ出ていく・小さくなって消える） */
   exit?: Motion | null;
+  /** 同じレイヤーのすぐ前のアイテムとのつなぎ目に入れる切り替え（場面転換） */
+  transition?: Transition | null;
+}
+/** つなぎ目の切り替え。slide は「前の場面がその方向へ流れ、次の場面が反対側から入る」 */
+export type TransitionKind = 'dissolve' | 'black' | 'white' | 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom';
+export interface Transition {
+  kind: TransitionKind;
+  /** 全体の長さ（フレーム） */
+  frames: Frame;
 }
 /** 登場・退場の動き。slide は「その方向から入る／その方向へ出る」 */
 export type MotionKind = 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom';
@@ -359,6 +368,22 @@ export interface TextClip extends ClipBase {
   align: 'left' | 'center' | 'right';
   transform: Transform;
   look?: Look;
+  // 文字の飾り（書いていなければ無し。Rust の TextDeco と同じ）
+  /** 影・光（ぼかした影）の色 */
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowX?: number;
+  shadowY?: number;
+  /** 外側の縁（内側の縁の外にもう 1 本） */
+  outline2Color?: string;
+  outline2Width?: number;
+  /** 文字の後ろの帯 */
+  boxColor?: string;
+  boxOpacity?: number;
+  boxPadding?: number;
+  boxRadius?: number;
+  /** 下へ向かうグラデーションの色（上は color） */
+  gradientColor?: string;
 }
 
 export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'line' | 'star';
@@ -474,6 +499,101 @@ export function lineOfSubtitle(p: Project, c: Clip): VoiceClip | null {
 }
 
 export type Clip = VoiceClip | MediaClip | TextClip | ShapeClip | CaptionClip | PortraitClip;
+
+/** 同じレイヤーで、b のすぐ前に接しているアイテム（2 フレームまでのすき間は接しているとみなす）。Rust の prev_adjacent と同じ */
+export function prevAdjacent(p: Project, b: Clip): VisualClip | null {
+  if (!isVisual(b)) return null;
+  let best: VisualClip | null = null;
+  for (const a of p.clips) {
+    if (a.id === b.id || a.trackId !== b.trackId || !isVisual(a) || a.start >= b.start) continue;
+    const end = a.start + a.duration;
+    if (end > b.start || end < b.start - 2) continue;
+    if (!best || end > best.start + best.duration || (end === best.start + best.duration && a.start >= best.start)) best = a;
+  }
+  return best;
+}
+
+/** 切り替えに実際に使う長さ（前後のアイテムの長さの 8 割まで） */
+export function transitionFrames(t: Transition, a: Clip, b: Clip): number {
+  return Math.max(2, Math.min(t.frames, Math.floor((a.duration * 4) / 5), Math.floor((b.duration * 4) / 5)));
+}
+
+/**
+ * 切り替えを、前後のアイテムの登場・退場・フェード（と、暗転・白は画面を覆う図形）に置き換えた写し。
+ * プレビューと書き出し用の画像はこれを描く。Rust の with_transitions と同じ結果になる
+ */
+export function withTransitions(p: Project): Project {
+  const jobs: {a: VisualClip; b: VisualClip; t: Transition}[] = [];
+  for (const b of p.clips) {
+    if (!isVisual(b) || !b.look?.transition) continue;
+    const a = prevAdjacent(p, b);
+    if (a) jobs.push({a, b, t: b.look.transition});
+  }
+  if (!jobs.length) return p;
+  const clips = p.clips.map(c => ({...c}) as Clip);
+  const byId = new Map(clips.map(c => [c.id, c as VisualClip]));
+  const extra: Clip[] = [];
+  const edit = (id: string, f: (l: Look) => Partial<Look>) => {
+    const c = byId.get(id)!;
+    const l = {...plainLook(), ...(c.look ?? {})};
+    c.look = {...l, ...f(l)};
+  };
+  for (const {a, b, t} of jobs) {
+    const cut = b.start;
+    const d = transitionFrames(t, a, b);
+    const outF = Math.max(1, Math.floor(d / 2));
+    const inF = Math.max(1, d - Math.floor(d / 2));
+    const extendable = !(a.type === 'media' && a.mediaKind === 'video');
+    if (t.kind === 'dissolve' && extendable) {
+      // 前の場面を後ろへ延ばして、次の場面の下で消していく
+      byId.get(a.id)!.duration = cut - a.start + d;
+      edit(a.id, () => ({exit: null, fadeOut: d}));
+      edit(b.id, () => ({enter: null, fadeIn: d}));
+    } else if (t.kind === 'dissolve') {
+      edit(a.id, () => ({exit: null, fadeOut: outF}));
+      edit(b.id, () => ({enter: null, fadeIn: inF}));
+    } else if (t.kind === 'black' || t.kind === 'white') {
+      // 画面を覆う図形を、つなぎ目の前で濃くし、後で薄くする（同じレイヤーの上に重ねる）
+      const cover = (id: string, start: number, duration: number, look: Partial<Look>): ShapeClip => ({
+        id,
+        trackId: b.trackId,
+        start,
+        duration,
+        linkId: null,
+        type: 'shape',
+        shape: 'rect',
+        width: p.video.width + 8,
+        height: p.video.height + 8,
+        fill: t.kind === 'black' ? '#000000' : '#FFFFFF',
+        stroke: '',
+        strokeWidth: 0,
+        transform: {x: 0, y: 0, scale: 1, opacity: 1},
+        look: {...plainLook(), ...look},
+      });
+      extra.push(cover(`${b.id}~cover1`, cut - outF, outF, {fadeIn: outF}), cover(`${b.id}~cover2`, cut, inF, {fadeOut: inF}));
+    } else if (t.kind === 'zoom') {
+      edit(a.id, () => ({exit: {kind: 'zoom', frames: outF}, fadeOut: outF}));
+      edit(b.id, () => ({enter: {kind: 'zoom', frames: inF}, fadeIn: inF}));
+    } else {
+      // 前の場面がその方向へ流れて、次の場面が反対側から入る
+      const pair: Record<string, [MotionKind, MotionKind]> = {
+        slideLeft: ['slideLeft', 'slideRight'],
+        slideRight: ['slideRight', 'slideLeft'],
+        slideUp: ['slideUp', 'slideDown'],
+        slideDown: ['slideDown', 'slideUp'],
+      };
+      const [go, come] = pair[t.kind];
+      edit(a.id, () => ({exit: {kind: go, frames: outF}, fadeOut: 0}));
+      edit(b.id, () => ({enter: {kind: come, frames: inF}, fadeIn: 0}));
+    }
+  }
+  // 重なりの順（同じレイヤーでは頭の早い順に描く）。覆う図形は同じ時刻のアイテムより手前に
+  const sorted = clips
+    .map((c, i) => [c, i] as const)
+    .sort((x, y) => x[0].start - y[0].start || x[1] - y[1])
+    .map(x => x[0]);
+  return {...p, clips: [...sorted, ...extra]};
+}
 
 export interface Project {
   version: number;
