@@ -307,6 +307,75 @@ export interface MediaClip extends ClipBase {
   look?: Look;
   /** 音を鳴らす長さ（頭から数えたフレーム）。切り替えで映像だけを延ばしたときに付く。保存しない */
   audioUntil?: Frame;
+  // ── 素材そのものへの加工（Rust の SourceFx と同じ）──
+  /** 速さ（1 が等速）。speedTo があれば頭の速さ */
+  speed?: number;
+  /** 終わりの速さ（だんだん速く・遅く） */
+  speedTo?: number;
+  /** 逆再生 */
+  reverse?: boolean;
+  /** 静止（inPoint のコマを出し続ける。音は出さない） */
+  freeze?: boolean;
+}
+
+// ───────────── 速さ・逆再生・静止（書き出しの render.rs の source_filters と同じ対応） ─────────────
+
+/** 頭と終わりの速さ */
+export function speedsOf(m: MediaClip): [number, number] {
+  const a = Math.max(0.05, m.speed ?? 1);
+  return [a, Math.max(0.05, m.speedTo ?? a)];
+}
+
+/** クリップの頭から t フレーム進んだとき、元の素材で進むフレーム（速さを積分）。d はクリップの長さ */
+export function srcAdvance(m: MediaClip, t: number, d = m.duration): number {
+  if (m.freeze) return 0;
+  const [a, b] = speedsOf(m);
+  return a * t + ((b - a) * t * t) / (2 * Math.max(1e-9, d));
+}
+
+/** 元の素材で使う長さ（フレーム） */
+export const srcSpan = (m: MediaClip) => srcAdvance(m, m.duration);
+
+/** クリップの頭から t フレーム目に出す、元の素材のフレーム */
+export function srcFrameAt(m: MediaClip, t: number): number {
+  return m.reverse ? m.inPoint + srcSpan(m) - srcAdvance(m, t) : m.inPoint + srcAdvance(m, t);
+}
+
+/** その時点の速さ（静止は 0、逆再生は負） */
+export function speedAt(m: MediaClip, t: number): number {
+  if (m.freeze) return 0;
+  const [a, b] = speedsOf(m);
+  const v = a + ((b - a) * t) / Math.max(1e-9, m.duration);
+  return m.reverse ? -v : v;
+}
+
+export const isRetimed = (m: MediaClip) => !!m.freeze || !!m.reverse || speedsOf(m).some(v => Math.abs(v - 1) > 1e-9);
+
+/**
+ * 出す範囲を [start, start+duration) に変えた素材（端を詰める・延ばす・分ける）。
+ * 同じ時刻には同じ素材のコマが出るよう、切り出し位置と速さ（だんだん変わるときは頭と終わり）を合わせる
+ */
+export function retime<T extends MediaClip>(m: T, start: number, duration: number): T {
+  const ds = start - m.start;
+  const [a, b] = speedsOf(m);
+  const ramp = Math.abs(a - b) > 1e-9;
+  const at = (t: number) => Math.max(0.05, a + ((b - a) * t) / Math.max(1e-9, m.duration));
+  const next: T = {...m, start, duration};
+  if (ramp) {
+    next.speed = at(ds);
+    next.speedTo = at(ds + duration);
+  }
+  if (!m.freeze) next.inPoint = Math.max(0, m.reverse ? m.inPoint + srcSpan(m) - srcAdvance(m, ds + duration) : m.inPoint + srcAdvance(m, ds));
+  return next;
+}
+
+/** 速さを変える。使う素材の長さはそのままで、クリップの長さが変わる */
+export function withSpeed<T extends MediaClip>(m: T, speed: number, speedTo?: number): T {
+  const span = srcSpan({...m, freeze: false});
+  const a = Math.max(0.05, speed);
+  const b = speedTo === undefined ? a : Math.max(0.05, speedTo);
+  const duration = Math.max(1, Math.round(span / ((a + b) / 2)));
+  return {...m, speed: a === 1 && b === 1 ? undefined : a, speedTo: speedTo === undefined || Math.abs(a - b) < 1e-9 ? undefined : b, duration};
 }
 
 /** 見た目の動きと効果（画像・動画・テキスト・図形で共通。Rust の Look と同じ） */
@@ -348,6 +417,8 @@ export interface Anim {
   ease: Ease;
   /** 途中の状態（始まり → 途中 → 終わりの順に動く。区間ごとに ease を掛ける） */
   mid?: AnimMid | null;
+  /** そのほかの途中の状態（キーフレーム。何点でも） */
+  keys?: AnimMid[];
 }
 export interface AnimMid {
   /** 通る時点（アイテムの長さに対する割合 0〜1） */
@@ -356,6 +427,85 @@ export interface AnimMid {
   rotation: number;
 }
 export type Ease = 'linear' | 'in' | 'out' | 'inOut';
+
+// ───────────── キーフレーム（書き出しの render.rs の Anim::waypoints・tween3 と同じ） ─────────────
+
+/** 途中の状態をすべて、通る順に（mid と keys。近すぎるものは 1 つに） */
+export function animKeys(an: Anim | null | undefined): AnimMid[] {
+  if (!an) return [];
+  const v = [...(an.mid ? [an.mid] : []), ...(an.keys ?? [])].map(k => ({...k, at: Math.min(0.999, Math.max(0.001, k.at))})).sort((a, b) => a.at - b.at);
+  return v.filter((k, i) => i === 0 || Math.abs(k.at - v[i - 1].at) >= 1e-6);
+}
+
+export function easeValue(e: Ease, p: number): number {
+  const q = Math.min(1, Math.max(0, p));
+  if (e === 'in') return q * q;
+  if (e === 'out') return 1 - (1 - q) * (1 - q);
+  if (e === 'inOut') return q < 0.5 ? 2 * q * q : 1 - 2 * (1 - q) * (1 - q);
+  return q;
+}
+
+/** アニメーションのその時点（p はアイテムの長さに対する割合）の置き方と回転（登場・退場・フェードは含まない） */
+export function animStateAt(t: Transform, look: Look | undefined, p: number): {transform: Transform; rotation: number} {
+  const an = look?.anim;
+  const r0 = look?.rotation ?? 0;
+  const c01 = (v: number) => Math.min(1, Math.max(0, v));
+  if (!an) return {transform: {...t, opacity: c01(t.opacity)}, rotation: r0};
+  const pts = [{at: 0, transform: t, rotation: r0}, ...animKeys(an), {at: 1, transform: an.to, rotation: an.rotation}];
+  const q = Math.min(1, Math.max(0, p));
+  let i = pts.findIndex((k, j) => j > 0 && q < k.at) - 1;
+  if (i < 0) i = pts.length - 2;
+  const [a, b] = [pts[i], pts[i + 1]];
+  const k = easeValue(an.ease, (q - a.at) / Math.max(1e-6, b.at - a.at));
+  const mix = (x: number, y: number) => x + (y - x) * k;
+  return {
+    transform: {
+      x: mix(a.transform.x, b.transform.x),
+      y: mix(a.transform.y, b.transform.y),
+      scale: mix(a.transform.scale, b.transform.scale),
+      opacity: mix(c01(a.transform.opacity), c01(b.transform.opacity)),
+    },
+    rotation: mix(a.rotation, b.rotation),
+  };
+}
+
+/** キーフレームのある時点（割合。頭 0・終わり 1 を含む）。アニメーションがなければ空 */
+export function keyframeTimes(look: Look | undefined): number[] {
+  return look?.anim ? [0, ...animKeys(look.anim).map(k => k.at), 1] : [];
+}
+
+/** 頭・終わりとみなす近さ（割合） */
+const KEY_SNAP = 0.004;
+
+/**
+ * その時点（割合）のキーフレームを、置き方 tr・回転 rot にする（なければ足す）。アニメーションがなければ、
+ * 今の見た目のまま動かないアニメーションを作ってから足す（CapCut の「キーフレームを追加」と同じ）
+ */
+export function setKeyframe<T extends {transform: Transform; look?: Look}>(c: T, p: number, tr: Transform, rot: number): T {
+  const look: Look = {...plainLook(), ...c.look};
+  const an: Anim = look.anim ? {...look.anim} : {to: {...c.transform}, rotation: look.rotation, ease: 'linear'};
+  if (p <= KEY_SNAP) return {...c, transform: {...tr}, look: {...look, anim: an, rotation: rot}};
+  if (p >= 1 - KEY_SNAP) return {...c, look: {...look, anim: {...an, to: {...tr}, rotation: rot}}};
+  const key: AnimMid = {at: p, transform: {...tr}, rotation: rot};
+  const near = (k: AnimMid) => Math.abs(k.at - p) <= KEY_SNAP;
+  let mid = an.mid ?? null;
+  let keys = [...(an.keys ?? [])];
+  if (mid && near(mid)) mid = {...key, at: mid.at};
+  else {
+    const i = keys.findIndex(near);
+    if (i >= 0) keys[i] = {...key, at: keys[i].at};
+    else keys = [...keys, key].sort((a, b) => a.at - b.at);
+  }
+  return {...c, look: {...look, anim: {...an, mid, keys}}};
+}
+
+/** その時点（割合）の途中のキーフレームを消す。頭・終わりは消さない */
+export function removeKeyframe<T extends {look?: Look}>(c: T, p: number): T {
+  const an = c.look?.anim;
+  if (!an) return c;
+  const near = (k: AnimMid) => Math.abs(k.at - p) <= KEY_SNAP;
+  return {...c, look: {...c.look!, anim: {...an, mid: an.mid && near(an.mid) ? null : an.mid, keys: (an.keys ?? []).filter(k => !near(k))}}};
+}
 export type Effect =
   | {kind: 'blur'; radius: number}
   | {kind: 'shake'; amount: number; speed: number}
@@ -782,8 +932,8 @@ export function keepLinks(before: Project, after: Project): Project {
       if (c === master || (changed.includes(c) && c.type !== 'caption')) continue;
       const q = prev.get(c.id) ?? c;
       const next = {...c, start: Math.max(0, q.start + ds), duration: Math.max(1, q.duration + dd)} as Clip;
-      if (next.type === 'media' && trimLeft && q.type === 'media') next.inPoint = Math.max(0, q.inPoint + ds);
-      patch.set(c.id, next);
+      if (next.type === 'media' && q.type === 'media' && (trimLeft || ds === 0)) patch.set(c.id, retime(q, next.start, next.duration));
+      else patch.set(c.id, next);
     }
   }
   let p = patch.size ? {...after, clips: after.clips.map(c => patch.get(c.id) ?? c)} : after;

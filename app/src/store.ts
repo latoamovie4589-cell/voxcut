@@ -47,6 +47,9 @@ import {
   trackKindOf,
   videoTracks,
   voiceLayerFor,
+  retime,
+  srcFrameAt,
+  withSpeed,
 } from './model';
 
 export type InputMode = 'normal' | 'append' | 'join';
@@ -1170,7 +1173,7 @@ export function trimClip(id: string, start: number, duration: number) {
         if (c.id !== id) return c;
         const s = Math.max(0, s0);
         const d = Math.max(1, e0 - s0);
-        if (c.type === 'media') return {...c, start: s, duration: d, inPoint: Math.max(0, c.inPoint + (s - c.start))};
+        if (c.type === 'media') return retime(c, s, d);
         if (c.type !== 'voice') return {...c, start: s, duration: d};
         return {...c, start: s, duration: d, lockDuration: true};
       }),
@@ -1226,6 +1229,74 @@ export function revealSelection() {
   setState(s => ({revealSeq: s.revealSeq + 1}));
 }
 
+/** 素材と、リンクした素材（分けた動画の音など）の id */
+function mediaGroup(p: Project, id: string): Set<string> {
+  const c = p.clips.find(x => x.id === id);
+  if (!c || c.type !== 'media') return new Set();
+  return new Set(p.clips.filter(x => x.id === id || (c.linkId && x.linkId === c.linkId && x.type === 'media')).map(x => x.id));
+}
+
+/**
+ * 素材の速さを変える（リンクした素材も一緒に）。speedTo を渡すと、頭 speed → 終わり speedTo へだんだん変える。
+ * 使う素材の範囲はそのままで、クリップの長さが変わる
+ */
+export function setMediaSpeed(id: string, speed: number, speedTo?: number) {
+  commit(p => {
+    const g = mediaGroup(p, id);
+    return {...p, clips: p.clips.map(c => (g.has(c.id) && c.type === 'media' ? withSpeed(c, speed, speedTo) : c))};
+  }, `speed:${id}`);
+}
+
+/** 逆再生・静止を切り替える（リンクした素材も一緒に） */
+export function setMediaFlag(id: string, key: 'reverse' | 'freeze', on: boolean) {
+  commit(p => {
+    const g = mediaGroup(p, id);
+    return {...p, clips: p.clips.map(c => (g.has(c.id) && c.type === 'media' ? {...c, [key]: on || undefined} : c))};
+  });
+}
+
+/**
+ * 再生位置のコマで止める（CapCut の「フリーズ」）。動画を再生位置で分け、その間に seconds 秒の静止したコマを入れて、
+ * 再生位置より後のアイテムを全部その分だけ後ろへずらす
+ */
+export function freezeFrame(id: string, at: number, seconds = 3): boolean {
+  const p = state.project;
+  const c = p?.clips.find(x => x.id === id);
+  if (!p || !c || c.type !== 'media' || c.mediaKind !== 'video' || at < c.start || at >= c.start + c.duration) return false;
+  const len = Math.max(1, Math.round(seconds * p.video.fps));
+  const stillId = newId('m');
+  commit(pr => {
+    const clips: Clip[] = [];
+    const g = mediaGroup(pr, id);
+    const lk = g.size > 1 ? newId('lk') : null;
+    for (const x of pr.clips) {
+      if (x.type === 'media' && g.has(x.id) && at > x.start && at < x.start + x.duration) {
+        // 分けて、右側を後ろへ
+        clips.push(retime(x, x.start, at - x.start));
+        clips.push({...retime(x, at, x.start + x.duration - at), id: newId('m'), start: at + len, linkId: lk});
+      } else if (x.start >= at) clips.push({...x, start: x.start + len} as Clip);
+      else clips.push(x);
+    }
+    const still: MediaClip = {
+      ...c,
+      id: stillId,
+      start: at,
+      duration: len,
+      inPoint: Math.round(srcFrameAt(c, at - c.start)),
+      freeze: true,
+      reverse: undefined,
+      speed: undefined,
+      speedTo: undefined,
+      hasAudio: false,
+      linkId: null,
+      look: undefined,
+    };
+    return {...pr, clips: [...clips, still]};
+  });
+  setState({selectedClipId: stillId, selectedClipIds: [stillId]});
+  return true;
+}
+
 /** 素材を再生位置で 2 つに分ける。リンクした映像と音声は一緒に分け、右側どうしも新しいリンクでつなぐ */
 export function splitClip(id: string, at: number): boolean {
   const p = state.project;
@@ -1238,8 +1309,8 @@ export function splitClip(id: string, at: number): boolean {
     ...pr,
     clips: pr.clips.flatMap(x => {
       if (!targets.has(x.id) || x.type !== 'media') return [x];
-      const left: MediaClip = {...x, duration: at - x.start};
-      const right: MediaClip = {...x, id: rightIds.get(x.id)!, start: at, duration: x.start + x.duration - at, inPoint: x.inPoint + (at - x.start), linkId: newLink};
+      const left: MediaClip = retime(x, x.start, at - x.start);
+      const right: MediaClip = {...retime(x, at, x.start + x.duration - at), id: rightIds.get(x.id)!, linkId: newLink};
       return [left, right];
     }),
   }));
