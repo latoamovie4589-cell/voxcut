@@ -40,8 +40,8 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type {Clip, Project, Track} from '../model';
-import {SHAPE_LABEL, type ShapeKind, isVisual, prevAdjacent, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode} from '../model';
+import type {Clip, MediaClip, Project, Track} from '../model';
+import {SHAPE_LABEL, type ShapeKind, isVisual, prevAdjacent, overlappingLines, framesToTimecode, layerLabel, projectDuration, startOffsetOf, trackCode, speedsOf, keyframeTimes} from '../model';
 import {TEXT_STYLES} from '../textStyles';
 import {
   getState,
@@ -507,6 +507,15 @@ function openQuickEffects() {
   }, 60);
 }
 
+/** 素材の名前の前に付ける印（速さ・逆再生・静止） */
+function mediaBadge(m: MediaClip): string {
+  if (m.freeze) return '❄ 静止  ';
+  const [a, b] = speedsOf(m);
+  const r = (v: number) => Math.round(v * 100) / 100;
+  const sp = Math.abs(a - b) > 1e-9 ? `${r(a)}→${r(b)}×  ` : Math.abs(a - 1) > 1e-9 ? `${r(a)}×  ` : '';
+  return `${m.reverse ? '⟲ ' : ''}${sp}`;
+}
+
 export function Timeline() {
   const layerSize = useStore(s => s.layerSize);
   LAYER_H = LAYER_SIZES[layerSize] ?? LAYER_SIZES.small;
@@ -894,7 +903,7 @@ export function Timeline() {
                   ? `◆  ${SHAPE_LABEL[c.shape]}`
                   : c.type === 'portrait'
                     ? `立ち絵  ${p.characters.find(x2 => x2.id === c.characterId)?.name ?? '?'}`
-                    : (c.src.split(/[\\/]/).pop() ?? c.src);
+                    : `${mediaBadge(c)}${c.src.split(/[\\/]/).pop() ?? c.src}`;
         // 波形の上でも読めるよう、地の色で縁取りしてから書く
         ctx.save();
         ctx.lineJoin = 'round';
@@ -907,6 +916,25 @@ export function Timeline() {
         ctx.fillText(label, labelX, cy + 0.5);
         ctx.restore();
 
+        // キーフレームの点（◆。CapCut と同じく、選んでいるアイテムの下側に）
+        if (isSel && isVisual(c))
+          for (const t of keyframeTimes(c.look)) {
+            const kx = x + 1 + t * (cw - 2);
+            const ky = y + ch - 5;
+            ctx.save();
+            ctx.fillStyle = '#fff';
+            ctx.strokeStyle = pal.accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(kx, ky - 4);
+            ctx.lineTo(kx + 4, ky);
+            ctx.lineTo(kx, ky + 4);
+            ctx.lineTo(kx - 4, ky);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+          }
         // 端のつまみ（ホバー中か選択中のクリップだけ）
         if ((isSel || hover?.clipId === c.id) && cw > EDGE_PX * 3 && !track.locked) {
           for (const [ex, edge] of [
