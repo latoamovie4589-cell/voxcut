@@ -1134,3 +1134,410 @@ dialog.astryx-dialog[open] {
   border: 1px solid var(--color-border-default);
   user-select: text;
 }
+
+/* ── かんたんエフェクト：小さな見本が並び、押すと付く。見本は指を載せたときだけ動く ── */
+.vx-fx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+}
+.vx-fx-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+}
+.vx-fx-demo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  overflow: hidden;
+  background: light-dark(#e4e1ee, #100f15);
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  transition: outline-color 120ms;
+}
+.vx-fx-dot {
+  width: 38%;
+  aspect-ratio: 1;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #ffb35c 0 50%, #ff6482 50% 100%);
+}
+.vx-fx-tile:hover .vx-fx-demo {
+  outline-color: var(--color-border-default);
+}
+.vx-fx-tile:focus-visible {
+  outline: none;
+}
+.vx-fx-tile:focus-visible .vx-fx-demo {
+  outline-color: var(--color-text-primary);
+}
+.vx-fx-tile[aria-pressed='true'] {
+  color: var(--color-text-accent);
+  font-weight: 600;
+}
+.vx-fx-tile[aria-pressed='true'] .vx-fx-demo {
+  outline-color: var(--color-accent);
+}
+/* 「なし」は斜線 */
+.vx-fx-tile[data-fx$='-none'] .vx-fx-dot {
+  width: 56%;
+  aspect-ratio: auto;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.55;
+  rotate: -32deg;
+}
+/* 画面効果は、止まっていても見た目で分かる */
+.vx-fx-tile[data-fx='fx-blur'] .vx-fx-dot {
+  filter: blur(3px);
+}
+.vx-fx-tile[data-fx='fx-mono'] .vx-fx-dot {
+  filter: grayscale(1);
+}
+.vx-fx-tile[data-fx='fx-vivid'] .vx-fx-dot {
+  filter: saturate(1.9) contrast(1.1);
+}
+.vx-fx-tile[data-fx='fx-dark'] .vx-fx-dot {
+  filter: brightness(0.55);
+}
+.vx-fx-tile[data-fx='fx-bright'] .vx-fx-dot {
+  filter: brightness(1.35);
+}
+.vx-fx-tile[data-fx='fx-invert'] .vx-fx-dot {
+  filter: invert(1);
+}
+.vx-fx-tile[data-fx='fx-wave'] .vx-fx-dot {
+  border-radius: 46% 54% 40% 60% / 58% 42% 58% 42%;
+}
+.vx-fx-tile[data-fx='fx-swirl'] .vx-fx-dot {
+  background: conic-gradient(from 0deg, #ffb35c, #ff6482, #ffb35c);
+  border-radius: 50%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .vx-fx-tile:is(:hover, :focus-visible) .vx-fx-dot {
+    animation: var(--vx-fx, none) 1.1s ease-out infinite;
+  }
+  .vx-fx-tile[data-fx='in-fade'] {
+    --vx-fx: vx-fx-fade-in;
+  }
+  .vx-fx-tile[data-fx='in-pop'] {
+    --vx-fx: vx-fx-pop-in;
+  }
+  .vx-fx-tile[data-fx='in-soft'] {
+    --vx-fx: vx-fx-soft-in;
+  }
+  .vx-fx-tile[data-fx='in-left'] {
+    --vx-fx: vx-fx-from-left;
+  }
+  .vx-fx-tile[data-fx='in-right'] {
+    --vx-fx: vx-fx-from-right;
+  }
+  .vx-fx-tile[data-fx='in-up'] {
+    --vx-fx: vx-fx-from-up;
+  }
+  .vx-fx-tile[data-fx='in-down'] {
+    --vx-fx: vx-fx-from-down;
+  }
+  .vx-fx-tile[data-fx='out-fade'] {
+    --vx-fx: vx-fx-fade-out;
+  }
+  .vx-fx-tile[data-fx='out-shrink'] {
+    --vx-fx: vx-fx-pop-out;
+  }
+  .vx-fx-tile[data-fx='out-soft'] {
+    --vx-fx: vx-fx-soft-out;
+  }
+  .vx-fx-tile[data-fx='out-left'] {
+    --vx-fx: vx-fx-to-left;
+  }
+  .vx-fx-tile[data-fx='out-right'] {
+    --vx-fx: vx-fx-to-right;
+  }
+  .vx-fx-tile[data-fx='out-up'] {
+    --vx-fx: vx-fx-to-up;
+  }
+  .vx-fx-tile[data-fx='out-down'] {
+    --vx-fx: vx-fx-to-down;
+  }
+  .vx-fx-tile[data-fx='mv-zoomin'] {
+    --vx-fx: vx-fx-zoom-in;
+  }
+  .vx-fx-tile[data-fx='mv-zoomout'] {
+    --vx-fx: vx-fx-zoom-out;
+  }
+  .vx-fx-tile[data-fx='mv-left'] {
+    --vx-fx: vx-fx-drift-left;
+  }
+  .vx-fx-tile[data-fx='mv-right'] {
+    --vx-fx: vx-fx-drift-right;
+  }
+  .vx-fx-tile[data-fx='mv-float'] {
+    --vx-fx: vx-fx-float;
+  }
+  .vx-fx-tile[data-fx='mv-bounce'] {
+    --vx-fx: vx-fx-bounce;
+  }
+  .vx-fx-tile[data-fx='mv-beat'] {
+    --vx-fx: vx-fx-beat;
+  }
+  .vx-fx-tile[data-fx='mv-tilt'] {
+    --vx-fx: vx-fx-tilt;
+  }
+  .vx-fx-tile[data-fx='mv-spin'] {
+    --vx-fx: vx-fx-spin;
+  }
+  .vx-fx-tile[data-fx='fx-shake'] {
+    --vx-fx: vx-fx-shake;
+  }
+  .vx-fx-tile[data-fx='fx-wave'] {
+    --vx-fx: vx-fx-wave;
+  }
+  .vx-fx-tile[data-fx='fx-swirl'] {
+    --vx-fx: vx-fx-spin;
+  }
+}
+@keyframes vx-fx-fade-in {
+  0% {
+    opacity: 0;
+  }
+  60%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes vx-fx-pop-in {
+  0% {
+    scale: 0;
+  }
+  55%,
+  100% {
+    scale: 1;
+  }
+}
+@keyframes vx-fx-soft-in {
+  0% {
+    scale: 0.4;
+    opacity: 0;
+  }
+  60%,
+  100% {
+    scale: 1;
+    opacity: 1;
+  }
+}
+@keyframes vx-fx-from-left {
+  0% {
+    translate: -220% 0;
+  }
+  55%,
+  100% {
+    translate: 0 0;
+  }
+}
+@keyframes vx-fx-from-right {
+  0% {
+    translate: 220% 0;
+  }
+  55%,
+  100% {
+    translate: 0 0;
+  }
+}
+@keyframes vx-fx-from-up {
+  0% {
+    translate: 0 -220%;
+  }
+  55%,
+  100% {
+    translate: 0 0;
+  }
+}
+@keyframes vx-fx-from-down {
+  0% {
+    translate: 0 220%;
+  }
+  55%,
+  100% {
+    translate: 0 0;
+  }
+}
+@keyframes vx-fx-fade-out {
+  0%,
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes vx-fx-pop-out {
+  0%,
+  35% {
+    scale: 1;
+  }
+  100% {
+    scale: 0;
+  }
+}
+@keyframes vx-fx-soft-out {
+  0%,
+  35% {
+    scale: 1;
+    opacity: 1;
+  }
+  100% {
+    scale: 0.4;
+    opacity: 0;
+  }
+}
+@keyframes vx-fx-to-left {
+  0%,
+  35% {
+    translate: 0 0;
+  }
+  100% {
+    translate: -220% 0;
+  }
+}
+@keyframes vx-fx-to-right {
+  0%,
+  35% {
+    translate: 0 0;
+  }
+  100% {
+    translate: 220% 0;
+  }
+}
+@keyframes vx-fx-to-up {
+  0%,
+  35% {
+    translate: 0 0;
+  }
+  100% {
+    translate: 0 -220%;
+  }
+}
+@keyframes vx-fx-to-down {
+  0%,
+  35% {
+    translate: 0 0;
+  }
+  100% {
+    translate: 0 220%;
+  }
+}
+@keyframes vx-fx-zoom-in {
+  0% {
+    scale: 0.8;
+  }
+  100% {
+    scale: 1.25;
+  }
+}
+@keyframes vx-fx-zoom-out {
+  0% {
+    scale: 1.25;
+  }
+  100% {
+    scale: 0.8;
+  }
+}
+@keyframes vx-fx-drift-left {
+  0% {
+    translate: 45% 0;
+  }
+  100% {
+    translate: -45% 0;
+  }
+}
+@keyframes vx-fx-drift-right {
+  0% {
+    translate: -45% 0;
+  }
+  100% {
+    translate: 45% 0;
+  }
+}
+@keyframes vx-fx-float {
+  0% {
+    translate: 0 35%;
+  }
+  100% {
+    translate: 0 -35%;
+  }
+}
+@keyframes vx-fx-bounce {
+  0%,
+  100% {
+    translate: 0 20%;
+  }
+  50% {
+    translate: 0 -40%;
+  }
+}
+@keyframes vx-fx-beat {
+  0%,
+  45%,
+  100% {
+    scale: 1;
+  }
+  15% {
+    scale: 1.35;
+  }
+}
+@keyframes vx-fx-tilt {
+  0%,
+  100% {
+    rotate: 0deg;
+  }
+  50% {
+    rotate: 14deg;
+  }
+}
+@keyframes vx-fx-spin {
+  0% {
+    rotate: 0deg;
+  }
+  100% {
+    rotate: 360deg;
+  }
+}
+@keyframes vx-fx-shake {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  20% {
+    translate: -12% 8%;
+  }
+  40% {
+    translate: 10% -10%;
+  }
+  60% {
+    translate: -8% -6%;
+  }
+  80% {
+    translate: 12% 6%;
+  }
+}
+@keyframes vx-fx-wave {
+  0%,
+  100% {
+    border-radius: 46% 54% 40% 60% / 58% 42% 58% 42%;
+  }
+  50% {
+    border-radius: 58% 42% 60% 40% / 42% 58% 42% 58%;
+  }
+}
