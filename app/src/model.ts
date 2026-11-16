@@ -337,6 +337,8 @@ export interface Motion {
   kind: MotionKind;
   /** 掛ける長さ（フレーム） */
   frames: Frame;
+  /** なめらかに動く（ゆっくり出て、ゆっくり止まる）。切り替えの「流す」で、前と次の場面がくっついて動くように */
+  smooth?: boolean;
 }
 export interface Anim {
   to: Transform;
@@ -592,8 +594,15 @@ export function withTransitions(p: Project): Project {
         slideDown: ['slideDown', 'slideUp'],
       };
       const [go, come] = pair[t.kind];
-      edit(a.id, () => ({exit: {kind: go, frames: outF}, fadeOut: 0}));
-      edit(b.id, () => ({enter: {kind: come, frames: inF}, fadeIn: 0}));
+      if (extendable) {
+        // 前の場面を後ろへ延ばして、2 つがくっついたまま同時に動く（押し出し）
+        byId.get(a.id)!.duration = cut - a.start + d;
+        edit(a.id, () => ({exit: {kind: go, frames: d, smooth: true}, fadeOut: 0}));
+        edit(b.id, () => ({enter: {kind: come, frames: d, smooth: true}, fadeIn: 0}));
+      } else {
+        edit(a.id, () => ({exit: {kind: go, frames: outF}, fadeOut: 0}));
+        edit(b.id, () => ({enter: {kind: come, frames: inF}, fadeIn: 0}));
+      }
     }
   }
   // 重なりの順（同じレイヤーでは頭の早い順に描く）。覆う図形は同じ時刻のアイテムより手前に
