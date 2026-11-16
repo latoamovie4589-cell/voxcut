@@ -6,7 +6,7 @@ import {Selector} from '@astryxdesign/core/Selector';
 import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {api} from '../ipc';
-import {srcFrameAt, type MediaAudioFx, type MediaClip, type VoiceFx} from '../model';
+import {timelineFrameOf, type MediaAudioFx, type MediaClip, type VoiceFx} from '../model';
 import {commit, getState, updateClip, useStore} from '../store';
 
 const VOICES: {value: VoiceFx | 'none'; label: string}[] = [
@@ -19,22 +19,7 @@ const VOICES: {value: VoiceFx | 'none'; label: string}[] = [
   {value: 'megaphone', label: '拡声器'},
 ];
 
-/** 素材の t 秒目が、タイムラインの何フレーム目に出るか（速さ・逆再生も考える。範囲の外なら null） */
-export function timelineFrameOf(m: MediaClip, srcSec: number, fps: number): number | null {
-  const target = srcSec * fps;
-  // 素材の位置はクリップの中で単調に動くので、二分探索で探す
-  let lo = 0;
-  let hi = m.duration;
-  const f = (t: number) => srcFrameAt(m, t);
-  const up = f(m.duration) >= f(0);
-  if (Math.min(f(0), f(m.duration)) > target + 0.5 || Math.max(f(0), f(m.duration)) < target - 0.5) return null;
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) / 2;
-    if (f(mid) < target === up) lo = mid;
-    else hi = mid;
-  }
-  return Math.round(m.start + lo);
-}
+export {timelineFrameOf};
 
 export function SoundFxFields({clip, notify}: {clip: MediaClip; notify: (m: string) => void}) {
   const projectPath = useStore(s => s.projectPath);

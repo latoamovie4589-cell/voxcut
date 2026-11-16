@@ -70,7 +70,7 @@ import {
   setAftertime,
   setLineAudio,
 } from '../store';
-import {getNotify, loadVoices, previewVoice, synthesize, type Notify} from '../actions';
+import {getNotify, loadVoices, previewVoice, splitAtScenes, synthesize, type Notify} from '../actions';
 
 /**
  * セリフと発音（YMM4 と同じ）。セリフ＝字幕に出す文、発音＝読み上げる文。
@@ -782,6 +782,18 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
               if (!splitClip(clip.id, getState().playhead)) notify('再生位置をこの素材の上に動かしてください');
             }}
           />
+          {clip.mediaKind === 'video' && (
+            <Button
+              label="場面ごとに分ける"
+              variant="ghost"
+              tooltip="映像が大きく変わるところを見つけて、そこで分けます"
+              onClick={() => {
+                void splitAtScenes(clip.id)
+                  .then(n => notify(n ? `${n} か所で分けました` : '場面の変わり目が見つかりませんでした'))
+                  .catch(e => notify(String(e), 'error'));
+              }}
+            />
+          )}
           {canSeparate(project, clip) && <Button label="音声を分離" variant="ghost" icon={<Icon icon={Unlink} />} onClick={() => separateClip(clip.id)} />}
           {canMerge(project, clip) && <Button label="映像と音声をまとめる" variant="ghost" icon={<Icon icon={Link2} />} onClick={() => mergeClip(clip.id)} />}
           <Button label="削除" variant="ghost" icon={<Icon icon={Trash2} />} onClick={() => deleteClips([clip.id, ...linked.map(c => c.id)])} />

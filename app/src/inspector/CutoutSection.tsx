@@ -5,8 +5,10 @@ import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Slider} from '@astryxdesign/core/Slider';
 import {Switch} from '@astryxdesign/core/Switch';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
-import {chromaWeights, type Chroma, type Crop, type Mask, type MediaClip} from '../model';
-import {updateClip} from '../store';
+import {chromaWeights, proxyKey, type Chroma, type Crop, type Mask, type MediaClip} from '../model';
+import {updateClip, useStore} from '../store';
+import {ensureProxy} from '../actions';
+import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {ColorRow} from './VisualInspector';
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -27,6 +29,7 @@ function Block({title, children}: {title: string; children: React.ReactNode}) {
 }
 
 export function CutoutSection({clip}: {clip: MediaClip}) {
+  const stab = useStore(s => s.proxies[proxyKey({src: clip.src, stabilize: true})]);
   const set = (patch: Partial<MediaClip>) => updateClip(clip.id, patch);
   const crop = clip.crop ?? NO_CROP;
   const setCrop = (p: Partial<Crop>) => {
@@ -39,6 +42,23 @@ export function CutoutSection({clip}: {clip: MediaClip}) {
   const setChroma = (p: Partial<Chroma>) => set({chroma: {...(ch ?? DEFAULT_CHROMA), ...p}});
   return (
     <>
+      {clip.mediaKind === 'video' && (
+        <Block title="手ぶれ補正">
+          <Switch
+            label="手ぶれを抑える"
+            description="手持ちで撮った動画の揺れを抑えます。プレビュー用に補正した動画を作るので、最初は少し時間がかかります"
+            value={!!clip.stabilize}
+            onChange={on => {
+              set({stabilize: on || undefined});
+              if (on) void ensureProxy(clip.src, true);
+            }}
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+          />
+          {clip.stabilize && stab && !stab.url && !stab.error && <ProgressBar label="補正した動画を作っています" value={stab.ratio * 100} hasValueLabel />}
+        </Block>
+      )}
       <Block title="切り抜き">
         <HStack gap={3}>
           <Slider label="左" value={crop.left} min={0} max={0.45} step={0.01} valueDisplay="text" formatValue={pct} onChange={(left: number) => setCrop({left})} />
