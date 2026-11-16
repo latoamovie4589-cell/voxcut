@@ -1,5 +1,6 @@
 //! VoxCut コア。Tauri に依存しないので、UI なしでテストできる。
 
+pub mod audiofx;
 pub mod cache;
 pub mod jobs;
 pub mod lipsync;
