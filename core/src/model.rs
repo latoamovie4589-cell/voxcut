@@ -639,12 +639,94 @@ pub struct SourceFx {
     /// 静止（in_point のコマを出し続ける。音は出さない）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub freeze: bool,
+    /// 切り抜き（上下左右から削る割合）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<Crop>,
+    /// 形で切り抜く（マスク）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<Mask>,
+    /// 色を抜く（クロマキー。緑の背景など）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroma: Option<Chroma>,
+    /// 背景をぼかして埋める（画面いっぱいに広げてぼかした同じ素材を後ろに敷く。値はぼかしの強さ px）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_blur: Option<f64>,
+    /// 音の加工（雑音を減らす・声を変える・音量をそろえる）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_fx: Option<crate::audiofx::MediaAudioFx>,
 }
 
 impl Default for SourceFx {
     fn default() -> Self {
-        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false }
+        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None }
     }
+}
+
+/// 切り抜き（それぞれの辺から削る、幅・高さに対する割合 0〜1）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Crop {
+    #[serde(default)]
+    pub left: f64,
+    #[serde(default)]
+    pub top: f64,
+    #[serde(default)]
+    pub right: f64,
+    #[serde(default)]
+    pub bottom: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MaskShape {
+    #[default]
+    Rect,
+    Ellipse,
+}
+
+/// 形の切り抜き。位置・大きさは（切り抜いた後の）素材の幅・高さに対する割合
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Mask {
+    #[serde(default)]
+    pub shape: MaskShape,
+    /// 中心のずれ（-0.5〜0.5。0 が真ん中）
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    /// 幅・高さ（0〜1）
+    #[serde(default = "one")]
+    pub w: f64,
+    #[serde(default = "one")]
+    pub h: f64,
+    /// 四角の角の丸み（0〜0.5。短い辺に対する割合）
+    #[serde(default)]
+    pub radius: f64,
+    /// ぼかし（0〜0.5。短い辺に対する割合）
+    #[serde(default)]
+    pub feather: f64,
+    /// 外側を残す
+    #[serde(default)]
+    pub invert: bool,
+}
+
+/// 色を抜く。similarity が大きいほど近い色まで抜き、blend が大きいほど境目がなだらか
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Chroma {
+    pub color: String,
+    #[serde(default = "chroma_similarity")]
+    pub similarity: f64,
+    #[serde(default = "chroma_blend")]
+    pub blend: f64,
+}
+
+fn chroma_similarity() -> f64 {
+    0.4
+}
+fn chroma_blend() -> f64 {
+    0.1
 }
 
 impl SourceFx {
@@ -969,6 +1051,51 @@ pub enum Effect {
     Wave { amount: f64, length: f64, speed: f64 },
     /// 渦巻き：真ん中ほど強くねじる（角度、度）
     Swirl { angle: f64 },
+    /// フィルター（色の雰囲気。name は GRADES の名前、strength は 0〜1）
+    Grade { name: String, strength: f64 },
+    /// 色温度（warm：-1 で青く 〜 1 で黄色く）と色合い（tint：-1 で緑 〜 1 で赤紫）
+    Temperature { warm: f64, tint: f64 },
+}
+
+/// フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。
+/// 画面側の model.ts の GRADES と同じ数
+pub fn grade_table(name: &str) -> Option<([f64; 9], [[f64; 3]; 3])> {
+    const ID: [f64; 3] = [1.0, 1.0, 0.0];
+    let (m, g): ([f64; 9], [[f64; 3]; 3]) = match name {
+        "vivid" => ([1.2755, -0.2503, -0.0252, -0.0746, 1.0998, -0.0252, -0.0746, -0.2503, 1.3248], [[1.06, 1.1, -0.03]; 3]),
+        "warm" => ([1.1225, -0.0386, -0.0039, -0.0107, 1.0143, -0.0036, -0.0092, -0.0307, 0.8999], [ID; 3]),
+        "cool" => ([0.8646, 0.0322, 0.0032, 0.0104, 0.966, 0.0035, 0.0119, 0.04, 1.068], [ID; 3]),
+        "sepia" => ([0.393, 0.769, 0.189, 0.349, 0.686, 0.168, 0.272, 0.534, 0.131], [ID; 3]),
+        "vintage" => ([0.6662, 0.423, 0.104, 0.192, 0.8273, 0.0924, 0.1496, 0.2937, 0.522], [[0.85, 0.95, 0.08], [0.85, 0.95, 0.08], [0.8, 1.0, 0.1]]),
+        "film" => ([0.8927, 0.1338, 0.0135, 0.0376, 0.9297, 0.0127, 0.036, 0.121, 0.783], [[0.94, 1.05, 0.05], [0.94, 1.05, 0.04], [0.92, 1.0, 0.06]]),
+        "noir" => ([0.213, 0.715, 0.072, 0.213, 0.715, 0.072, 0.213, 0.715, 0.072], [[1.15, 1.25, -0.05]; 3]),
+        "dream" => ([0.882, 0.1072, 0.0108, 0.032, 0.9572, 0.0108, 0.032, 0.1072, 0.8608], [[0.82, 0.8, 0.15]; 3]),
+        "night" => ([0.6572, 0.1115, 0.0112, 0.0375, 0.8298, 0.0127, 0.0477, 0.1602, 0.9121], [[0.9, 1.25, 0.0]; 3]),
+        _ => return None,
+    };
+    Some((m, g))
+}
+
+/// フィルター（強さを掛けた後）・色温度の、色の混ぜ方と曲線。strength 0 で元のまま
+pub fn color_grade(fx: &Effect) -> Option<([f64; 9], [[f64; 3]; 3])> {
+    const I: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    match fx {
+        Effect::Grade { name, strength } => {
+            let (m, g) = grade_table(name)?;
+            let s = strength.clamp(0.0, 1.0);
+            let mut mm = [0.0; 9];
+            for i in 0..9 {
+                mm[i] = I[i] + (m[i] - I[i]) * s;
+            }
+            let gg = g.map(|[a, e, o]| [1.0 + (a - 1.0) * s, 1.0 + (e - 1.0) * s, o * s]);
+            Some((mm, gg))
+        }
+        Effect::Temperature { warm, tint } => {
+            let (w, t) = (warm.clamp(-1.0, 1.0), tint.clamp(-1.0, 1.0));
+            Some(([1.0 + 0.18 * w, 0.0, 0.0, 0.0, 1.0 - 0.12 * t, 0.0, 0.0, 0.0, 1.0 - 0.18 * w], [[1.0, 1.0, 0.0]; 3]))
+        }
+        _ => None,
+    }
 }
 
 /// テキストアイテム（字幕とは別に、好きな位置・装飾で文字を出す）。画像は画面側で描いて書き出しに渡す
