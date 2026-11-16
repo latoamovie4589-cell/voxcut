@@ -20,6 +20,7 @@ import {TextArea} from '@astryxdesign/core/TextArea';
 import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
 import {getNotify} from '../actions';
 import {itemTemplateName, saveTemplate} from '../templates';
+import {QuickEffects} from './QuickEffects';
 import {
   SHAPE_LABEL,
   framesToTimecode,
@@ -69,14 +70,19 @@ export function TransformFields({value, onChange}: {value: Transform; onChange: 
 
 /** 配置・回転・アニメーション・フェード・映像エフェクト */
 export function LookEditor({clip}: {clip: VisualClip}) {
+  const fps = useStore(s => s.project!.video.fps);
   return (
-    <LookFields
-      transform={clip.transform}
-      look={clip.look}
-      duration={clip.duration}
-      onTransform={transform => updateClip(clip.id, {transform} as Partial<VisualClip>)}
-      onLook={look => updateClip(clip.id, {look} as Partial<VisualClip>)}
-    />
+    <>
+      <QuickEffects clip={clip} fps={fps} />
+      <Divider />
+      <LookFields
+        transform={clip.transform}
+        look={clip.look}
+        duration={clip.duration}
+        onTransform={transform => updateClip(clip.id, {transform} as Partial<VisualClip>)}
+        onLook={look => updateClip(clip.id, {look} as Partial<VisualClip>)}
+      />
+    </>
   );
 }
 
