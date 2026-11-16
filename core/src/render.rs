@@ -298,6 +298,7 @@ fn timed_effects(fx: &[((f64, f64), Vec<Effect>)]) -> (Vec<String>, String, Stri
                     dx.push_str(&format!("+{on}*{amount:.3}*sin(2*PI*{speed:.4}*t)"));
                     dy.push_str(&format!("+{on}*{amount:.3}*cos(2*PI*{speed:.4}*t*1.37)"));
                 }
+                Effect::Grade { .. } | Effect::Temperature { .. } => chain.extend(grade_filters(e).into_iter().map(|f| format!("{f}:{en}"))),
                 Effect::Wave { .. } | Effect::Swirl { .. } => {
                     // 大きさを変えた後なので、px はそのまま画面の px。時刻は動画の頭から
                     if let Some(g) = distort_geq(e, 1.0) {
@@ -558,6 +559,10 @@ pub fn build_args(
                     let fx = &m.src_fx;
                     let span = if fx.freeze { 1.0 / v.fps as f64 } else { fx.advance(dur, dur) };
                     let (vpre, apre) = source_filters(fx, dur);
+                    // 音の加工（素材の時間のまま）→ 逆再生・速さ
+                    let achain = fx.audio_fx.as_ref().map(crate::audiofx::audio_chain).unwrap_or_default();
+                    // やまびこの残りがクリップの後ろへはみ出さないよう、クリップの長さで切る
+                    let apre = if achain.is_empty() { apre } else { format!("{achain}{apre}atrim=0:{dur:.3},") };
                     match m.media_kind {
                         MediaKind::Audio => {
                             push_input(&mut args, vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{span:.3}")], src);
@@ -583,11 +588,28 @@ pub fn build_args(
                                 fc.push(format!("[{idx}:a]{apre}{cut}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
-                            let input = if m.media_kind == MediaKind::Video && !vpre.is_empty() {
-                                fc.push(format!("[{idx}:v]{}[s{idx}]", vpre.trim_end_matches(',')));
+                            // 速さなど（動画だけ）→ 切り抜き → 色を抜く・形で切り抜く
+                            let pre = format!("{}{}", if m.media_kind == MediaKind::Video { vpre.as_str() } else { "" }, spatial_filters(fx));
+                            let input = if !pre.is_empty() {
+                                fc.push(format!("[{idx}:v]{}[s{idx}]", pre.trim_end_matches(',')));
                                 format!("s{idx}")
                             } else {
                                 format!("{idx}:v")
+                            };
+                            // 背景をぼかして埋める：同じ素材を画面いっぱいに広げてぼかし、その上に素材を重ねる
+                            let input = match fx.fill_blur.filter(|b| *b > 0.0) {
+                                Some(b) => {
+                                    let (vw, vh) = (v.width, v.height);
+                                    fc.push(format!("[{input}]split[fa{idx}][fb{idx}]"));
+                                    fc.push(format!(
+                                        "[fa{idx}]fps={},scale={vw}:{vh}:force_original_aspect_ratio=increase,crop={vw}:{vh},gblur=sigma={b:.2},format=rgba,setpts=PTS-STARTPTS+{start:.3}/TB[fg{idx}]",
+                                        v.fps
+                                    ));
+                                    fc.push(format!("[{last_v}][fg{idx}]overlay=0:0:enable='between(t,{start:.3},{:.3})':eof_action=pass[fo{idx}]", start + dur));
+                                    last_v = format!("fo{idx}");
+                                    format!("fb{idx}")
+                                }
+                                None => input,
                             };
                             last_v = visual_filters(&mut fc, idx, &input, &last_v, v.fps, &m.transform, &m.look, start, dur);
                         }
@@ -841,6 +863,65 @@ fn tween3(a: f64, m: &[(f64, f64)], b: f64, e: Ease, t: &str, dur: f64) -> Strin
     out
 }
 
+/// 色を抜く（クロマキー）の係数：抜く色らしさ score = wr·R + wg·G + wb·B（0〜1 の値で。抜く色そのもので 1、灰色で 0）。
+/// 抜く色が灰色に近いと色で見分けられないので None。画面側の chromaWeights と同じ
+pub fn chroma_weights(color: &str) -> Option<[f64; 3]> {
+    let h = color.trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let c: Vec<f64> = (0..3).map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).map(|v| v as f64 / 255.0)).collect::<std::result::Result<_, _>>().ok()?;
+    let m = (c[0] + c[1] + c[2]) / 3.0;
+    let d: Vec<f64> = c.iter().map(|v| v - m).collect();
+    let n = d.iter().map(|v| v * v).sum::<f64>();
+    if n < 1e-3 {
+        return None;
+    }
+    Some([d[0] / n, d[1] / n, d[2] / n])
+}
+
+/// 切り抜き・色を抜く・形で切り抜く（素材の大きさのまま、大きさを変える前に掛ける）。末尾に「,」（なければ空）
+pub fn spatial_filters(fx: &crate::model::SourceFx) -> String {
+    let mut out = String::new();
+    if let Some(c) = fx.crop {
+        let (l, t) = (c.left.clamp(0.0, 0.95), c.top.clamp(0.0, 0.95));
+        let (w, h) = ((1.0 - l - c.right.clamp(0.0, 0.95)).max(0.05), (1.0 - t - c.bottom.clamp(0.0, 0.95)).max(0.05));
+        if (w - 1.0).abs() > 1e-6 || (h - 1.0).abs() > 1e-6 {
+            out.push_str(&format!("crop=w=iw*{w:.5}:h=ih*{h:.5}:x=iw*{l:.5}:y=ih*{t:.5},"));
+        }
+    }
+    let mut alpha: Vec<String> = vec![];
+    if let Some(k) = fx.chroma.as_ref() {
+        if let Some([wr, wg, wb]) = chroma_weights(&k.color) {
+            let hi = 1.0 - k.similarity.clamp(0.0, 1.0);
+            let b = k.blend.clamp(0.01, 1.0);
+            alpha.push(format!("clip(({hi:.5}-({wr:.5}*r(X,Y)+{wg:.5}*g(X,Y)+{wb:.5}*b(X,Y))/255)/{b:.5},0,1)"));
+        }
+    }
+    if let Some(m) = fx.mask {
+        let (w, h) = (m.w.clamp(0.01, 2.0), m.h.clamp(0.01, 2.0));
+        let (cx, cy) = (format!("W*{:.5}", 0.5 + m.x), format!("H*{:.5}", 0.5 + m.y));
+        let (hw, hh) = (format!("(W*{:.5})", w / 2.0), format!("(H*{:.5})", h / 2.0));
+        let mn = format!("min({hw},{hh})");
+        // 形の内側がマイナスになる、縁からの距離（px）
+        let sd = match m.shape {
+            crate::model::MaskShape::Ellipse => format!("(hypot((X-{cx})/{hw},(Y-{cy})/{hh})-1)*{mn}"),
+            crate::model::MaskShape::Rect => {
+                let r = format!("({mn}*{:.5})", (m.radius.clamp(0.0, 0.5) * 2.0).min(1.0));
+                let (qx, qy) = (format!("(abs(X-{cx})-{hw}+{r})"), format!("(abs(Y-{cy})-{hh}+{r})"));
+                format!("(hypot(max({qx},0),max({qy},0))+min(max({qx},{qy}),0)-{r})")
+            }
+        };
+        let f = m.feather.clamp(0.0, 0.5);
+        let inside = if f > 1e-6 { format!("clip(0.5-{sd}/(min(W,H)*{f:.5}),0,1)") } else { format!("lte({sd},0)") };
+        alpha.push(if m.invert { format!("(1-{inside})") } else { inside });
+    }
+    if !alpha.is_empty() {
+        out.push_str(&format!("format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}',", alpha.join("*")));
+    }
+    out
+}
+
 /// 素材の速さ・逆再生・静止の前処理（映像、音）。どちらも末尾に「,」が付く（なければ空）。d はクリップの長さ（秒）
 pub fn source_filters(fx: &crate::model::SourceFx, d: f64) -> (String, String) {
     if !fx.is_retimed() {
@@ -974,6 +1055,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
                 }
             }
             Effect::Mono => chain.push(saturate_mixer(0.0)),
+            // フィルター・色温度：色を混ぜてから、色ごとの明るさの曲線（画面は同じ数の SVG フィルター）
+            Effect::Grade { .. } | Effect::Temperature { .. } => chain.extend(grade_filters(fx)),
             Effect::Invert => chain.push("negate".into()),
             Effect::Blur { radius } => blur += radius.max(0.0),
             Effect::Shake { amount, speed } => shake = (*amount, *speed),
@@ -1042,6 +1125,20 @@ pub(crate) fn distort_geq(fx: &Effect, k: f64) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// フィルター・色温度のフィルター（色を混ぜる → 色ごとの明るさの曲線）
+fn grade_filters(fx: &Effect) -> Vec<String> {
+    let Some((m, g)) = crate::model::color_grade(fx) else { return vec![] };
+    let mut out = vec![format!(
+        "colorchannelmixer=rr={:.4}:rg={:.4}:rb={:.4}:gr={:.4}:gg={:.4}:gb={:.4}:br={:.4}:bg={:.4}:bb={:.4}",
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]
+    )];
+    if g.iter().any(|[a, e, o]| (a - 1.0).abs() > 1e-6 || (e - 1.0).abs() > 1e-6 || o.abs() > 1e-6) {
+        let c = |[a, e, o]: [f64; 3]| format!("'clip({a:.4}*pow(val/255,{e:.4})+{o:.4},0,1)*255'");
+        out.push(format!("lutrgb=r={}:g={}:b={}", c(g[0]), c(g[1]), c(g[2])));
+    }
+    out
 }
 
 fn saturate_mixer(s: f64) -> String {
@@ -1722,6 +1819,128 @@ mod tests {
     }
 
     /// 途中の状態・登場・退場の式と、静止画の書き出し（FFmpeg があれば実際に 1 枚書く）
+    /// 切り抜き・色を抜く・形で切り抜く：緑の背景に赤い四角の画像を、実際に ffmpeg で書き出して色を見る
+    #[test]
+    fn crop_chroma_mask_cut_the_right_pixels() {
+        use crate::model::{Chroma, Clip, Crop, Mask, MaskShape, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("g.png");
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x00ff00:s=64x36,drawbox=x=16:y=9:w=32:h=18:c=0xff0000:t=fill", "-frames:v", "1"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let px = |fx: SourceFx| -> Vec<u8> {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.video.background = "#000000".into();
+            p.clips.clear();
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(0.1);
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout
+        };
+        // (x, y) の色を、黒・緑・赤のどれかで
+        let at = |img: &[u8], x: usize, y: usize| {
+            let i = (y * 64 + x) * 3;
+            let (r, g) = (img[i] as i32, img[i + 1] as i32);
+            if r > 150 && g < 100 { 'R' } else if g > 150 && r < 100 { 'G' } else if r < 40 && g < 40 { 'K' } else { '?' }
+        };
+        let plain = px(SourceFx::default());
+        assert_eq!((at(&plain, 2, 2), at(&plain, 32, 18)), ('G', 'R'));
+        // 緑を抜くと、外側は背景の黒
+        let k = px(SourceFx { chroma: Some(Chroma { color: "#00ff00".into(), similarity: 0.4, blend: 0.1 }), ..Default::default() });
+        assert_eq!((at(&k, 2, 2), at(&k, 32, 18)), ('K', 'R'));
+        // 楕円で切り抜くと、角は黒、真ん中は赤
+        let e = px(SourceFx { mask: Some(Mask { shape: MaskShape::Ellipse, x: 0.0, y: 0.0, w: 0.6, h: 0.6, radius: 0.0, feather: 0.0, invert: false }), ..Default::default() });
+        assert_eq!((at(&e, 2, 2), at(&e, 32, 18)), ('K', 'R'));
+        // 外側を残すと逆
+        let iv = px(SourceFx { mask: Some(Mask { shape: MaskShape::Rect, x: 0.0, y: 0.0, w: 0.6, h: 0.6, radius: 0.2, feather: 0.0, invert: true }), ..Default::default() });
+        assert_eq!((at(&iv, 2, 2), at(&iv, 32, 18)), ('G', 'K'));
+        // 右半分を切ると、左半分（緑と赤の左側）が真ん中に寄る
+        let c = px(SourceFx { crop: Some(Crop { right: 0.5, ..Default::default() }), ..Default::default() });
+        assert_eq!((at(&c, 20, 18), at(&c, 40, 18), at(&c, 60, 18)), ('G', 'R', 'K'));
+    }
+
+    /// フィルター・色温度・背景をぼかして埋める：実際に ffmpeg で書き出して色を見る（画面の SVG フィルターと同じ数）
+    #[test]
+    fn grade_temperature_fill_blur() {
+        use crate::model::{Clip, Effect, Look, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let run = |color: &str, w: u32, fx: SourceFx, effects: Vec<Effect>| -> Vec<u8> {
+            let src = d.path().join(format!("s{w}.png"));
+            assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c={color}:s={w}x36"), "-frames:v", "1"]).arg(&src).status().unwrap().success());
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.video.background = "#000000".into();
+            p.clips.clear();
+            let look = Look { effects, ..Default::default() };
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look, audio_frames: None, src_fx: fx }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(0.1);
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout
+        };
+        let px = |img: &[u8], x: usize, y: usize| { let i = (y * 64 + x) * 3; (img[i] as i32, img[i + 1] as i32, img[i + 2] as i32) };
+        // 白黒のフィルター：赤が灰色になる
+        let (r, g, b) = px(&run("0xff0000", 64, SourceFx::default(), vec![Effect::Grade { name: "noir".into(), strength: 1.0 }]), 32, 18);
+        assert!((r - g).abs() < 12 && (g - b).abs() < 12, "{r} {g} {b}");
+        // 強さ 0 なら元のまま
+        let (r, g, _) = px(&run("0xff0000", 64, SourceFx::default(), vec![Effect::Grade { name: "noir".into(), strength: 0.0 }]), 32, 18);
+        assert!(r > 230 && g < 25, "{r} {g}");
+        // あたたかい色温度：灰色の赤が増えて青が減る
+        let (r, _, b) = px(&run("0x808080", 64, SourceFx::default(), vec![Effect::Temperature { warm: 1.0, tint: 0.0 }]), 32, 18);
+        assert!(r > b + 30, "{r} {b}");
+        // 細い素材：そのままだと左端は背景の黒、埋めると素材の色
+        assert!(px(&run("0xff0000", 16, SourceFx::default(), vec![]), 2, 18).0 < 30);
+        assert!(px(&run("0xff0000", 16, SourceFx { fill_blur: Some(20.0), ..Default::default() }, vec![]), 2, 18).0 > 150);
+    }
+
+    /// 音の加工を付けた音声素材も、書き出しの ffmpeg がそのまま通る（ロボット・やまびこ・速さと逆再生と一緒に）
+    #[test]
+    fn audio_fx_exports() {
+        use crate::audiofx::{MediaAudioFx, VoiceFx};
+        use crate::model::{Clip, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("s.wav");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=3"]).arg(&src).status().unwrap().success());
+        let mut p = Project::sample();
+        p.clips.clear();
+        for (i, v) in [VoiceFx::Robot, VoiceFx::Echo, VoiceFx::High].into_iter().enumerate() {
+            let fx = SourceFx { speed: 1.5, reverse: i == 1, audio_fx: Some(MediaAudioFx { denoise: true, voice: Some(v), gain_db: Some(-3.0) }), ..Default::default() };
+            p.clips.push(Clip { id: format!("a{i}"), track_id: "A1".into(), start: i as Frame * 40, duration: 30, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }) });
+        }
+        if !p.tracks.iter().any(|t| t.id == "A1") {
+            let mut t = p.tracks[0].clone();
+            t.id = "A1".into();
+            p.tracks.push(t);
+        }
+        let out = d.path().join("o.wav");
+        let opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+        let g = args.join(" ");
+        assert!(g.contains("afftfilt") && g.contains("aecho") && g.contains("areverse") && g.contains("atrim=0:1.000"), "{g}");
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+
     /// キーフレーム：何点でも、通る順に入れ子の式になる（画面の animStateAt と同じ値）
     #[test]
     fn keyframes_nest_in_order() {
