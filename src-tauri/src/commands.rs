@@ -485,7 +485,7 @@ fn voicevox(state: &AppState) -> voxcut_core::tts::voicevox::VoicevoxEngine {
 #[tauri::command]
 pub async fn voicevox_accent(state: State<'_, AppState>, text: String, speaker: String) -> CmdResult<serde_json::Value> {
     let eng = voicevox(&state);
-    let text = state.dictionary().apply(&text);
+    let text = state.dictionary().apply(&voxcut_core::text::ruby_reading(&text));
     blocking(move || {
         let phrases = eng.accent_phrases(&text, &speaker).map_err(err)?;
         Ok(serde_json::json!({"text": text, "phrases": phrases}))
