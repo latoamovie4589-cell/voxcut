@@ -1,9 +1,9 @@
 // UI から呼ぶ非同期の操作（IPC ＋ 状態更新）。
 
-import {api, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
+import {api, type AiProgress, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project, VoiceClip} from './model';
-import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, proxyKey, reflowAll, synthKey, timelineFrameOf} from './model';
-import {addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
+import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, proxyKey, matteKey, srcSpan, reflowAll, synthKey, timelineFrameOf} from './model';
+import {addCaptionClips, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -70,6 +70,62 @@ export async function ensureProxy(src: string, stabilize = false) {
   }
 }
 
+let aiListening = false;
+const aiWatchers = new Set<(p: AiProgress) => void>();
+/** AI の進捗を見る（ダウンロード・文字起こし・型づくり）。やめる関数を返す */
+export async function watchAi(cb: (p: AiProgress) => void): Promise<() => void> {
+  const a = await api;
+  if (!aiListening) {
+    aiListening = true;
+    await a.onAiProgress(p => aiWatchers.forEach(w => w(p)));
+  }
+  aiWatchers.add(cb);
+  return () => void aiWatchers.delete(cb);
+}
+
+/**
+ * 素材の音を文字起こしして、字幕（テキスト）を新しいレイヤーに並べる。速さ・逆再生を変えた素材でも、聞こえる時刻に合わせる。
+ * 作った数を返す
+ */
+export async function autoCaptions(clipId: string, model: string): Promise<number> {
+  const s0 = getState();
+  const c = s0.project?.clips.find(x => x.id === clipId);
+  if (!s0.project || !c || c.type !== 'media' || c.mediaKind === 'image' || c.freeze) return 0;
+  const fps = s0.project.video.fps;
+  const inS = c.inPoint / fps;
+  const dur = srcSpan(c) / fps;
+  const segs = await (await api).transcribe(c.src, s0.projectPath, model, inS, dur);
+  const items = segs.flatMap(sg => {
+    const a = timelineFrameOf(c, Math.max(inS, sg.start), fps);
+    const b = timelineFrameOf(c, Math.min(inS + dur, sg.end), fps);
+    if (a === null || b === null) return [];
+    return [{start: Math.min(a, b), duration: Math.abs(b - a), text: sg.text}];
+  });
+  return addCaptionClips(items);
+}
+
+/** 背景を消す型を用意する（作成中・作成済みなら何もしない）。型の URL は proxies[matteKey] に入る */
+export async function ensureMatte(src: string, model: string, kind: 'video' | 'image', quiet = false, retry = false) {
+  const key = matteKey(src, model);
+  const cur = getState().proxies[key];
+  if (cur && (cur.url || !cur.error || !retry)) return;
+  const a = await api;
+  setState(st => ({proxies: {...st.proxies, [key]: {ratio: 0, url: null}}}));
+  const unwatch = await watchAi(p => {
+    if (p.stage === 'matte') setState(st => (st.proxies[key] && !st.proxies[key].url ? {proxies: {...st.proxies, [key]: {...st.proxies[key], ratio: p.ratio}}} : {}));
+  });
+  try {
+    const info = getState().media[src] ?? (await a.probeMedia(src, getState().projectPath));
+    const url = await a.makeMatte(src, getState().projectPath, model, kind === 'image', info.durationMs ?? 0);
+    setState(st => ({proxies: {...st.proxies, [key]: {ratio: 1, url}}}));
+  } catch (e) {
+    setState(st => ({proxies: {...st.proxies, [key]: {ratio: 0, url: null, error: String(e)}}}));
+    if (!quiet) notifyRef(`背景を消せませんでした：${friendlyError(e)}`, 'error');
+  } finally {
+    unwatch();
+  }
+}
+
 /** 効果音を再生位置に置く（初めての効果音はここで作る） */
 export async function addSfx(name: string) {
   try {
@@ -108,6 +164,8 @@ function ensureAllProxies() {
   // 手ぶれ補正を付けた動画は、補正したプロキシも
   const stab = new Set(p.clips.flatMap(c => (c.type === 'media' && c.mediaKind === 'video' && c.stabilize ? [c.src] : [])));
   stab.forEach(src => void ensureProxy(src, true));
+  // 背景を消す素材は、作ってある型を読む（モデルがなければ黙って待つ）
+  for (const c of p.clips) if (c.type === 'media' && c.mediaKind !== 'audio' && c.matte) void ensureMatte(c.src, c.matte, c.mediaKind, true);
 }
 
 /** キャラクター設定（声・字幕・立ち絵）をファイルに保存する */

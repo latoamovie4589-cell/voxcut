@@ -328,6 +328,8 @@ export interface MediaClip extends ClipBase {
   audioFx?: MediaAudioFx;
   /** 手ぶれ補正（動画） */
   stabilize?: boolean;
+  /** 背景を消す（人物などを切り抜く）。使うモデルの id。型は先に作っておく */
+  matte?: string;
 }
 
 /** 効果音集（Rust の sfx::SFX と同じ名前と順） */
@@ -345,6 +347,9 @@ export const SFX_LIST: {id: string; label: string}[] = [
 ];
 
 /** プレビューに使うプロキシの名前（手ぶれ補正したものは別） */
+/** 背景を消す型を覚えておく場所（store の proxies）のキー */
+export const matteKey = (src: string, model: string) => `${src}#matte:${model}`;
+
 export const proxyKey = (m: {src: string; stabilize?: boolean}) => (m.stabilize ? `${m.src}#stab` : m.src);
 
 export type VoiceFx = 'high' | 'low' | 'robot' | 'radio' | 'echo' | 'megaphone';

@@ -1374,6 +1374,53 @@ export function addVisualItem(kind: 'text' | 'shape', shape: ShapeKind = 'rect')
   return id;
 }
 
+/**
+ * 文字起こしした字幕を、いちばん手前に足した新しいレイヤーにテキストとして並べる（画面の下・白い文字に黒いふち）。
+ * 元に戻すでまとめて消える。作った数を返す
+ */
+export function addCaptionClips(items: {start: number; duration: number; text: string}[]): number {
+  const p = state.project;
+  if (!p || !items.length) return 0;
+  const tid = newId('V');
+  const size = Math.round(p.video.height / 19);
+  const y = Math.round(p.video.height / 2 - size * 1.4);
+  const clips: Clip[] = [];
+  let end = 0;
+  for (const it of [...items].sort((a, b) => a.start - b.start)) {
+    const start = Math.max(it.start, end);
+    const duration = it.start + it.duration - start;
+    if (duration < 1 || !it.text.trim()) continue;
+    clips.push({
+      id: newId('tx'),
+      trackId: tid,
+      start,
+      duration,
+      transform: {x: 0, y, scale: 1, opacity: 1},
+      look: plainLook(),
+      type: 'text',
+      text: it.text.trim(),
+      fontFamily: 'Yu Gothic UI',
+      fontSize: size,
+      color: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: Math.max(2, Math.round(size / 10)),
+      bold: true,
+      italic: false,
+      align: 'center',
+    } as Clip);
+    end = start + duration;
+  }
+  if (!clips.length) return 0;
+  commit(pr => {
+    const tracks = [...pr.tracks];
+    const a = tracks.findIndex(t => t.kind === 'audio');
+    tracks.splice(a < 0 ? tracks.length : a, 0, {...newLayer(tid, 'video'), name: '字幕'});
+    return {...pr, tracks, clips: [...pr.clips, ...clips]};
+  });
+  setState(s => ({selectedClipId: clips[0].id, selectedClipIds: [clips[0].id], revealSeq: s.revealSeq + 1}));
+  return clips.length;
+}
+
 /** テンプレートのアイテム（テキスト・図形・画像・動画）を、再生位置の空いているレイヤーに置く */
 export function insertItemTemplate(data: VisualClip): string | null {
   const p = state.project;

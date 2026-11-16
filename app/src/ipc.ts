@@ -66,6 +66,29 @@ export interface AppConfig {
   recent: string[];
 }
 
+export interface AiModel {
+  id: string;
+  /** "whisper"（字幕）か "matte"（背景を消す） */
+  kind: 'whisper' | 'matte';
+  label: string;
+  /** だいたいの大きさ（バイト） */
+  size: number;
+  ready: boolean;
+}
+
+export interface AiProgress {
+  stage: 'download' | 'transcribe' | 'matte';
+  id: string;
+  ratio: number;
+}
+
+/** 文字起こしの 1 まとまり（秒は素材の頭から） */
+export interface Segment {
+  start: number;
+  end: number;
+  text: string;
+}
+
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 type Unlisten = () => void;
@@ -123,6 +146,15 @@ export interface Api {
   /** 素材の拍の時刻（秒、素材の頭から） */
   detectBeats(src: string, projectPath: string | null): Promise<number[]>;
   onProxyProgress(cb: (p: {src: string; ratio: number}) => void): Promise<Unlisten>;
+  /** AI のモデルの一覧（ダウンロード済みか） */
+  modelStatus(): Promise<AiModel[]>;
+  /** AI のモデルをダウンロードする（進捗は onAiProgress） */
+  downloadModel(id: string): Promise<void>;
+  /** 素材の音を文字起こしする（秒は素材の頭から） */
+  transcribe(src: string, projectPath: string | null, model: string, inS: number, dur: number): Promise<Segment[]>;
+  /** 背景を消す型（白が残すところ）の URL。画像なら PNG、動画なら MP4 */
+  makeMatte(src: string, projectPath: string | null, model: string, still: boolean, durationMs: number): Promise<string>;
+  onAiProgress(cb: (p: AiProgress) => void): Promise<Unlisten>;
   /** この PC で使える書き出しの方法（先頭は CPU） */
   videoEncoders(): Promise<Encoder[]>;
   addRecent(path: string): Promise<string[]>;
@@ -304,6 +336,11 @@ async function tauriApi(): Promise<Api> {
     measureAudio: (src, projectPath) => invoke('measure_audio', {src: resolvePath(src, projectPath)}),
     detectBeats: (src, projectPath) => invoke('detect_beats', {src: resolvePath(src, projectPath)}),
     onProxyProgress: cb => listen<{src: string; ratio: number}>('proxy-progress', e => cb(e.payload)),
+    modelStatus: () => invoke('model_status'),
+    downloadModel: id => invoke('download_model', {id}),
+    transcribe: (src, projectPath, model, inS, dur) => invoke('transcribe', {src: resolvePath(src, projectPath), model, inS, dur}),
+    makeMatte: async (src, projectPath, model, still, durationMs) => convertFileSrc(await invoke<string>('make_matte', {src: resolvePath(src, projectPath), model, still, durationMs})),
+    onAiProgress: cb => listen<AiProgress>('ai-progress', e => cb(e.payload)),
     videoEncoders: () => invoke('video_encoders'),
     addRecent: path => invoke('add_recent', {path}),
     removeRecent: path => invoke('remove_recent', {path}),
@@ -430,6 +467,12 @@ function mockApi(): Api {
   const synthListeners = new Set<(p: SynthProgress) => void>();
   const exportListeners = new Set<(p: ExportProgress) => void>();
   const proxyListeners = new Set<(p: {src: string; ratio: number}) => void>();
+  const aiListeners = new Set<(p: AiProgress) => void>();
+  const mockModels: AiModel[] = [
+    {id: 'whisper-base', kind: 'whisper', label: '速い（約 150MB）', size: 147_951_465, ready: false},
+    {id: 'whisper-small', kind: 'whisper', label: 'ふつう（約 490MB）', size: 487_601_967, ready: false},
+    {id: 'matte-fast', kind: 'matte', label: '速い（約 5MB）', size: 4_574_861, ready: false},
+  ];
   let cancelled = false;
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   const durations = new Map<string, number>();
@@ -587,6 +630,44 @@ function mockApi(): Api {
     },
     measureAudio: async () => ({meanDb: -30, maxDb: -6, gainDb: 5}),
     detectBeats: async () => (globalThis as {__mockBeats?: number[]}).__mockBeats ?? [0.5, 1, 1.5, 2],
+    modelStatus: async () => mockModels.map(m => ({...m})),
+    downloadModel: async id => {
+      for (let i = 1; i <= 5; i++) {
+        await sleep(60);
+        aiListeners.forEach(cb => cb({stage: 'download', id, ratio: i / 5}));
+      }
+      const m = mockModels.find(x => x.id === id);
+      if (m) m.ready = true;
+    },
+    transcribe: async (src, _p, model, inS, dur) => {
+      if (!mockModels.find(x => x.id === model)?.ready) throw new Error('モデルがまだダウンロードされていません');
+      for (let i = 1; i <= 4; i++) {
+        await sleep(40);
+        aiListeners.forEach(cb => cb({stage: 'transcribe', id: src, ratio: i / 4}));
+      }
+      const all = (globalThis as {__mockSegments?: Segment[]}).__mockSegments ?? [
+        {start: 0.5, end: 1.5, text: 'こんにちは'},
+        {start: 2, end: 3.2, text: '今日はいい天気ですね'},
+      ];
+      return all.filter(s => s.end > inS && s.start < inS + dur);
+    },
+    makeMatte: async (src, _p, model) => {
+      if (!mockModels.find(x => x.id === model)?.ready) throw new Error('モデルがまだダウンロードされていません');
+      aiListeners.forEach(cb => cb({stage: 'matte', id: src, ratio: 1}));
+      // 左半分が白い型
+      const c = document.createElement('canvas');
+      ((c.width = 64), (c.height = 36));
+      const g = c.getContext('2d')!;
+      g.fillStyle = '#000';
+      g.fillRect(0, 0, 64, 36);
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, 32, 36);
+      return c.toDataURL('image/png');
+    },
+    onAiProgress: async cb => {
+      aiListeners.add(cb);
+      return () => aiListeners.delete(cb);
+    },
     makeProxy: async src => {
       for (let i = 1; i <= 10; i++) {
         await sleep(80);
