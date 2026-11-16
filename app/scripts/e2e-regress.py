@@ -239,6 +239,38 @@ async def main():
         check("素材・テンプレートの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+
+        # ── かんたんエフェクト：押すだけで付く・もう一度押すと外れる・画面効果は重ねられる
+        q = await fresh(b)
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({playhead:60}); s.addVisualItem('text')}")
+        await q.wait_for_timeout(500)
+        LOOK = "async()=>{const s=(await import('/src/store.ts')).getState(); const c=s.project.clips.find(x=>x.id===s.selectedClipId); return {look:c.look||null, x:c.transform.x, playing:s.isPlaying}}"
+        await q.get_by_role("button", name="エフェクト", exact=True).click(); await q.wait_for_timeout(900)
+        vis = await q.evaluate("()=>{const r=document.querySelector('.vx-fx-grid').getBoundingClientRect(); return r.top>=0 && r.top<innerHeight-60 && document.activeElement?.classList.contains('vx-fx-tile')}")
+        check("かんたんエフェクト：タイムラインの「エフェクト」で一覧が見える位置に出る", vis)
+        await q.locator(".vx-fx-tile[data-fx='in-left']").click(); await q.wait_for_timeout(250)
+        r1 = await q.evaluate(LOOK)
+        await q.wait_for_timeout(1800)
+        r1b = await q.evaluate(LOOK)
+        check("かんたんエフェクト：登場「左から」が付き、その部分を再生して止まる", r1["look"]["enter"]["kind"] == "slideLeft" and r1["playing"] and not r1b["playing"] and await q.locator(".vx-fx-tile[data-fx='in-left'][aria-pressed='true']").count() == 1, str(r1))
+        await q.locator(".vx-fx-tile[data-fx='in-left']").click(); await q.wait_for_timeout(250)
+        r2 = await q.evaluate(LOOK)
+        check("かんたんエフェクト：もう一度押すと外れる", not r2["look"].get("enter") and await q.locator(".vx-fx-tile[data-fx='in-none'][aria-pressed='true']").count() == 1, str(r2))
+        await q.get_by_role("radio", name="動き").click(); await q.wait_for_timeout(200)
+        await q.locator(".vx-fx-tile[data-fx='mv-bounce']").click(); await q.wait_for_timeout(250)
+        r3 = await q.evaluate(LOOK)
+        check("かんたんエフェクト：動き「はずむ」は今の位置から作る", r3["look"]["anim"]["mid"]["transform"]["y"] == -70 and r3["look"]["anim"]["to"]["x"] == r3["x"], str(r3))
+        await q.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
+        await q.get_by_role("radio", name="画面効果").click(); await q.wait_for_timeout(200)
+        for k in ["fx-mono", "fx-blur", "fx-vivid", "fx-dark"]:
+            await q.locator(f".vx-fx-tile[data-fx='{k}']").click(); await q.wait_for_timeout(200)
+        r4 = await q.evaluate(LOOK)
+        kinds = [e["kind"] for e in r4["look"]["effects"]]
+        check("かんたんエフェクト：画面効果は重なり、同じ種類は入れ替わる", kinds == ["mono", "blur", "color"] and r4["look"]["effects"][2]["brightness"] == 0.6, str(kinds))
+        await q.evaluate("async()=>{(await import('/src/preview/playback.ts')).stop()}")
+        check("かんたんエフェクトの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
