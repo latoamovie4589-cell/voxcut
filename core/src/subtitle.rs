@@ -20,6 +20,72 @@ pub fn ass_time(secs: f64) -> String {
     format!("{}:{:02}:{:02}.{:02}", cs / 360_000, (cs / 6000) % 60, (cs / 100) % 60, cs % 100)
 }
 
+/// 行の頭に来てはいけない文字（句読点・閉じ括弧・小さい仮名・伸ばし棒）。画面側の subtitleWrap.ts と同じ
+const NO_START: &str = "、。，．・：；？！ー）」』】〕｝〉》ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々…‥!?,.:;)]}%";
+/// 行の終わりに来てはいけない文字（開き括弧）
+const NO_END: &str = "（「『【〔｛〈《([{";
+
+/// 文字の幅（全角 1、半角 0.55）
+fn char_em(c: char) -> f64 {
+    if c < '\u{2000}' || ('\u{FF61}'..='\u{FF9F}').contains(&c) {
+        0.55
+    } else {
+        1.0
+    }
+}
+
+fn is_word(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+}
+
+/// 字幕を、1 行に収まる幅で改行する（書き出しとプレビューで同じ位置）。
+/// 幅は全角 1・半角 0.55 で数え、上限は max_chars（0 なら画面の幅 ÷ 文字の大きさ）。
+/// 句読点や閉じ括弧は行の頭に置かず前の行へ（2 文字まで）、開き括弧は行の終わりに置かず次の行へ、英単語は途中で切らない
+pub fn wrap_subtitle(text: &str, font_size: u32, width: u32, max_chars: u32) -> String {
+    let budget = if max_chars > 0 { max_chars as f64 } else { ((width as f64) / (font_size.max(1) as f64)).floor() }.max(1.0);
+    let mut out: Vec<String> = vec![];
+    for para in text.replace("\r\n", "\n").split('\n') {
+        let c: Vec<char> = para.chars().collect();
+        let n = c.len();
+        if n == 0 {
+            out.push(String::new());
+            continue;
+        }
+        let mut i0 = 0;
+        while i0 < n {
+            let mut w = 0.0;
+            let mut e = i0;
+            while e < n && (e == i0 || w + char_em(c[e]) <= budget + 1e-9) {
+                w += char_em(c[e]);
+                e += 1;
+            }
+            if e < n {
+                let mut b = e;
+                while b < n && b < e + 2 && NO_START.contains(c[b]) {
+                    b += 1;
+                }
+                if b == e {
+                    if b - 1 > i0 && NO_END.contains(c[b - 1]) {
+                        b -= 1;
+                    } else if is_word(c[b - 1]) && is_word(c[b]) {
+                        let mut s = b - 1;
+                        while s > i0 && is_word(c[s - 1]) {
+                            s -= 1;
+                        }
+                        if s > i0 {
+                            b = s;
+                        }
+                    }
+                }
+                e = b;
+            }
+            out.push(c[i0..e].iter().collect());
+            i0 = e;
+        }
+    }
+    out.join("\n")
+}
+
 fn escape_text(s: &str) -> String {
     s.replace('\\', "＼").replace('{', "｛").replace('}', "｝").replace("\r\n", "\\N").replace('\n', "\\N")
 }
@@ -125,7 +191,7 @@ pub fn caption_tracks(p: &Project) -> Vec<String> {
 /// track を渡すと、その映像トラックの字幕だけの ASS を作る（トラックの重なり順どおりに焼き込むため）
 pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "[Script Info]\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n", p.video.width, p.video.height);
+    let _ = writeln!(out, "[Script Info]\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n", p.video.width, p.video.height);
     let _ = writeln!(out, "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
     for c in &p.characters {
         let _ = writeln!(out, "{}", style_line(&c.id, &c.subtitle));
@@ -153,6 +219,13 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             continue;
         }
         let style = if c.as_caption().is_some_and(|cap| cap.style.is_some()) { caption_style_name(&c.id) } else { v.character_id.clone() };
+        // 改行の位置はここで決める（ASS の自動の折り返しは使わない。プレビューと同じ位置にするため）
+        let eff = p.character(&v.character_id).map(|ch| match c.as_caption().and_then(|cap| cap.style.as_ref()) {
+            Some(ov) => ov.apply(&ch.subtitle),
+            None => ch.subtitle.clone(),
+        });
+        let wrapped = eff.map(|st| wrap_subtitle(text, st.font_size, p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| text.to_string());
+        let text = wrapped.as_str();
         // 出し方：分離した字幕で上書きしていればそれ
         let anim = c
             .as_caption()
@@ -246,6 +319,13 @@ mod tests {
         }
         let s = build_ass(&p);
         assert!(s.contains("Style: ch_a,"));
+        // 改行：幅で切る・句読点は前の行・開き括弧は次の行・英単語は切らない（画面側の subtitleWrap.ts と同じ）
+        assert_eq!(wrap_subtitle("あいうえおかきくけこ", 10, 50, 0), "あいうえお\nかきくけこ");
+        assert_eq!(wrap_subtitle("あいうえお。かきくけこ", 10, 50, 0), "あいうえお。\nかきくけこ");
+        assert_eq!(wrap_subtitle("あいう「えおか」き", 10, 40, 0), "あいう\n「えおか」\nき");
+        assert_eq!(wrap_subtitle("これはVOICEVOXです", 10, 60, 0), "これは\nVOICEVOXで\nす");
+        assert_eq!(wrap_subtitle("あいうえおかきく", 56, 1840, 3), "あいう\nえおか\nきく");
+        assert_eq!(wrap_subtitle("短い\n改行", 56, 1840, 0), "短い\n改行");
         // 影と帯：帯の色は縁の欄（不透明度は ASS の透明度）、余白は縁の太さの欄、BorderStyle 3
         let mut st = SubtitleStyle { shadow_color: "#112233".into(), shadow_offset: 5, ..SubtitleStyle::default() };
         assert!(style_line("x", &st).ends_with("&H00332211,0,0,0,0,100,100,0,0,1,4,5,2,40,40,60,1"), "{}", style_line("x", &st));

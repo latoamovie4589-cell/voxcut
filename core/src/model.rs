@@ -149,6 +149,13 @@ pub struct SubtitleStyle {
     pub box_opacity: f64,
     #[serde(default = "twelve", skip_serializing_if = "is_twelve")]
     pub box_padding: u32,
+    /// 1 行に入れる文字数の上限（全角を 1、半角を 0.55 と数える）。0 なら画面の幅で決める
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub max_chars: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 fn four() -> u32 {
@@ -198,6 +205,7 @@ impl Default for SubtitleStyle {
             box_color: String::new(),
             box_opacity: 1.0,
             box_padding: 12,
+            max_chars: 0,
         }
     }
 }
