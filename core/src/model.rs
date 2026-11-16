@@ -654,11 +654,14 @@ pub struct SourceFx {
     /// 音の加工（雑音を減らす・声を変える・音量をそろえる）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_fx: Option<crate::audiofx::MediaAudioFx>,
+    /// 手ぶれ補正（動画）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stabilize: bool,
 }
 
 impl Default for SourceFx {
     fn default() -> Self {
-        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None }
+        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false }
     }
 }
 

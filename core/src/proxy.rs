@@ -21,7 +21,17 @@ pub fn proxy_path(root: &Path, src: &Path) -> Result<PathBuf> {
     Ok(root.join(format!("{}.mp4", proxy_key(src)?)))
 }
 
+/// 手ぶれを補正したプロキシ（手ぶれ補正を付けた素材のプレビュー用。書き出しと同じ deshake を掛ける）
+pub fn stabilized_path(root: &Path, src: &Path) -> Result<PathBuf> {
+    Ok(root.join(format!("{}-stab.mp4", proxy_key(src)?)))
+}
+
 pub fn proxy_args(src: &Path, dst: &Path) -> Vec<String> {
+    proxy_args_with(src, dst, false)
+}
+
+fn proxy_args_with(src: &Path, dst: &Path, stabilize: bool) -> Vec<String> {
+    let vf = format!("{}scale=-2:'min(360,ih)',format=yuv420p", if stabilize { "deshake," } else { "" });
     [
         "-hide_banner", "-y", "-i",
     ]
@@ -30,7 +40,7 @@ pub fn proxy_args(src: &Path, dst: &Path) -> Vec<String> {
     .chain([src.to_string_lossy().into_owned()])
     .chain(
         [
-            "-vf", "scale=-2:'min(360,ih)',format=yuv420p",
+            "-vf", "@VF",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
             // キーフレームを細かく入れてシークを速くする
             "-force_key_frames", "expr:gte(t,n_forced*0.5)",
@@ -42,19 +52,25 @@ pub fn proxy_args(src: &Path, dst: &Path) -> Vec<String> {
         .map(|s| s.to_string()),
     )
     .chain([dst.to_string_lossy().into_owned()])
+    .map(|a| if a == "@VF" { vf.clone() } else { a })
     .collect()
 }
 
 /// プロキシを作る。できていれば何もしない。`on_progress` には 0.0〜1.0
 pub fn make_proxy(ffmpeg: &Path, src: &Path, root: &Path, duration_secs: f64, on_progress: &mut dyn FnMut(f64)) -> Result<PathBuf> {
-    let dst = proxy_path(root, src)?;
+    make_proxy_with(ffmpeg, src, root, duration_secs, false, on_progress)
+}
+
+/// プロキシを作る（stabilize なら手ぶれを補正したもの）
+pub fn make_proxy_with(ffmpeg: &Path, src: &Path, root: &Path, duration_secs: f64, stabilize: bool, on_progress: &mut dyn FnMut(f64)) -> Result<PathBuf> {
+    let dst = if stabilize { stabilized_path(root, src)? } else { proxy_path(root, src)? };
     if dst.is_file() {
         on_progress(1.0);
         return Ok(dst);
     }
     std::fs::create_dir_all(root)?;
     let tmp = dst.with_extension("part.mp4");
-    let r = crate::render::run(&proxy_args(src, &tmp), ffmpeg, duration_secs, on_progress);
+    let r = crate::render::run(&proxy_args_with(src, &tmp, stabilize), ffmpeg, duration_secs, on_progress);
     if let Err(e) = r {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -104,5 +120,8 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "360");
         // 2 回目は作らずに同じパス
         assert_eq!(make_proxy(Path::new("ffmpeg"), &src, &root, 2.0, &mut |_| {}).unwrap(), out);
+        // 手ぶれ補正したプロキシは別のファイル
+        let stab = make_proxy_with(Path::new("ffmpeg"), &src, &root, 2.0, true, &mut |_| {}).unwrap();
+        assert!(stab.is_file() && stab != out);
     }
 }

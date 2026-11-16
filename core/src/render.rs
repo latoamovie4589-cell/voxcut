@@ -589,7 +589,9 @@ pub fn build_args(
                                 audio_labels.push(l);
                             }
                             // 速さなど（動画だけ）→ 切り抜き → 色を抜く・形で切り抜く
-                            let pre = format!("{}{}", if m.media_kind == MediaKind::Video { vpre.as_str() } else { "" }, spatial_filters(fx));
+                            // 手ぶれ補正は素材の時間のまま（速さより前。プレビューは同じ deshake を掛けたプロキシ）
+                            let video = m.media_kind == MediaKind::Video;
+                            let pre = format!("{}{}{}", if video && fx.stabilize { "deshake," } else { "" }, if video { vpre.as_str() } else { "" }, spatial_filters(fx));
                             let input = if !pre.is_empty() {
                                 fc.push(format!("[{idx}:v]{}[s{idx}]", pre.trim_end_matches(',')));
                                 format!("s{idx}")
@@ -1801,6 +1803,8 @@ mod tests {
         near(shot(SourceFx { speed: 1.0, speed_to: Some(3.0), ..Default::default() }, 0, 30, 0.5), 0.75);
         // 逆再生の 2 倍速：0.5 秒目に素材の 1 秒目
         near(shot(SourceFx { speed: 2.0, reverse: true, ..Default::default() }, 0, 30, 0.5), 1.0);
+        // 手ぶれ補正を付けても時間はずれない
+        near(shot(SourceFx { stabilize: true, ..Default::default() }, 0, 60, 0.5), 0.5);
     }
 
     /// 一部だけの書き出し：出力側で頭を飛ばして、その長さだけ書く（音だけのときも）

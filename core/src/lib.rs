@@ -7,6 +7,7 @@ pub mod lipsync;
 pub mod model;
 pub mod proxy;
 pub mod render;
+pub mod sfx;
 pub mod subtitle;
 pub mod text;
 pub mod tts;
