@@ -24,6 +24,8 @@ pub struct ExportOptions {
     pub item_images: std::collections::HashMap<String, PathBuf>,
     /// 1 文字ずつ出す字幕などの、画像を順に出す ffconcat（クリップ id → パス。prepare_sequences で作る）
     pub item_sequences: std::collections::HashMap<String, PathBuf>,
+    /// 背景を消す型（素材のパス → 型の動画・画像）。ai::make_matte で作ったもの
+    pub mattes: std::collections::HashMap<String, PathBuf>,
     /// PSD 立ち絵の、状態ごとの画像（キャラクター id → 状態の番号 → PNG のパス）。画面側で合成して渡す
     pub portrait_frames: std::collections::HashMap<String, std::collections::HashMap<usize, PathBuf>>,
     /// 静止画を 1 枚だけ書き出すときの時刻（秒）。音は作らない
@@ -44,6 +46,7 @@ impl ExportOptions {
             encoder: Encoder::X264,
             item_images: Default::default(),
             item_sequences: Default::default(),
+            mattes: Default::default(),
             portrait_frames: Default::default(),
             still_at: None,
             range: None,
@@ -579,7 +582,18 @@ pub fn build_args(
                                 // 静止は 1 コマあれば足りるが、読み損ねないよう少し長めに取る
                                 vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{:.3}", if fx.freeze { 0.5 } else { span })]
                             };
-                            push_input(&mut args, pre, src);
+                            push_input(&mut args, pre.clone(), src);
+                            // 背景を消す型（素材と同じ範囲を読む。型は素材の時刻のまま）
+                            let matte_in = match fx.matte.as_ref() {
+                                Some(_) => {
+                                    let Some(mp) = opt.mattes.get(&m.src) else {
+                                        return Err(Error::Other(format!("「{}」の背景を消す準備ができていません（プロパティの「背景を消す」で作ってください）", m.src)));
+                                    };
+                                    push_input(&mut args, pre, mp.to_string_lossy().into_owned());
+                                    Some(idx + 1)
+                                }
+                                None => None,
+                            };
                             // 映像と音が 1 つのクリップの動画（分離した動画の音は、音声トラックのクリップで鳴らす）
                             if m.media_kind == MediaKind::Video && m.has_audio && track_audible && !fx.freeze {
                                 let l = format!("a{idx}");
@@ -592,11 +606,22 @@ pub fn build_args(
                             // 手ぶれ補正は素材の時間のまま（速さより前。プレビューは同じ deshake を掛けたプロキシ）
                             let video = m.media_kind == MediaKind::Video;
                             let pre = format!("{}{}{}", if video && fx.stabilize { "deshake," } else { "" }, if video { vpre.as_str() } else { "" }, spatial_filters(fx));
+                            // 型を素材の大きさに合わせ、白いところを残す（不透明度にする）
+                            let base = match matte_in {
+                                Some(mi) => {
+                                    fc.push(format!("[{mi}:v]format=gray[mg{idx}]"));
+                                    fc.push(format!("[mg{idx}][{idx}:v]scale2ref=w=iw:h=ih[mk{idx}][ms{idx}]"));
+                                    fc.push(format!("[ms{idx}]format=rgba[mr{idx}]"));
+                                    fc.push(format!("[mr{idx}][mk{idx}]alphamerge[am{idx}]"));
+                                    format!("am{idx}")
+                                }
+                                None => format!("{idx}:v"),
+                            };
                             let input = if !pre.is_empty() {
-                                fc.push(format!("[{idx}:v]{}[s{idx}]", pre.trim_end_matches(',')));
+                                fc.push(format!("[{base}]{}[s{idx}]", pre.trim_end_matches(',')));
                                 format!("s{idx}")
                             } else {
-                                format!("{idx}:v")
+                                base
                             };
                             // 背景をぼかして埋める：同じ素材を画面いっぱいに広げてぼかし、その上に素材を重ねる
                             let input = match fx.fill_blur.filter(|b| *b > 0.0) {
@@ -614,6 +639,9 @@ pub fn build_args(
                                 None => input,
                             };
                             last_v = visual_filters(&mut fc, idx, &input, &last_v, v.fps, &m.transform, &m.look, start, dur);
+                            if matte_in.is_some() {
+                                idx += 1;
+                            }
                         }
                     }
                     idx += 1;
@@ -1872,6 +1900,40 @@ mod tests {
         // 右半分を切ると、左半分（緑と赤の左側）が真ん中に寄る
         let c = px(SourceFx { crop: Some(Crop { right: 0.5, ..Default::default() }), ..Default::default() });
         assert_eq!((at(&c, 20, 18), at(&c, 40, 18), at(&c, 60, 18)), ('G', 'R', 'K'));
+    }
+
+    /// 背景を消す型：白いところだけ残り、黒いところは背景になる（型は小さくても素材の大きさに合う）
+    #[test]
+    fn matte_keeps_only_the_white_part() {
+        use crate::model::{Clip, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("r.png");
+        let mk = d.path().join("m.png");
+        let ff = |args: &[&str], out: &std::path::Path| assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y"]).args(args).arg(out).status().unwrap().success());
+        ff(&["-f", "lavfi", "-i", "color=c=0xff0000:s=64x36", "-frames:v", "1"], &src);
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=32x18,drawbox=x=0:y=0:w=16:h=18:c=white:t=fill", "-frames:v", "1", "-pix_fmt", "gray"], &mk);
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+        p.video.background = "#000000".into();
+        p.clips.clear();
+        let fx = SourceFx { matte: Some("matte-fast".into()), ..Default::default() };
+        p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }) });
+        let out = d.path().join("o.png");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        opt.still_at = Some(0.1);
+        // 型がないと分かりやすく止まる
+        assert!(build_args(&p, &|_: &str| None, &[], &[], &opt).is_err());
+        opt.mattes.insert(src.to_string_lossy().into_owned(), mk.clone());
+        let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+        let r = |x: usize| img[(18 * 64 + x) * 3];
+        assert!(r(10) > 200, "左は残る {}", r(10));
+        assert!(r(54) < 30, "右は消える {}", r(54));
     }
 
     /// フィルター・色温度・背景をぼかして埋める：実際に ffmpeg で書き出して色を見る（画面の SVG フィルターと同じ数）

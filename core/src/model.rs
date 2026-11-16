@@ -657,11 +657,14 @@ pub struct SourceFx {
     /// 手ぶれ補正（動画）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stabilize: bool,
+    /// 背景を消す（人物などを切り抜く）。使うモデルの id（ai::MODELS）。型は先に作っておく
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<String>,
 }
 
 impl Default for SourceFx {
     fn default() -> Self {
-        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false }
+        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false, matte: None }
     }
 }
 
