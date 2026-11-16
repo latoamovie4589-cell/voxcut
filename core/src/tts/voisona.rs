@@ -51,7 +51,7 @@ pub struct VoisonaEngine {
 
 impl VoisonaEngine {
     pub fn new(cfg: VoisonaConfig) -> Self {
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(30)).build();
+        let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(30)).build();
         Self { cfg, agent }
     }
 

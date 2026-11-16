@@ -68,7 +68,7 @@ fn launch_candidates(port: u16) -> (Vec<Option<std::path::PathBuf>>, Vec<Option<
 
 impl VoicevoxEngine {
     pub fn new(cfg: VoicevoxConfig) -> Self {
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(120)).build();
+        let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(120)).build();
         Self { cfg, agent, child: Default::default() }
     }
 
