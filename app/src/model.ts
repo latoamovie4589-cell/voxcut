@@ -45,6 +45,13 @@ export interface SubtitleStyle {
   position: 'top' | 'middle' | 'bottom';
   marginV: number;
   animation: SubtitleAnimation;
+  /** 影の色（空か無しなら影なし）とずれ（px、初期値 4） */
+  shadowColor?: string;
+  shadowOffset?: number;
+  /** 文字の後ろの帯（空か無しなら帯なし）。帯を付けると縁取りの代わりになる（書き出しの ASS と同じ） */
+  boxColor?: string;
+  boxOpacity?: number;
+  boxPadding?: number;
 }
 
 export interface Transform {
@@ -639,6 +646,18 @@ export const framesToTimecode = (f: Frame, fps: number): string => {
   const s = total % 60;
   return [h, m, s, ff].map(n => String(n).padStart(2, '0')).join(':');
 };
+
+/**
+ * 時:分:秒:フレーム を読む（右から フレーム・秒・分・時。区切りは : か ; か .）。読めなければ null。
+ * 例 "00:00:08:06"、"8:06"（8 秒 6 フレーム）、"1:00:00"（1 分）
+ */
+export function timecodeToFrames(text: string, fps: number): Frame | null {
+  const parts = text.trim().split(/[:;.]/);
+  if (!parts.length || parts.length > 4 || parts.some(p => !/^\d+$/.test(p))) return null;
+  const [ff = 0, s = 0, m = 0, h = 0] = parts.map(Number).reverse();
+  if (ff >= fps) return null;
+  return ((h * 60 + m) * 60 + s) * fps + ff;
+}
 
 /** 読み上げ用（例「1分8秒」） */
 export const framesToSpoken = (f: Frame, fps: number): string => {

@@ -27,6 +27,8 @@ export interface ExportRequest {
   itemImages?: Record<string, string>;
   /** 静止画を 1 枚だけ書き出すときのフレーム（出力は .png / .jpg） */
   stillFrame?: number;
+  /** 一部だけ書き出すときの範囲（始まりと終わりのフレーム） */
+  rangeFrames?: [number, number];
 }
 
 /** x264 は CPU、nvenc は NVIDIA、qsv は Intel、amf は AMD */
@@ -467,6 +469,7 @@ function mockApi(): Api {
     audioUrl: async () => null,
     exportVideo: async (project, _pp, _out, options) => {
       cancelled = false;
+      (globalThis as {__lastExport?: unknown}).__lastExport = options;
       if (options?.stillFrame !== undefined) {
         await sleep(200);
         return project;

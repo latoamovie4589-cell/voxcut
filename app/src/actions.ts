@@ -338,6 +338,57 @@ async function ensureEngines(notify: Notify, need: EngineId[]): Promise<void> {
   await refreshEngines();
 }
 
+let auditionAudio: HTMLAudioElement | null = null;
+/**
+ * キャラクターの声を試しに聞く（今の声と調声で、短い文を合成して鳴らす）。プロジェクトには何も足さない。
+ * 合成した音は同じ文・同じ声ならキャッシュから鳴る
+ */
+export async function previewVoice(notify: Notify, characterId: string, text?: string): Promise<boolean> {
+  const p = getState().project;
+  const ch = p?.characters.find(c => c.id === characterId);
+  if (!p || !ch) return false;
+  auditionAudio?.pause();
+  const line = (text ?? '').trim() || `こんにちは。${ch.name}です。よろしくお願いします。`;
+  const id = `audition-${ch.id}`;
+  const trackId = p.tracks.find(t => t.kind !== 'audio')?.id ?? p.tracks[0]?.id ?? 'V1';
+  const clip: VoiceClip = {
+    id,
+    trackId,
+    start: 0,
+    duration: p.video.fps * 3,
+    type: 'voice',
+    characterId: ch.id,
+    text: line,
+    subtitle: null,
+    paramsOverride: null,
+    audio: null,
+    gapAfter: 0,
+    lockDuration: false,
+  };
+  // 使うソフトが止まっていれば起動する（セリフを足したときと同じ）
+  await ensureEngines(notify, [ch.voice.engine]);
+  const a = await api;
+  try {
+    const r = await a.synthesize({...p, clips: [clip]}, [id]);
+    const fail = r.failed.find(f => f[0] === id);
+    if (fail) {
+      notify(friendlyError(fail[1]), 'error', 'audition');
+      return false;
+    }
+    const got = r.project.clips.find(c => c.id === id);
+    const url = got?.type === 'voice' && got.audio ? await a.audioUrl(got.audio.cacheKey) : null;
+    (globalThis as {__lastAudition?: string}).__lastAudition = line;
+    if (url) {
+      auditionAudio = new Audio(url);
+      await auditionAudio.play().catch(() => {});
+    }
+    return true;
+  } catch (e) {
+    notify(friendlyError(e), 'error', 'audition');
+    return false;
+  }
+}
+
 async function pump(notify: Notify) {
   if (pumping) return;
   pumping = true;
