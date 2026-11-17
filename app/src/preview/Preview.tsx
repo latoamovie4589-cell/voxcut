@@ -30,7 +30,7 @@ import {
   proxyKey,
   matteKey,
 } from '../model';
-import {distort, drawVisual, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
+import {distort, drawRegion, drawVisual, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
@@ -520,7 +520,10 @@ export function Preview() {
         if (c.type === 'text' || c.type === 'shape') {
           const img = itemImage(c)!;
           const key = `m:${c.id}`;
-          const rect = drawVisual(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale);
+          const rect =
+            c.type === 'shape' && c.region
+              ? drawRegion(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale, c.region)
+              : drawVisual(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale);
           if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
           continue;
         }

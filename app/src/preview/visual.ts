@@ -2,7 +2,7 @@
 // 書き出し（core/src/render.rs の visual_filters）と同じ計算になるようにそろえる。
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
-import type {BlendMode, Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
+import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
 import {BLEND_CANVAS, animStateAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
 import {api, type LutFit} from '../ipc';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
@@ -358,6 +358,53 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
   ctx.drawImage(img, (-size[0] * s) / 2, (-size[1] * s) / 2, size[0] * s, size[1] * s);
   ctx.restore();
   return {x: cx - (bw * s) / 2, y: cy - (bh * s) / 2, w: bw * s, h: bh * s};
+}
+
+/**
+ * モザイク・ぼかし範囲：図形の形（img の不透明なところ）の中だけ、それまでに描いた絵をモザイク・ぼかしにする。
+ * 書き出しと同じく、モザイクのマスは画面の左上からそろえる。図形の色は使わない
+ */
+export function drawRegion(ctx: CanvasRenderingContext2D, img: CanvasImageSource, size: [number, number], st: VisualState, w: number, h: number, viewScale: number, region: Region) {
+  const cw = ctx.canvas.width;
+  const ch = ctx.canvas.height;
+  const tr = ctx.getTransform();
+  const dev = tr.a || 1;
+  const mk = (): [HTMLCanvasElement, CanvasRenderingContext2D] => {
+    const c = document.createElement('canvas');
+    c.width = cw;
+    c.height = ch;
+    return [c, c.getContext('2d')!];
+  };
+  // 形
+  const [m, mx] = mk();
+  mx.setTransform(tr);
+  const rect = drawVisual(mx, img, size, {...st, blend: null}, w, h, viewScale);
+  // 加工した絵
+  const [f, fx] = mk();
+  const k = Math.max(0.5, region.strength * viewScale * dev);
+  if (region.kind === 'mosaic') {
+    const sw = Math.max(1, Math.ceil(cw / k));
+    const sh = Math.max(1, Math.ceil(ch / k));
+    const sm = document.createElement('canvas');
+    sm.width = sw;
+    sm.height = sh;
+    const sx = sm.getContext('2d')!;
+    sx.imageSmoothingQuality = 'high';
+    sx.drawImage(ctx.canvas, 0, 0, sw * k, sh * k, 0, 0, sw, sh);
+    fx.imageSmoothingEnabled = false;
+    fx.drawImage(sm, 0, 0, sw * k, sh * k);
+  } else {
+    fx.filter = `blur(${k}px)`;
+    fx.drawImage(ctx.canvas, 0, 0);
+    fx.filter = 'none';
+  }
+  fx.globalCompositeOperation = 'destination-in';
+  fx.drawImage(m, 0, 0);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(f, 0, 0);
+  ctx.restore();
+  return rect;
 }
 
 // ───────────── テキストと図形の画像 ─────────────
