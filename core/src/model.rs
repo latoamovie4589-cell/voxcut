@@ -660,11 +660,14 @@ pub struct SourceFx {
     /// 背景を消す（人物などを切り抜く）。使うモデルの id（ai::MODELS）。型は先に作っておく
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte: Option<String>,
+    /// なめらかスロー：遅くしたとき、間のコマを動きから作って補う（書き出しのみ。画面はコマをくり返す）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub smooth: bool,
 }
 
 impl Default for SourceFx {
     fn default() -> Self {
-        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false, matte: None }
+        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false, matte: None, smooth: false }
     }
 }
 
@@ -781,6 +784,39 @@ pub struct Look {
     /// 同じレイヤーのすぐ前のアイテムとのつなぎ目に入れる切り替え（場面転換）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// 合成モード（下の絵との重ね方）。なしはふつうに重ねる
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<BlendMode>,
+}
+
+/// 合成モード（画面は canvas の globalCompositeOperation、書き出しは ffmpeg の blend。どちらも同じ式）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BlendMode {
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    HardLight,
+    Difference,
+    Add,
+}
+
+impl BlendMode {
+    /// ffmpeg の blend の all_mode（上＝下の絵、下＝このアイテム）
+    pub fn ffmpeg(self) -> &'static str {
+        match self {
+            BlendMode::Multiply => "multiply",
+            BlendMode::Screen => "screen",
+            BlendMode::Overlay => "overlay",
+            BlendMode::Darken => "darken",
+            BlendMode::Lighten => "lighten",
+            BlendMode::HardLight => "hardlight",
+            BlendMode::Difference => "difference",
+            BlendMode::Add => "addition",
+        }
+    }
 }
 
 /// つなぎ目の切り替え
@@ -1061,6 +1097,12 @@ pub enum Effect {
     Grade { name: String, strength: f64 },
     /// 色温度（warm：-1 で青く 〜 1 で黄色く）と色合い（tint：-1 で緑 〜 1 で赤紫）
     Temperature { warm: f64, tint: f64 },
+    /// LUT（.cube のファイル。strength は 0〜1）。書き出しはそのまま、画面は近い色
+    Lut {
+        path: String,
+        #[serde(default = "one")]
+        strength: f64,
+    },
 }
 
 /// フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。

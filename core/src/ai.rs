@@ -287,7 +287,57 @@ pub fn make_matte(ffmpeg: &Path, model: &Path, model_id: &str, src: &Path, root:
     Ok(dst)
 }
 
+/// 被写体の位置（素材の t 秒目に、被写体の重心が横 x・縦 y にある。0〜1）
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+pub struct SubjectPoint {
+    pub t: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// 被写体を調べる 1 秒あたりの回数
+pub const SUBJECT_FPS: u32 = 4;
+
+/// 背景を消す型から、被写体（白いところ）の重心を時刻ごとに出す。白いところがほとんどない時刻は飛ばす
+pub fn subject_points(ffmpeg: &Path, matte: &Path, still: bool) -> Result<Vec<SubjectPoint>> {
+    const W: usize = 80;
+    const H: usize = 80;
+    let mut cmd = crate::tts::hidden_command(ffmpeg);
+    cmd.args(["-v", "error", "-i"]).arg(matte);
+    let vf = if still { format!("scale={W}:{H}") } else { format!("fps={SUBJECT_FPS},scale={W}:{H}") };
+    cmd.args(["-vf", &vf, "-pix_fmt", "gray", "-f", "rawvideo", "-"]);
+    let out = cmd.output()?;
+    if !out.status.success() {
+        return Err(crate::Error::Other(format!("型を読めません: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(centroids(&out.stdout, W, H, if still { 0.0 } else { 1.0 / SUBJECT_FPS as f64 }))
+}
+
+/// 白黒のコマを順に並べたものから、コマごとの重心（暗いところは数えない）
+pub fn centroids(raw: &[u8], w: usize, h: usize, dt: f64) -> Vec<SubjectPoint> {
+    raw.chunks_exact(w * h)
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let (mut sw, mut sx, mut sy) = (0.0, 0.0, 0.0);
+            for (k, &v) in f.iter().enumerate() {
+                if v > 64 {
+                    let wv = v as f64;
+                    sw += wv;
+                    sx += wv * ((k % w) as f64 + 0.5);
+                    sy += wv * ((k / w) as f64 + 0.5);
+                }
+            }
+            // 画面の 1% もなければ、被写体は無いとみなす
+            (sw > 255.0 * (w * h) as f64 * 0.01).then(|| SubjectPoint { t: i as f64 * dt, x: sx / sw / w as f64, y: sy / sw / h as f64 })
+        })
+        .collect()
+}
+
 /// 素材の幅と高さ（ffprobe を ffmpeg と同じ場所から使う）
+pub fn probe_size_of(ffmpeg: &Path, src: &Path) -> Option<(u32, u32)> {
+    probe_size(ffmpeg, src)
+}
+
 fn probe_size(ffmpeg: &Path, src: &Path) -> Option<(u32, u32)> {
     let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
     let probe = match ffmpeg.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -319,6 +369,20 @@ mod tests {
     fn segments_are_tidied() {
         let s = tidy_segments(vec![(0.0, 1.5, " こんにちは ".into()), (1.5, 1.5, "[音楽]".into()), (2.0, 2.0, "はい".into()), (3.0, 4.0, "  ".into())], 10.0);
         assert_eq!(s, vec![Segment { start: 10.0, end: 11.5, text: "こんにちは".into() }, Segment { start: 12.0, end: 12.2, text: "はい".into() }]);
+    }
+
+    #[test]
+    fn centroid_of_white() {
+        let mut f = vec![0u8; 10 * 10 * 2];
+        // 1 コマ目：右下の 4×4、2 コマ目：なにもない
+        for y in 6..10 {
+            for x in 6..10 {
+                f[y * 10 + x] = 255;
+            }
+        }
+        let c = centroids(&f, 10, 10, 0.25);
+        assert_eq!(c.len(), 1);
+        assert!((c[0].x - 0.8).abs() < 1e-9 && (c[0].y - 0.8).abs() < 1e-9 && c[0].t == 0.0);
     }
 
     #[test]
