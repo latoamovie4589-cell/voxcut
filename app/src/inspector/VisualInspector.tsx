@@ -251,8 +251,28 @@ export function LookFields({
   );
 }
 
-const ENTER_LABEL: Record<MotionKind, string> = {slideLeft: '左から入る', slideRight: '右から入る', slideUp: '上から入る', slideDown: '下から入る', zoom: '大きくなって出る'};
-const EXIT_LABEL: Record<MotionKind, string> = {slideLeft: '左へ出る', slideRight: '右へ出る', slideUp: '上へ出る', slideDown: '下へ出る', zoom: '小さくなって消える'};
+const ENTER_LABEL: Record<MotionKind, string> = {
+  slideLeft: '左から入る',
+  slideRight: '右から入る',
+  slideUp: '上から入る',
+  slideDown: '下から入る',
+  zoom: '大きくなって出る',
+  wipeRight: 'クリッピング解除（左から右へ）',
+  wipeLeft: 'クリッピング解除（右から左へ）',
+  wipeDown: 'クリッピング解除（上から下へ）',
+  wipeUp: 'クリッピング解除（下から上へ）',
+};
+const EXIT_LABEL: Record<MotionKind, string> = {
+  slideLeft: '左へ出る',
+  slideRight: '右へ出る',
+  slideUp: '上へ出る',
+  slideDown: '下へ出る',
+  zoom: '小さくなって消える',
+  wipeRight: 'クリッピング（左から右へ消える）',
+  wipeLeft: 'クリッピング（右から左へ消える）',
+  wipeDown: 'クリッピング（上から下へ消える）',
+  wipeUp: 'クリッピング（下から上へ消える）',
+};
 
 /** 登場・退場（場面の切り替わりで、画面の外から滑り込む・出ていく） */
 function MotionField({

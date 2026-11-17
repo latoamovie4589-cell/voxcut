@@ -25,7 +25,22 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, Volume2, X} from 'lucide-react';
 import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
-import type {AudioFilter, LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
+import type {
+  AudioFilter,
+  LineAudio,
+  CaptionClip,
+  LinePortrait,
+  PortraitClip,
+  Project,
+  SubtitleCustom,
+  SubtitleOverride,
+  Character,
+  EngineId,
+  MediaClip,
+  Portrait,
+  VoiceClip,
+  Highlight,
+} from '../model';
 import {
   BASE_EXPRESSION,
   ENGINE_LABEL,
@@ -133,6 +148,7 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
           }}
         />
       </HStack>
+      <HighlightFields clip={clip} />
       <TextArea
         label="発音"
         description="読み上げる文。読み方だけ直したいときに（字幕はそのまま）"
@@ -140,6 +156,33 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
         onChange={v => updateClip(clip.id, {text: v, subtitle: clip.subtitle ?? clip.text})}
       />
     </>
+  );
+}
+
+/** 字幕で色を変える言葉（例：「カニ漁」だけ赤く） */
+function HighlightFields({clip}: {clip: VoiceClip}) {
+  const hl = clip.highlights ?? [];
+  const set = (next: Highlight[]) => updateClip(clip.id, {highlights: next.length ? next : undefined});
+  return (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center">
+        <Text type="label">色を変える言葉</Text>
+        <IconButton label="言葉を足す" size="sm" variant="ghost" icon={<Icon icon={Plus} />} onClick={() => set([...hl, {word: '', color: '#FF3B30'}])} />
+      </HStack>
+      {hl.length === 0 && <Text type="supporting">字幕の中の言葉を選んで色を変えます（強調したいところに）</Text>}
+      {hl.map((h, i) => (
+        <HStack key={i} gap={2} vAlign="end">
+          <div style={{flex: 1}}>
+            <TextInput label="言葉" value={h.word} onChange={word => set(hl.map((x, k) => (k === i ? {...x, word} : x)))} />
+          </div>
+          <div style={{flex: 1}}>
+            <ColorRow label="色" value={h.color} onChange={color => set(hl.map((x, k) => (k === i ? {...x, color} : x)))} />
+          </div>
+          <IconButton label="この言葉を外す" size="sm" variant="ghost" icon={<Icon icon={X} />} onClick={() => set(hl.filter((_, k) => k !== i))} />
+        </HStack>
+      ))}
+      {hl.length > 0 && (clip.subtitleCustom || /《/.test(clip.subtitle ?? clip.text)) && <Text type="supporting">ルビのある字幕・個別に設定した字幕では色を変えません</Text>}
+    </VStack>
   );
 }
 
@@ -627,6 +670,9 @@ function SubtitleLayoutFields({sc, set}: {sc: SubtitleCustom; set: (patch: Parti
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
         <Heading level={4}>装飾</Heading>
+        <ColorRow label="グラデーション（下の色）" value={sc.gradientColor ?? ''} allowNone onChange={gradientColor => set({gradientColor})} />
+        <ColorRow label="外側の縁の色" value={sc.outline2Color ?? ''} allowNone onChange={outline2Color => set({outline2Color, outline2Width: outline2Color ? sc.outline2Width || 6 : 0})} />
+        {sc.outline2Color && <NumberInput label="外側の縁の太さ" units="px" value={sc.outline2Width ?? 6} min={0} max={60} onChange={outline2Width => set({outline2Width})} />}
         <ColorRow label="影の色" value={sc.shadowColor ?? ''} allowNone onChange={shadowColor => set({shadowColor})} />
         {sc.shadowColor && <NumberInput label="影のずれ" units="px" value={sc.shadowOffset ?? 4} min={-100} max={100} onChange={shadowOffset => set({shadowOffset})} />}
         <ColorRow label="背景の帯の色" value={boxRgb} allowNone onChange={rgb => set({boxColor: withAlpha(rgb, boxAlpha)})} />

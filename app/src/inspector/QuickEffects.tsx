@@ -131,6 +131,8 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     enterPreset('in-right', '右から', 'slideRight', false),
     enterPreset('in-up', '上から', 'slideUp', false),
     enterPreset('in-down', '下から', 'slideDown', false),
+    enterPreset('in-wipe', 'クリッピング解除', 'wipeRight', false),
+    enterPreset('in-wipe-down', '上から伸びる', 'wipeDown', false),
   ],
   out: [
     exitPreset('out-none', 'なし', null, false),
@@ -141,6 +143,7 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     exitPreset('out-right', '右へ', 'slideRight', false),
     exitPreset('out-up', '上へ', 'slideUp', false),
     exitPreset('out-down', '下へ', 'slideDown', false),
+    exitPreset('out-wipe', 'クリッピング', 'wipeRight', false),
   ],
   move: [
     movePreset('mv-none', 'なし', null),
