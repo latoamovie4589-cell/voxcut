@@ -6,6 +6,7 @@ import type {
   LineAudio,
   CaptionClip,
   Character,
+  Control,
   PortraitClip,
   Clip,
   EngineId,
@@ -46,6 +47,8 @@ import {
   trackCode,
   trackKindOf,
   videoTracks,
+  switchScene,
+  sceneOf,
   voiceLayerFor,
   retime,
   srcFrameAt,
@@ -1245,6 +1248,116 @@ export function addRegion(kind: 'mosaic' | 'blur'): string | null {
       region: {kind, strength: kind === 'mosaic' ? Math.max(8, Math.round(p.video.height / 40)) : Math.max(6, Math.round(p.video.height / 60))},
     } as Partial<Clip>);
   }
+  return id;
+}
+
+/**
+ * グループ制御・カメラ・調整レイヤーを再生位置に置く。今見えているアイテムのどれよりも上のレイヤーに置く（下のレイヤーに効くので）。
+ * グループ制御は、今見えているアイテムのあるレイヤーをまとめる
+ */
+export function addControl(kind: Control['kind']): string | null {
+  const p = state.project;
+  if (!p) return null;
+  const id = newId('ct');
+  const at = state.playhead;
+  const duration = p.video.fps * 5;
+  const vt = videoTracks(p);
+  const visible = (t: Track) => p.clips.some(c => c.trackId === t.id && c.type !== 'voice' && c.start <= at && at < c.start + c.duration);
+  const top = vt.reduce((m, t, i) => (visible(t) ? i : m), -1);
+  const low = vt.findIndex(visible);
+  const busy = (t: Track) => p.clips.some(c => c.trackId === t.id && c.start < at + duration && at < c.start + c.duration);
+  let ti = vt.findIndex((t, i) => i > top && !t.locked && !busy(t));
+  commit(pr => {
+    let tracks = pr.tracks;
+    if (ti < 0) {
+      const nt = newLayer(newId('V'), 'video');
+      const a = tracks.findIndex(t => t.kind === 'audio');
+      tracks = a < 0 ? [...tracks, nt] : [...tracks.slice(0, a), nt, ...tracks.slice(a)];
+      ti = tracks.indexOf(nt);
+    }
+    const clip: Clip = {
+      id,
+      trackId: tracks[ti].id,
+      start: at,
+      duration,
+      type: 'shape',
+      shape: 'rect',
+      width: 200,
+      height: 120,
+      fill: '#5AC8FA',
+      stroke: '',
+      strokeWidth: 0,
+      transform: {x: 0, y: 0, scale: 1, opacity: 1},
+      look: plainLook(),
+      control: {kind, layers: Math.max(1, ti - Math.max(0, low))},
+    };
+    return resolveOverlaps({...pr, tracks, clips: [...pr.clips, clip]}, clip.trackId, id);
+  });
+  setState(s => ({selectedClipId: id, revealSeq: s.revealSeq + 1}));
+  return id;
+}
+
+/** 新しいシーンを作って開く（レイヤー 2 つ） */
+export function addScene(): string | null {
+  const p = state.project;
+  if (!p) return null;
+  const id = newId('sc');
+  const names = new Set((p.scenes ?? []).map(s => s.name));
+  let n = 1;
+  while (names.has(`シーン${n}`)) n++;
+  commit(pr => switchScene({...pr, scenes: [...(pr.scenes ?? []), {id, name: `シーン${n}`, tracks: [newLayer(newId('V'), 'video'), newLayer(newId('V'), 'video')], clips: []}]}, id));
+  setState({selectedClipId: null, playhead: 0});
+  return id;
+}
+
+/** シーンを開く（null ならメイン） */
+export function openScene(id: string | null) {
+  if ((state.project?.sceneId ?? null) === id) return;
+  commit(pr => switchScene(pr, id));
+  setState({selectedClipId: null});
+}
+
+export function renameScene(id: string, name: string) {
+  commit(pr => ({...pr, scenes: (pr.scenes ?? []).map(s => (s.id === id ? {...s, name} : s))}));
+}
+
+/** シーンを消す（そのシーンを置いたアイテムも消す）。開いているシーンは、メインに戻ってから消す */
+export function deleteScene(id: string) {
+  commit(pr => {
+    const p = pr.sceneId === id ? switchScene(pr, null) : pr;
+    const drop = (cs: Clip[]) => cs.filter(c => !(c.type === 'shape' && c.scene === id));
+    return {...p, clips: drop(p.clips), scenes: (p.scenes ?? []).filter(s => s.id !== id).map(s => ({...s, clips: drop(s.clips)}))};
+  });
+}
+
+/** シーンを再生位置に置く（長さはシーンの長さ） */
+export function addSceneItem(sceneId: string): string | null {
+  const p = state.project;
+  const sc = p ? sceneOf(p, sceneId) : undefined;
+  if (!p || !sc || sceneId === p.sceneId) return null;
+  const id = addVisualItem('shape', 'rect');
+  if (id) {
+    const len = Math.max(p.video.fps, ...sc.clips.map(c => c.start + c.duration));
+    updateClip(id, {scene: sceneId, duration: len, width: p.video.width, height: p.video.height, fill: '#5856D6', stroke: '', strokeWidth: 0} as Partial<Clip>);
+  }
+  return id;
+}
+
+/** 音声の波形・スペクトラムを再生位置に置く（画面の下のほうに横長に） */
+export function addAudioViz(kind: 'wave' | 'bars'): string | null {
+  const p = state.project;
+  const id = addVisualItem('shape', 'rect');
+  if (id && p)
+    updateClip(id, {
+      viz: kind,
+      width: Math.round(p.video.width * 0.6),
+      height: Math.round(p.video.height * 0.2),
+      fill: '#5AC8FA',
+      stroke: '',
+      strokeWidth: 0,
+      duration: Math.max(p.video.fps * 5, projectDuration(p) - state.playhead),
+      transform: {x: 0, y: Math.round(p.video.height * 0.3), scale: 1, opacity: 1},
+    } as Partial<Clip>);
   return id;
 }
 

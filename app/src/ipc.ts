@@ -1,7 +1,7 @@
 // Rust（src-tauri/src/commands.rs）との窓口。
 // ブラウザで開いたとき（Tauri 外）は、デザイン確認用の模擬実装に切り替わる。
 
-import type {AccentPhrase, Character, EngineId, EngineStatus, MediaAudioFx, Project, VoiceClip, VoiceInfo} from './model';
+import type {AccentPhrase, Character, EngineId, EngineStatus, MediaAudioFx, Plugin, Project, VoiceClip, VoiceInfo} from './model';
 import {defaultParams, newLayer, reflowAll} from './model';
 
 export interface SynthProgress {
@@ -139,6 +139,8 @@ export interface Api {
   makeProxy(src: string, projectPath: string | null, durationMs: number, stabilize?: boolean): Promise<string>;
   /** 効果音のファイル（なければ作る）のパス */
   makeSfx(name: string): Promise<string>;
+  /** エフェクトのプラグイン（フォルダの場所と、読み込んだファイル） */
+  listPlugins(): Promise<{dir: string; plugins: {file: string; plugin: Plugin | null; error: string | null}[]}>;
   /** 動画の場面の変わり目（秒、素材の頭から） */
   detectScenes(src: string, projectPath: string | null, threshold: number): Promise<number[]>;
   /** テンプレートのファイル（.voxtpl）を選ぶ */
@@ -338,6 +340,10 @@ async function tauriApi(): Promise<Api> {
     allowPaths: paths => invoke('allow_paths', {paths}),
     makeProxy: async (src, projectPath, durationMs, stabilize) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs, stabilize: !!stabilize})),
     makeSfx: name => invoke('make_sfx', {name}),
+    listPlugins: async () => {
+      const [dir, plugins] = await invoke<[string, {file: string; plugin: Plugin | null; error: string | null}[]]>('list_plugins');
+      return {dir, plugins};
+    },
     detectScenes: (src, projectPath, threshold) => invoke('detect_scenes', {src: resolvePath(src, projectPath), threshold}),
     pickLutPath: async () => {
       const r = await dialog.open({filters: [{name: 'LUT（.cube）', extensions: ['cube', 'CUBE']}]});
@@ -643,6 +649,28 @@ function mockApi(): Api {
     mediaUrl: path => path,
     allowPaths: async () => {},
     makeSfx: async name => `/sfx/${name}.wav`,
+    // ブラウザで確かめる用：見本のプラグインだけ
+    listPlugins: async () => ({
+      dir: '/plugins',
+      plugins: [
+        {
+          file: '見本.json',
+          plugin: {
+            name: '見本',
+            effects: [
+              {
+                id: 'sample-hue',
+                label: '色相をずらす（見本）',
+                params: [{key: 'deg', label: '角度', min: -180, max: 180, step: 1, default: 90}],
+                ffmpeg: 'hue=h={deg}',
+                canvas: 'hue-rotate({deg}deg)',
+              },
+            ],
+          },
+          error: null,
+        },
+      ],
+    }),
     detectScenes: async () => (globalThis as {__mockScenes?: number[]}).__mockScenes ?? [1, 2.5],
     detectSilence: async () => (globalThis as {__mockSilence?: [number, number][]}).__mockSilence ?? [[1, 2]],
     pickLutPath: async () => (globalThis as {__mockLut?: string}).__mockLut ?? null,

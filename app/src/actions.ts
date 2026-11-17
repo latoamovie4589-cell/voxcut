@@ -8,6 +8,9 @@ import {
   effectiveVoice,
   framesToTimecode,
   withTransitions,
+  withScenes,
+  canonicalProject,
+  switchScene,
   isSpeakerMissing,
   projectDuration,
   proxyKey,
@@ -759,9 +762,11 @@ export async function runExport(out: string, options: ExportRequest, onProgress:
     // テキスト・図形も画面側で描いた画像を渡す（画面と同じ見た目にするため）
     const {bakeItemImages} = await import('./preview/visual');
     // 切り替えの覆う図形の画像も要るので、置き換えた写しから作る（書き出しも同じ写しを描く）
-    const itemImages = await bakeItemImages(withTransitions(s.project));
-    const project = await a.exportVideo(s.project, s.projectPath, out, {...options, portraitFrames, itemImages});
-    if (getState().project === s.project) replaceProject(project);
+    // シーンを編集中でも、書き出すのはメインのタイムライン（シーンアイテムはシーンのレイヤーに置き換えて描く）
+    const main = canonicalProject(s.project);
+    const itemImages = await bakeItemImages(withTransitions(withScenes(main)));
+    const project = await a.exportVideo(main, s.projectPath, out, {...options, portraitFrames, itemImages});
+    if (getState().project === s.project) replaceProject(s.project.sceneId ? switchScene(project, s.project.sceneId) : project);
   } catch (e) {
     if (/取り消しました|Cancelled/.test(String(e))) throw new Error('cancelled');
     throw new Error(friendlyError(e));
@@ -788,7 +793,7 @@ export async function pickExportPath(kind: ExportKind = 'video'): Promise<string
 /** 字幕だけを SRT で書き出す（YouTube などに字幕として上げる用） */
 export async function exportSubtitles(out: string) {
   const p = getState().project;
-  if (p) await (await api).exportSrt(p, out);
+  if (p) await (await api).exportSrt(canonicalProject(p), out);
 }
 
 /** 書き出したファイルを、いつものアプリで開く（動画なら再生） */
@@ -947,9 +952,10 @@ export async function exportStill(notify: Notify): Promise<void> {
       portraitFrames = await bakePsdFrames(s.project, s.projectPath, () => {});
     }
     const {bakeItemImages} = await import('./preview/visual');
-    const itemImages = await bakeItemImages(withTransitions(s.project));
-    const last = Math.max(0, projectDuration(s.project) - 1);
-    await a.exportVideo(s.project, s.projectPath, out, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: Math.min(s.playhead, last)});
+    const main = canonicalProject(s.project);
+    const itemImages = await bakeItemImages(withTransitions(withScenes(main)));
+    const last = Math.max(0, projectDuration(main) - 1);
+    await a.exportVideo(main, s.projectPath, out, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: Math.min(s.playhead, last)});
     notify(`画像を書き出しました：${baseName(out)}`, 'info', 'still', {label: '場所を開く', onClick: () => void a.revealInFolder(out)});
   } catch (e) {
     notify(friendlyError(e), 'error');
@@ -1003,7 +1009,7 @@ export async function autosaveNow() {
   const s = getState();
   if (!s.project || !s.dirty || s.project === lastAutosaved) return;
   lastAutosaved = s.project;
-  await (await api).autosaveWrite(s.project, s.projectPath).catch(() => {});
+  await (await api).autosaveWrite(canonicalProject(s.project), s.projectPath).catch(() => {});
 }
 
 /** 前回保存せずに終わった作業があれば、戻すか聞く */
@@ -1028,7 +1034,7 @@ export async function saveProject(notify: Notify, saveAs = false) {
   const path = !saveAs && s.projectPath ? s.projectPath : await a.pickSavePath('project', `${s.project.name}.voxcut`);
   if (!path) return;
   try {
-    await a.saveProject(path, s.project);
+    await a.saveProject(path, canonicalProject(s.project));
     // 保存中に編集されていたら、まだ保存していない変更が残っている
     setState(st => ({projectPath: path, dirty: st.project !== s.project}));
     await a.autosaveClear();
