@@ -11,6 +11,7 @@ import {RubyButton} from './RubyButton';
 import {SpeedSection} from './SpeedSection';
 import {CutoutSection} from './CutoutSection';
 import {AutoCaptionSection, AutoReframeSection, RemoveBackgroundSection} from './AiSection';
+import {SilenceCutSection} from './SilenceCutSection';
 import {SoundFxFields} from './SoundFxFields';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
@@ -39,6 +40,7 @@ import {
   lineOf,
   plainLook,
   speakerLabel,
+  SPLIT_LAYOUTS,
 } from '../model';
 import {LineTuning, PresetManager, VoiceTuner} from './VoiceTuning';
 import {LinePsdLayers, PsdPortraitEditor, pickPsdPortrait} from './PsdPortraitEditor';
@@ -71,7 +73,7 @@ import {
   setAftertime,
   setLineAudio,
 } from '../store';
-import {getNotify, loadVoices, previewVoice, splitAtScenes, synthesize, type Notify} from '../actions';
+import {applySplitLayout, getNotify, loadVoices, previewVoice, splitAtScenes, synthesize, type Notify} from '../actions';
 
 /**
  * セリフと発音（YMM4 と同じ）。セリフ＝字幕に出す文、発音＝読み上げる文。
@@ -812,6 +814,8 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
       {clip.mediaKind !== 'audio' && <Divider />}
       {(clip.mediaKind === 'audio' || clip.hasAudio) && <AutoCaptionSection clip={clip} notify={notify} />}
       {(clip.mediaKind === 'audio' || clip.hasAudio) && <Divider />}
+      {(clip.mediaKind === 'audio' || clip.hasAudio) && <SilenceCutSection clip={clip} notify={notify} />}
+      {(clip.mediaKind === 'audio' || clip.hasAudio) && <Divider />}
       {clip.mediaKind !== 'audio' && <LookEditor clip={clip} />}
       {sound && (
         <Section title="音">
@@ -1413,6 +1417,30 @@ function MultiInspector({ids, notify}: {ids: string[]; notify: Notify}) {
         セリフ {lines.length} 行・素材 {clips.length - lines.length} 個（
         {framesToTimecode(start, fps)} 〜 {framesToTimecode(end, fps)}）
       </Text>
+      {(() => {
+        const vis = clips.filter(c => c.type === 'media' && c.mediaKind !== 'audio').length;
+        if (vis < 2) return null;
+        const lays = SPLIT_LAYOUTS.filter(l => l.cells.length === Math.min(4, vis));
+        return (
+          <VStack gap={2}>
+            <Text type="label">分割画面</Text>
+            <Text type="supporting">
+              選んだ動画・画像を、マスいっぱいに並べます（上のレイヤーから順に。時間は変えません。{vis > 4 ? '5 つ目からは使いません' : '同じ時間に見えるよう、別々のレイヤーに置いてください'}）
+            </Text>
+            <HStack gap={2} wrap="wrap">
+              {lays.map(l => (
+                <Button
+                  key={l.id}
+                  size="sm"
+                  variant="secondary"
+                  label={l.label}
+                  onClick={() => void applySplitLayout(ids, l.id).then(n => notify(n ? `${n} 個を「${l.label}」に並べました` : '並べられませんでした'))}
+                />
+              ))}
+            </HStack>
+          </VStack>
+        );
+      })()}
       {lines.length > 0 && (
         <Selector
           label="セリフのキャラクターをまとめて変える"

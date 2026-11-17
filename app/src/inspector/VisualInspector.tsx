@@ -519,7 +519,26 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
   return (
     <>
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
-        <ItemHeader clip={clip} title="図形" />
+        <ItemHeader clip={clip} title={clip.region ? (clip.region.kind === 'mosaic' ? 'モザイク範囲' : 'ぼかし範囲') : '図形'} />
+        {clip.region && (
+          <VStack gap={2}>
+            <Text type="supporting">形の中だけ、下にある絵を{clip.region.kind === 'mosaic' ? 'モザイク' : 'ぼかし'}にします。動く物に合わせるときは、下の「動きに付いていく」を使ってください</Text>
+            <SegmentedControl label="種類" layout="fill" value={clip.region.kind} onChange={v => set({region: {...clip.region!, kind: v as 'mosaic' | 'blur'}})}>
+              <SegmentedControlItem value="mosaic" label="モザイク" />
+              <SegmentedControlItem value="blur" label="ぼかし" />
+            </SegmentedControl>
+            <Slider
+              label={clip.region.kind === 'mosaic' ? 'マスの大きさ' : 'ぼかしの強さ'}
+              value={clip.region.strength}
+              min={2}
+              max={120}
+              step={1}
+              valueDisplay="text"
+              formatValue={(v: number) => `${Math.round(v)}px`}
+              onChange={(strength: number) => set({region: {...clip.region!, strength}})}
+            />
+          </VStack>
+        )}
         <Selector
           label="形"
           value={clip.shape}
@@ -531,8 +550,8 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
           <NumberInput label="幅" units="px" value={clip.width} min={1} max={8000} step={10} onChange={width => set({width})} />
           <NumberInput label={clip.shape === 'line' ? '太さ' : '高さ'} units="px" value={clip.height} min={1} max={8000} step={clip.shape === 'line' ? 1 : 10} onChange={height => set({height})} />
         </HStack>
-        <ColorRow label={clip.shape === 'line' ? '線の色' : '塗りの色'} value={clip.fill} onChange={fill => set({fill})} />
-        {clip.shape !== 'line' && (
+        {!clip.region && <ColorRow label={clip.shape === 'line' ? '線の色' : '塗りの色'} value={clip.fill} onChange={fill => set({fill})} />}
+        {clip.shape !== 'line' && !clip.region && (
           <Collapsible defaultIsOpen={!!clip.stroke} trigger={<Text type="label">枠線</Text>}>
             <VStack gap={2} paddingBlockStart={2}>
               <ColorRow label="枠線の色" value={clip.stroke} allowNone onChange={stroke => set({stroke, strokeWidth: stroke && !clip.strokeWidth ? 6 : clip.strokeWidth})} />
