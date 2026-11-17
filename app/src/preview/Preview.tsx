@@ -39,7 +39,7 @@ import {commit, getState, revertMerge, setState, useStore} from '../store';
 import {pauseExcept, syncVideo, videoFor} from './video';
 import {processedAudio} from '../audioFx';
 import {PreviewControls, toggleFullscreen} from './PreviewControls';
-import {fadeAlpha, popScale, typewriterCount} from '../subtitleAnim';
+import {KARAOKE_COLOR, fadeAlpha, karaokeBounds, popScale, typewriterCount} from '../subtitleAnim';
 import './preview.css';
 
 let apiNow: Api | null = null;
@@ -222,7 +222,7 @@ export function commitTransform(t: Target, transform: Transform, mergeKey?: stri
  * アニメーションは subtitleAnim.ts（書き出しの ASS と同じ式）。
  * 1 文字ずつのときは全文で位置を決め、まだ出ていない文字を描かない（書き出しと同じく文字が動かない）。
  */
-function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character | undefined, p: Project, scale: number, f: number, duration: number) {
+export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character | undefined, p: Project, scale: number, f: number, duration: number) {
   const st = ch?.subtitle;
   const fps = p.video.fps;
   const anim = st?.animation ?? 'none';
@@ -277,7 +277,7 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
   const total = [...text.replace(/\n/g, '')].length;
   const count = anim === 'typewriter' ? typewriterCount(total, duration, f) : Infinity;
   // 文字を 1 かたまり描く（帯・縁・影も）。px は文字の大きさ、sx は横の縮め
-  const run = (s: string, x: number, y: number, px: number, sx = 1) => {
+  const run = (s: string, x: number, y: number, px: number, sx = 1, textColor?: string) => {
     if (!s) return;
     ctx.save();
     ctx.font = fontAt(px);
@@ -300,7 +300,7 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
         ctx.strokeStyle = color ?? st.outlineColor;
         ctx.strokeText(s, dx, dy);
       }
-      ctx.fillStyle = color ?? st?.color ?? '#fff';
+      ctx.fillStyle = color ?? textColor ?? st?.color ?? '#fff';
       ctx.fillText(s, dx, dy);
     };
     // 影は、縁（帯）まで含めた形をずらして落とす
@@ -312,6 +312,9 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
     ctx.restore();
   };
   ctx.textAlign = 'left';
+  // カラオケ：今の時刻までに塗る文字（書き出しの ASS の \kf と同じく、文字ごとに左から）
+  const kara = anim === 'karaoke' && !rows ? karaokeBounds([...text.replace(/\n/g, '')], duration, fps) : null;
+  const now = (f / fps) * 100;
   let seen = 0;
   lines.forEach((line, i) => {
     const chars = [...line];
@@ -322,6 +325,31 @@ function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character
     ctx.font = fontAt(size);
     const x0 = w / 2 - ctx.measureText(line).width / 2;
     run(shown, x0, y, size);
+    if (kara) {
+      // この行で塗る幅
+      ctx.font = fontAt(size);
+      let fillW = 0;
+      for (let j = 0; j < chars.length; j++) {
+        const g = seen - chars.length + j;
+        const a = kara[g];
+        const b = kara[g + 1];
+        if (now <= a) break;
+        const cw = ctx.measureText(chars[j]).width;
+        if (now >= b) fillW = ctx.measureText(chars.slice(0, j + 1).join('')).width;
+        else {
+          fillW = ctx.measureText(chars.slice(0, j).join('')).width + (cw * (now - a)) / Math.max(1e-9, b - a);
+          break;
+        }
+      }
+      if (fillW > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0 - size * 2, y - size * 3, size * 2 + fillW, size * 6);
+        ctx.clip();
+        run(line, x0, y, size, 1, st?.karaokeColor || KARAOKE_COLOR);
+        ctx.restore();
+      }
+    }
     // ルビ（語の頭の文字が出たら出す。語より長ければ語の幅に縮める）
     let x = x0;
     for (const piece of rows?.[i] ?? []) {
