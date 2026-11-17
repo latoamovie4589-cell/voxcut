@@ -8,6 +8,7 @@ pub mod cache;
 pub mod jobs;
 pub mod lipsync;
 pub mod model;
+pub mod plugin;
 pub mod proxy;
 pub mod render;
 pub mod sfx;
