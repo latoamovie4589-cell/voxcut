@@ -302,6 +302,8 @@ fn timed_effects(fx: &[((f64, f64), Vec<Effect>)]) -> (Vec<String>, String, Stri
                     dy.push_str(&format!("+{on}*{amount:.3}*cos(2*PI*{speed:.4}*t*1.37)"));
                 }
                 Effect::Grade { .. } | Effect::Temperature { .. } => chain.extend(grade_filters(e).into_iter().map(|f| format!("{f}:{en}"))),
+                Effect::Lut { path, strength } if *strength > 0.0 => chain.push(format!("lut3d=file={}:{en}", escape_filter_path(Path::new(path)))),
+                Effect::Lut { .. } => {}
                 Effect::Wave { .. } | Effect::Swirl { .. } => {
                     // 大きさを変えた後なので、px はそのまま画面の px。時刻は動画の頭から
                     if let Some(g) = distort_geq(e, 1.0) {
@@ -561,7 +563,7 @@ pub fn build_args(
                     // 速さ・逆再生・静止：素材から切り出す長さと、映像・音の前処理
                     let fx = &m.src_fx;
                     let span = if fx.freeze { 1.0 / v.fps as f64 } else { fx.advance(dur, dur) };
-                    let (vpre, apre) = source_filters(fx, dur);
+                    let (vpre, apre) = source_filters(fx, dur, v.fps);
                     // 音の加工（素材の時間のまま）→ 逆再生・速さ
                     let achain = fx.audio_fx.as_ref().map(crate::audiofx::audio_chain).unwrap_or_default();
                     // やまびこの残りがクリップの後ろへはみ出さないよう、クリップの長さで切る
@@ -688,9 +690,27 @@ pub fn build_args(
         _ => String::new(),
     };
     // 音声だけ（.wav）に書き出すときは、映像は作らずに捨てる
-    let audio_only = opt.out.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    let ext = opt.out.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let audio_only = ext.eq_ignore_ascii_case("wav");
+    let gif = ext.eq_ignore_ascii_case("gif") && opt.still_at.is_none();
     if audio_only {
         fc.push(format!("[{last_v}]nullsink"));
+    } else if gif {
+        // GIF：範囲を切ってから、コマ数を 15 まで落とし、その範囲の色で 256 色の表を作って使う（音はなし）
+        let (a, b) = match opt.range {
+            Some((a, b)) => (a.clamp(0.0, total_s), b.clamp(a.clamp(0.0, total_s), total_s)),
+            None => (0.0, total_s),
+        };
+        let gfps = v.fps.min(GIF_FPS);
+        fc.push(format!(
+            "[{last_v}]trim=start={a:.3}:end={:.3},setpts=PTS-STARTPTS,fps={gfps}{resize},split[gif1][gif2];[gif1]palettegen=stats_mode=diff[gifp];[gif2][gifp]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[vout]",
+            b.max(a + 0.04)
+        ));
+        for l in &audio_labels {
+            fc.push(format!("[{l}]anullsink"));
+        }
+        args.extend(["-filter_complex".into(), fc.join(";"), "-map".into(), "[vout]".into(), "-loop".into(), "0".into(), "-progress".into(), "pipe:1".into(), "-nostats".into(), opt.out.to_string_lossy().into_owned()]);
+        return Ok(args);
     } else {
         fc.push(format!("[{last_v}]null{resize}[vout]"));
     }
@@ -777,6 +797,9 @@ pub fn build_args(
     ]);
     Ok(args)
 }
+
+/// GIF の 1 秒あたりのコマ数の上限（重くしすぎない）
+pub const GIF_FPS: u32 = 15;
 
 /// 書き出す範囲（出力側で頭を飛ばして、長さで切る）。範囲が無ければ全体の長さで切る
 fn range_args(range: Option<(f64, f64)>, total_s: f64) -> Vec<String> {
@@ -953,7 +976,7 @@ pub fn spatial_filters(fx: &crate::model::SourceFx) -> String {
 }
 
 /// 素材の速さ・逆再生・静止の前処理（映像、音）。どちらも末尾に「,」が付く（なければ空）。d はクリップの長さ（秒）
-pub fn source_filters(fx: &crate::model::SourceFx, d: f64) -> (String, String) {
+pub fn source_filters(fx: &crate::model::SourceFx, d: f64, fps: u32) -> (String, String) {
     if !fx.is_retimed() {
         return (String::new(), String::new());
     }
@@ -976,6 +999,10 @@ pub fn source_filters(fx: &crate::model::SourceFx, d: f64) -> (String, String) {
         // だんだん変わる速さ：素材の T 秒目は、t = (√(a²+2kT) − a) / k 秒目に出る（k は速さの変わり方）
         let k = (b - a) / d.max(1e-6);
         vf.push_str(&format!("setpts='(sqrt({:.6}+{:.6}*(PTS-STARTPTS)*TB)-{a:.6})/{k:.6}/TB',", a * a, 2.0 * k));
+    }
+    // なめらかスロー：遅くなったところのコマを、前後のコマの動きから作る
+    if fx.smooth && a.min(b) < 0.999 {
+        vf.push_str(&format!("minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:scd=none,"));
     }
     // 音は平均の速さで（音の高さは変えない）。atempo は 1 段で 0.5〜2 倍なので重ねる
     let mut f = fx.advance(d, d) / d.max(1e-6);
@@ -1010,11 +1037,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             s = t.scale,
             o = t.opacity.clamp(0.0, 1.0)
         ));
-        fc.push(format!(
-            "[{last_v}][{src_l}]overlay=x=(W-w)/2+{x:.1}:y=(H-h)/2+{y:.1}:enable='between(t,{start:.3},{end:.3})':eof_action=pass[{out_l}]",
-            x = t.x,
-            y = t.y
-        ));
+        let pos = format!("x=(W-w)/2+{x:.1}:y=(H-h)/2+{y:.1}:enable='between(t,{start:.3},{end:.3})':eof_action=pass", x = t.x, y = t.y);
+        place(fc, idx, last_v, &src_l, &pos, look.blend, &out_l);
         return out_l;
     }
     let to = look.anim.as_ref();
@@ -1087,6 +1111,17 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             Effect::Mono => chain.push(saturate_mixer(0.0)),
             // フィルター・色温度：色を混ぜてから、色ごとの明るさの曲線（画面は同じ数の SVG フィルター）
             Effect::Grade { .. } | Effect::Temperature { .. } => chain.extend(grade_filters(fx)),
+            // LUT：強さが 1 未満なら、元の色と混ぜる
+            Effect::Lut { path, strength } if *strength > 0.0 => {
+                let f = format!("lut3d=file={}", escape_filter_path(Path::new(path)));
+                if *strength >= 0.999 {
+                    chain.push(f);
+                } else {
+                    let n = chain.len();
+                    chain.push(format!("split[lu{idx}a{n}][lu{idx}b{n}];[lu{idx}b{n}]{f}[lu{idx}c{n}];[lu{idx}a{n}][lu{idx}c{n}]blend=all_mode=normal:all_opacity={:.4}", strength.min(1.0)));
+                }
+            }
+            Effect::Lut { .. } => {}
             Effect::Invert => chain.push("negate".into()),
             Effect::Blur { radius } => blur += radius.max(0.0),
             Effect::Shake { amount, speed } => shake = (*amount, *speed),
@@ -1132,8 +1167,29 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
         x.push_str(&format!("+{a:.3}*sin(2*PI*{f:.4}*t)", a = shake.0, f = shake.1));
         y.push_str(&format!("+{a:.3}*cos(2*PI*{f:.4}*t*1.37)", a = shake.0, f = shake.1));
     }
-    fc.push(format!("[{last_v}][{src_l}]overlay=x='{x}':y='{y}':enable='between(t,{start:.3},{end:.3})':eof_action=pass[{out_l}]"));
+    let pos = format!("x='{x}':y='{y}':enable='between(t,{start:.3},{end:.3})':eof_action=pass");
+    place(fc, idx, last_v, &src_l, &pos, look.blend, &out_l);
     out_l
+}
+
+/// アイテムを下の絵に重ねる。合成モードがあれば、いったん透明な画面に置いてから下の絵と混ぜ、アイテムの不透明度の分だけ見せる
+/// （canvas の合成と同じ：(1−α)·下 + α·B(下, アイテム)）
+fn place(fc: &mut Vec<String>, idx: usize, last_v: &str, src: &str, pos: &str, blend: Option<crate::model::BlendMode>, out: &str) {
+    let Some(mode) = blend else {
+        fc.push(format!("[{last_v}][{src}]overlay={pos}[{out}]"));
+        return;
+    };
+    let m = mode.ffmpeg();
+    fc.push(format!("[{last_v}]format=rgba,split[bg{idx}][cv{idx}]"));
+    fc.push(format!("[cv{idx}]drawbox=c=black@0:t=fill:replace=1[cl{idx}]"));
+    fc.push(format!("[cl{idx}][{src}]overlay={pos}:format=rgb,format=rgba,split[la{idx}][lc{idx}]"));
+    fc.push(format!("[la{idx}]alphaextract[al{idx}]"));
+    fc.push(format!("[bg{idx}]split[b1{idx}][b2{idx}]"));
+    fc.push(format!("[b1{idx}]format=gbrp[bb{idx}]"));
+    fc.push(format!("[lc{idx}]format=gbrp[lr{idx}]"));
+    fc.push(format!("[bb{idx}][lr{idx}]blend=all_mode={m},format=rgba[bx{idx}]"));
+    fc.push(format!("[bx{idx}][al{idx}]alphamerge[bm{idx}]"));
+    fc.push(format!("[b2{idx}][bm{idx}]overlay=format=rgb[{out}]"));
 }
 
 /// 彩度（CSS の saturate() と同じ行列）
@@ -1618,6 +1674,7 @@ mod tests {
             enter: None,
             exit: None,
             transition: None,
+            blend: None,
             effects: vec![Effect::Blur { radius: 4.0 }, Effect::Shake { amount: 5.0, speed: 2.0 }, Effect::Mono, Effect::Color { brightness: 1.2, contrast: 1.0, saturation: 1.0 }],
         };
         p.clips.push(Clip {
@@ -1721,6 +1778,7 @@ mod tests {
                     enter: None,
                     exit: None,
                     transition: None,
+                    blend: None,
                     effects: vec![
                         Effect::Blur { radius: 1.5 },
                         Effect::Shake { amount: 3.0, speed: 4.0 },
@@ -1900,6 +1958,152 @@ mod tests {
         // 右半分を切ると、左半分（緑と赤の左側）が真ん中に寄る
         let c = px(SourceFx { crop: Some(Crop { right: 0.5, ..Default::default() }), ..Default::default() });
         assert_eq!((at(&c, 20, 18), at(&c, 40, 18), at(&c, 60, 18)), ('G', 'R', 'K'));
+    }
+
+    /// なめらかスロー：4 分の 1 の速さでも、コマごとに絵が動く（くり返しにならない）
+    #[test]
+    fn smooth_slow_motion_makes_new_frames() {
+        use crate::model::{Clip, SourceFx};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("mv.mp4");
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=2", "-f", "lavfi", "-i", "color=c=white:s=12x12:r=30:d=2", "-filter_complex", "[0][1]overlay=x='2+t*120':y=10", "-c:v", "libx264", "-g", "1", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let run = |smooth: bool| -> usize {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.clips.clear();
+            let fx = SourceFx { speed: 0.25, smooth, ..Default::default() };
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 24, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Video, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }) });
+            let out = d.path().join(format!("o{smooth}.mp4"));
+            let opt = ExportOptions::new("ffmpeg", &out, d.path());
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let raw = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "gray", "-"]).output().unwrap().stdout;
+            let fr: Vec<&[u8]> = raw.chunks(64 * 36).collect();
+            // となりのコマと見た目が変わった数
+            fr.windows(2).filter(|w| w[0].iter().zip(w[1]).map(|(a, b)| (*a as i32 - *b as i32).abs()).sum::<i32>() > 400).count()
+        };
+        let (plain, smooth) = (run(false), run(true));
+        assert!(plain <= 8, "ふつうは 4 コマずつ同じ {plain}");
+        assert!(smooth >= 14 && smooth > plain * 2, "なめらかならほぼ毎コマ動く {smooth} / {plain}");
+    }
+
+    /// GIF：範囲だけを、コマ数を落として、繰り返す GIF にする
+    #[test]
+    fn gif_export() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+        p.clips.clear();
+        let src = d.path().join("c.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=16x16", "-frames:v", "1"]).arg(&src).status().unwrap().success());
+        p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 60, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: Default::default() }) });
+        let out = d.path().join("o.gif");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        opt.range = Some((0.5, 1.5));
+        let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+        assert!(!args.iter().any(|a| a == "[aout]"), "音は使わない");
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let pr = std::process::Command::new("ffprobe").args(["-v", "error", "-count_frames", "-show_entries", "stream=codec_name,nb_read_frames,width", "-of", "csv=p=0"]).arg(&out).output().unwrap();
+        let s = String::from_utf8_lossy(&pr.stdout);
+        assert!(s.starts_with("gif,64,"), "{s}");
+        let n: i32 = s.trim().rsplit(',').next().unwrap().parse().unwrap();
+        assert!((n - 15).abs() <= 1, "1 秒 × 15 コマ: {n}");
+    }
+
+    /// LUT：書き出しでは .cube のとおりに色が変わり、強さで元の色と混ざる
+    #[test]
+    fn lut_changes_colors() {
+        use crate::model::{Clip, Effect};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("c.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x33b266:s=16x16", "-frames:v", "1"]).arg(&src).status().unwrap().success());
+        let cube = d.path().join("swap it.cube");
+        std::fs::write(&cube, crate::lut::sample_cube(9, |c| [c[1], c[0], c[2]])).unwrap();
+        for (strength, want) in [(1.0, [0xb2, 0x33, 0x66]), (0.5, [0x72, 0x72, 0x66])] {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (16, 16, 30);
+            p.clips.clear();
+            let look = Look { effects: vec![Effect::Lut { path: cube.to_string_lossy().into_owned(), strength }], ..Default::default() };
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look, audio_frames: None, src_fx: Default::default() }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(0.1);
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+            let c = &img[(8 * 16 + 8) * 3..(8 * 16 + 8) * 3 + 3];
+            for k in 0..3 {
+                assert!((c[k] as i32 - want[k]).abs() < 8, "強さ {strength} ch{k}: {c:?} / {want:?}");
+            }
+        }
+    }
+
+    /// 合成モード：下の絵と式どおりに混ざり、不透明度の分だけ効く。アイテムの外は変わらない
+    #[test]
+    fn blend_modes_mix_with_what_is_below() {
+        use crate::model::{BlendMode, Clip};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("b.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x2060c0:s=20x20", "-frames:v", "1"]).arg(&src).status().unwrap().success());
+        // (下, 上) → 期待値（canvas の式。α = 0.5）
+        let f = |m: BlendMode, b: f64, s: f64| -> f64 {
+            let (b, s) = (b / 255.0, s / 255.0);
+            let hard = |b: f64, s: f64| if s <= 0.5 { 2.0 * b * s } else { 1.0 - 2.0 * (1.0 - b) * (1.0 - s) };
+            let v = match m {
+                BlendMode::Multiply => b * s,
+                BlendMode::Screen => 1.0 - (1.0 - b) * (1.0 - s),
+                BlendMode::Overlay => hard(s, b),
+                BlendMode::Darken => b.min(s),
+                BlendMode::Lighten => b.max(s),
+                BlendMode::HardLight => hard(b, s),
+                BlendMode::Difference => (b - s).abs(),
+                BlendMode::Add => (b + s).min(1.0),
+            };
+            (0.5 * b + 0.5 * v) * 255.0
+        };
+        for m in [BlendMode::Multiply, BlendMode::Screen, BlendMode::Overlay, BlendMode::Darken, BlendMode::Lighten, BlendMode::HardLight, BlendMode::Difference, BlendMode::Add] {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.video.background = "#a04020".into();
+            p.clips.clear();
+            let look = Look { blend: Some(m), ..Default::default() };
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform { opacity: 0.5, ..Default::default() }, look, audio_frames: None, src_fx: Default::default() }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(0.1);
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+            let px = |x: usize, y: usize| [img[(y * 64 + x) * 3] as f64, img[(y * 64 + x) * 3 + 1] as f64, img[(y * 64 + x) * 3 + 2] as f64];
+            let bg = px(2, 2);
+            assert!((bg[0] - 160.0).abs() < 6.0 && (bg[1] - 64.0).abs() < 6.0, "{m:?} 外は下の絵のまま {bg:?}");
+            let c = px(32, 18);
+            for (i, (b, s)) in [(160.0, 32.0), (64.0, 96.0), (32.0, 192.0)].into_iter().enumerate() {
+                let want = f(m, b, s);
+                assert!((c[i] - want).abs() < 8.0, "{m:?} ch{i}: {} / {want}", c[i]);
+            }
+        }
     }
 
     /// 背景を消す型：白いところだけ残り、黒いところは背景になる（型は小さくても素材の大きさに合う）
