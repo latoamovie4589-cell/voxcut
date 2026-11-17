@@ -93,6 +93,7 @@ import {
   setCharacterForSelection,
   addVisualItem,
   addSticker,
+  addRegion,
   updateClip,
   selectOnly,
   setLinkedSelection,
@@ -1884,7 +1885,14 @@ export function Timeline() {
           })),
         },
         {label: 'テキストを追加', onClick: () => addVisualItem('text')},
-        {label: '図形を追加', items: BASIC_SHAPES.map(k => ({label: SHAPE_LABEL[k], onClick: () => addVisualItem('shape', k)}))},
+        {
+          label: '図形を追加',
+          items: [
+            ...BASIC_SHAPES.map(k => ({label: SHAPE_LABEL[k], onClick: () => addVisualItem('shape', k)})),
+            {label: 'モザイク範囲', onClick: () => addRegion('mosaic')},
+            {label: 'ぼかし範囲', onClick: () => addRegion('blur')},
+          ],
+        },
         {label: 'スタンプを追加', items: STICKERS.map(st => ({label: SHAPE_LABEL[st.kind], onClick: () => addSticker(st.kind)}))},
         {label: '素材を追加…', onClick: () => void addMedia()},
       ];
@@ -1947,6 +1955,8 @@ export function Timeline() {
           {BASIC_SHAPES.map(k => (
             <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
           ))}
+          <DropdownMenuItem label="モザイク範囲" description="形の中の下の絵をモザイクに（顔を隠すなど）" onClick={() => addRegion('mosaic')} />
+          <DropdownMenuItem label="ぼかし範囲" description="形の中の下の絵をぼかす" onClick={() => addRegion('blur')} />
         </DropdownMenu>
         <DropdownMenu button={{label: '効果音', size: 'sm', variant: 'ghost', icon: <Icon icon={Music2} />, isIconOnly: compact, tooltip: '効果音を再生位置に追加'}} menuWidth={160}>
           {SFX_LIST.map(sx => (
