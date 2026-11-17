@@ -724,6 +724,37 @@ async def main():
           const yl=cols.filter(v=>v).length/cols.length;
           return [sa.karaokeBounds([...'あい、う'], 100, 30), cols.length, Math.round(yl*100), cols.slice(0, cols.length/4|0).every(v=>v), cols.slice(cols.length*3/4|0).every(v=>!v)]}""")
         check("カラオケ字幕：書き出しと同じ区切りで、時間の分だけ左から塗る", r[0] == [0, 91, 182, 209, 300] and r[1] > 40 and abs(r[2] - 50) <= 12 and r[3] and r[4], str(r))
+        # ── お手本の動画の編集：クリッピング解除・言葉の色・字幕のグラデーション
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const st=v.visualAt({x:0,y:0,scale:1,opacity:1}, {rotation:0, fadeIn:0, fadeOut:0, enter:{kind:'wipeRight', frames:30}}, 15, 90, 30, 0.5, [64,36]);
+          const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d');
+          const im=document.createElement('canvas'); im.width=40; im.height=20; const g=im.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,40,20);
+          v.drawVisual(x, im, [40,20], st, 64, 36, 1);
+          const a=(X)=>x.getImageData(X,18,1,1).data[3];
+          const st2=v.visualAt({x:0,y:0,scale:1,opacity:1}, {rotation:0, fadeIn:0, fadeOut:0, exit:{kind:'wipeDown', frames:30}}, 75, 90, 30, 2.5, [64,36]);
+          return [st.wipe, a(14), a(38), a(46), st2.wipe]}""")
+        check("クリッピング解除（アイテム）：左から広がって現れ、退場は上から消える（書き出しと同じ式）", r[0] == [0, 0, 0.25, 0] and r[1] > 200 and r[2] > 200 and r[3] < 10 and r[4] == [0, 0.25, 0, 0], str(r))
+        r = await q.evaluate("""async()=>{const pv=await import('/src/preview/Preview.tsx'); const sa=await import('/src/subtitleAnim.ts'); const s=await import('/src/store.ts');
+          const p=s.getState().project; const mk=(o)=>({...p.characters[0], subtitle:{...p.characters[0].subtitle, color:'#FFFFFF', outlineWidth:0, shadowColor:'', boxColor:'', fontSize:120, position:'middle', ...o}});
+          const draw=(ch, f, hl, txt='WWWW')=>{const c=document.createElement('canvas'); c.width=p.video.width/2; c.height=p.video.height/2; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,c.width,c.height);
+            pv.drawSubtitle(x, txt, ch, p, 0.5, f, 60, hl); const d=x.getImageData(0,0,c.width,c.height).data; const cols=[];
+            for (let X=0; X<c.width; X++) { for (let Y=0; Y<c.height; Y++) { const i=(Y*c.width+X)*4; if (d[i]+d[i+1]+d[i+2]>300) { cols.push([X, d[i+1]<120]); break; } } } return cols};
+          const [x1,x2,ms]=sa.wipeBounds('WWWW', 120, p.video.width, 60, 30);
+          const mid=draw(mk({animation:'wipe'}), 7.5, null); const done=draw(mk({animation:'wipe'}), 30, null);
+          const cut=(x1+(x2-x1)*(250/ms))*0.5;
+          const hl=draw(mk({animation:'none'}), 10, [{word:'HHH', color:'#FF0000'}], 'HHHH');
+          const red=hl.filter(c=>c[1]).map(c=>c[0]); const white=hl.filter(c=>!c[1]).map(c=>c[0]);
+          return [sa.wipeBounds('あいう', 56, 1920, 90, 30), mid.length>0 && mid.every(c=>c[0]<cut+2), mid.length < done.length*3/4, (()=>{const xs=hl.map(c=>c[0]); const lo=Math.min(...xs), hi=Math.max(...xs); const L=hl.filter(c=>c[0]<lo+(hi-lo)*0.65), R=hl.filter(c=>c[0]>lo+(hi-lo)*0.8); return [L.filter(c=>c[1]).length, L.length, R.filter(c=>!c[1]).length, R.length, lo, hi]})()]}""")
+        check("クリッピング解除（字幕）：書き出しと同じ範囲・速さで左から現れる", r[0] == [859, 1061, 500] and r[1] and r[2], str(r))
+        check("言葉の色：字幕の中の言葉だけ色が変わる", r[3][0] > r[3][1]*0.8 and r[3][2] > r[3][3]*0.8, str(r))
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts'); const m=await import('/src/model.ts');
+          const vc={id:'v', trackId:'V1', start:0, duration:30, type:'voice', characterId:'x', text:'カニ', subtitle:null};
+          const sc={fontFamily:'sans-serif', fontSize:80, color:'#FFFF00', outlineColor:'#000000', outlineWidth:0, bold:true, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}, gradientColor:'#FF0000'};
+          const c=v.subtitleImage(vc, sc); const x=c.getContext('2d'); const d=x.getImageData(0,0,c.width,c.height).data;
+          let top=null, bot=null; for (let Y=0; Y<c.height; Y++) for (let X=0; X<c.width; X++) { const i=(Y*c.width+X)*4; if (d[i+3]>250) { if (!top) top=[d[i],d[i+1]]; bot=[d[i],d[i+1]]; } }
+          return [m.highlightMask('今日はカ\nニ漁', [{word:'カニ', color:'#F00'}, {word:'漁', color:'#00F'}]), top, bot]}""")
+        check("言葉の色：書き出しと同じ文字に色が付く", r[0] == [None, None, None, '#F00', '#F00', '#00F'], str(r))
+        check("個別に設定した字幕：グラデーション（上は黄色、下は赤）", r[1] is not None and r[1][1] > 150 and r[2][1] < r[1][1] - 60, str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
