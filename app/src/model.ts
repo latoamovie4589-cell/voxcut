@@ -541,6 +541,15 @@ export interface Look {
   transition?: Transition | null;
   /** 合成モード（下の絵との重ね方）。なしはふつうに重ねる */
   blend?: BlendMode | null;
+  /** 左右反転・上下反転（エフェクトより前に、素材そのものを裏返す） */
+  flipX?: boolean;
+  flipY?: boolean;
+  /** 画面の横・縦の倍率（大きさに掛ける。回したあとに掛ける。なしは 1・1） */
+  stretch?: [number, number] | null;
+  /** 回転・拡大の中心（アイテムの真ん中からのずれ。元の大きさの px）。位置はこの点の位置になる */
+  pivot?: [number, number] | null;
+  /** 3D 回転（X 軸・Y 軸の度）。アニメーションの終わりの値は anim.rot3d */
+  rot3d?: [number, number] | null;
 }
 
 /** 合成モード（画面は canvas の合成、書き出しは ffmpeg の blend。同じ式） */
@@ -591,6 +600,8 @@ export interface Anim {
   mid?: AnimMid | null;
   /** そのほかの途中の状態（キーフレーム。何点でも） */
   keys?: AnimMid[];
+  /** 終わりの 3D 回転（なしは始まりと同じ。途中の状態は通らず、始まりから終わりへ ease で動く） */
+  rot3d?: [number, number] | null;
 }
 export interface AnimMid {
   /** 通る時点（アイテムの長さに対する割合 0〜1） */
@@ -857,7 +868,44 @@ export type Effect =
   /** 色温度（warm：-1 で青く 〜 1 で黄色く）と色合い（tint：-1 で緑 〜 1 で赤紫） */
   | {kind: 'temperature'; warm: number; tint: number}
   /** LUT（.cube のファイル）。書き出しはそのまま、画面は近い色。strength は 0〜1 */
-  | {kind: 'lut'; path: string; strength: number};
+  | {kind: 'lut'; path: string; strength: number}
+  /** 縁取り（色・太さ px） */
+  | {kind: 'outline'; color: string; width: number}
+  /** ドロップシャドウ（色・ぼかし px・ずれ px・濃さ 0〜1） */
+  | {kind: 'shadow'; color: string; blur: number; x: number; y: number; opacity: number}
+  /** 発光（色・広がり px・重ねる回数 1〜5） */
+  | {kind: 'glow'; color: string; blur: number; strength: number}
+  /** 点滅（1 秒あたりの回数） */
+  | {kind: 'blink'; speed: number}
+  /** 残像（数・間隔フレーム） */
+  | {kind: 'trail'; count: number; interval: number}
+  /** 色ずれ（赤を右・青を左へずらす px） */
+  | {kind: 'rgbShift'; amount: number}
+  /** グリッチ（横のずれ px・帯の高さ px・1 秒あたりに変わる回数） */
+  | {kind: 'glitch'; amount: number; band: number; speed: number}
+  /** ノイズ（強さ 0〜1） */
+  | {kind: 'noise'; amount: number}
+  /** 放射ブラー（強さ 0〜0.9） */
+  | {kind: 'radialBlur'; amount: number}
+  /** 方向ブラー（長さ px・角度） */
+  | {kind: 'dirBlur'; length: number; angle: number}
+  /** 二値化（しきい値 0〜1） */
+  | {kind: 'threshold'; level: number}
+  /** ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数） */
+  | {kind: 'jitter'; amount: number; speed: number}
+  /** 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数） */
+  | {kind: 'oscillate'; x: number; y: number; speed: number};
+
+/** 決まった乱数（0〜1）。書き出しの model.rs の hash01 と同じ式 */
+export function hash01(a: number, b: number): number {
+  const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+  return v - Math.floor(v);
+}
+/** ランダム移動のずれ（アイテムの頭からの秒 t で。model.rs の jitter_at と同じ） */
+export function jitterAt(amount: number, speed: number, t: number): [number, number] {
+  const n = Math.floor(t * speed);
+  return [amount * (hash01(n, 1) * 2 - 1), amount * (hash01(n, 2) * 2 - 1)];
+}
 
 /**
  * フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。
