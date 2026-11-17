@@ -3,7 +3,7 @@
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
 import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {BLEND_CANVAS, animStateAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
+import {BLEND_CANVAS, animStateAt, easeValue, hash01, jitterAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
 import {api, type LutFit} from '../ipc';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 
@@ -20,6 +20,12 @@ export interface VisualState {
   blend?: BlendMode | null;
   /** クリッピング解除で隠すところ（アイテムの幅・高さに対する割合。左・上・右・下） */
   wipe?: [number, number, number, number];
+  /** 画面の横・縦の倍率（回したあとに掛ける） */
+  stretch?: [number, number];
+  /** 3D 回転（X 軸・Y 軸の度） */
+  rot3d?: [number, number];
+  /** 残像（数・間隔フレーム） */
+  trail?: [number, number];
 }
 
 /**
@@ -63,6 +69,7 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
   apply(l?.exit, len => (l?.exit?.smooth ? smooth(c01((sec - Math.max(0, d - len)) / len)) : c01((sec - Math.max(0, d - len)) / len) ** 2));
   const filters: string[] = [];
   let blur = 0;
+  let trail: [number, number] | undefined;
   for (const fx of l?.effects ?? []) {
     if (fx.kind === 'color') {
       if (fx.brightness !== 1) filters.push(`brightness(${fx.brightness})`);
@@ -82,9 +89,337 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
     else if (fx.kind === 'shake') {
       tr.x += fx.amount * Math.sin(2 * Math.PI * fx.speed * abs);
       tr.y += fx.amount * Math.cos(2 * Math.PI * fx.speed * abs * 1.37);
+    } else if (fx.kind === 'blink' && fx.speed > 0) {
+      if (Math.floor(sec * fx.speed * 2) % 2) alpha = 0;
+    } else if (fx.kind === 'jitter' && fx.speed > 0) {
+      const [jx, jy] = jitterAt(fx.amount, fx.speed, sec);
+      tr.x += jx;
+      tr.y += jy;
+    } else if (fx.kind === 'oscillate') {
+      tr.x += fx.x * Math.sin(2 * Math.PI * fx.speed * sec);
+      tr.y += fx.y * Math.sin(2 * Math.PI * fx.speed * sec);
+    } else if (fx.kind === 'threshold') filters.push(thresholdFilter(fx.level));
+    else if (fx.kind === 'trail' && fx.count > 0 && fx.interval > 0) trail = [Math.min(8, fx.count), fx.interval];
+  }
+  const [kx, ky] = (l?.stretch ?? [1, 1]).map(v => Math.max(0.01, v));
+  // 回転・拡大の中心：その点が位置に来るよう、中心から点までを回して大きさを掛けた分だけ戻す（書き出しと同じ）
+  const pv = l?.pivot;
+  if (pv && (pv[0] || pv[1])) {
+    const a = (rotation * Math.PI) / 180;
+    tr.x -= (pv[0] * Math.cos(a) - pv[1] * Math.sin(a)) * kx * tr.scale;
+    tr.y -= (pv[0] * Math.sin(a) + pv[1] * Math.cos(a)) * ky * tr.scale;
+  }
+  // 3D 回転：始まり → 終わりへ ease で（途中の状態は通らない）
+  const r0 = l?.rot3d ?? [0, 0];
+  const r1 = l?.anim?.rot3d ?? r0;
+  const ek = l?.anim ? easeValue(l.anim.ease, p) : 0;
+  const rot3d: [number, number] = [r0[0] + (r1[0] - r0[0]) * ek, r0[1] + (r1[1] - r0[1]) * ek];
+  return {
+    transform: tr,
+    rotation,
+    alpha,
+    filter: filters.join(' '),
+    blur,
+    blend: l?.blend ?? null,
+    wipe: wipe.some(v => v > 0) ? wipe : undefined,
+    stretch: kx !== 1 || ky !== 1 ? [kx, ky] : undefined,
+    rot3d: rot3d[0] || rot3d[1] ? rot3d : undefined,
+    trail,
+  };
+}
+
+/** 二値化の SVG フィルター（明るさ 0.299R+0.587G+0.114B がしきい値より上なら白。書き出しの geq と同じ） */
+function thresholdFilter(level: number): string {
+  const n = 256;
+  const L = Math.min(1, Math.max(0, level)) * 255;
+  // 明るさ v（0〜255）の i 番目の区間 [i, i+1) の値
+  const tb = Array.from({length: n}, (_, i) => (i > L ? 1 : 0)).join(' ');
+  return svgFilter(
+    `vx-th-${Math.round(L)}`,
+    `<feColorMatrix type="matrix" values="0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0.299 0.587 0.114 0 0  0 0 0 1 0"/><feComponentTransfer><feFuncR type="discrete" tableValues="${tb}"/><feFuncG type="discrete" tableValues="${tb}"/><feFuncB type="discrete" tableValues="${tb}"/></feComponentTransfer>`,
+  );
+}
+
+const dimsOf = (img: CanvasImageSource): [number, number] => [
+  (img as HTMLVideoElement).videoWidth || (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width || 0,
+  (img as HTMLVideoElement).videoHeight || (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height || 0,
+];
+
+/** 画素を読むエフェクト（書き出しの pixel_effect と同じもの） */
+const PIXEL_FX = new Set(['wave', 'swirl', 'outline', 'shadow', 'glow', 'rgbShift', 'glitch', 'noise', 'radialBlur', 'dirBlur']);
+/** 縁取りで形を読む向き（書き出しの RING と同じ） */
+const RING = 16;
+
+/**
+ * 波・渦巻き・縁取り・影・発光・色ずれ・グリッチ・ノイズ・放射ブラー・方向ブラーを、エフェクトの順に掛ける（書き出しの pixel_effect と同じ式）。
+ * size は元の大きさ、t はアイテムの頭からの秒、k は画面の 1px が元の何 px か。広がるもの（縁取り・影など）は、元の大きさで数えた余白を足した大きさを返す
+ */
+export function effectsSource(img: CanvasImageSource, size: [number, number], effects: Effect[] | undefined, t: number, k: number, fps = 30): {img: CanvasImageSource; size: [number, number]} {
+  const list = (effects ?? []).filter(e => PIXEL_FX.has(e.kind));
+  if (!list.length) return {img, size};
+  let src = img;
+  let sz: [number, number] = [...size];
+  for (const fx of list) {
+    const [iw, ih] = dimsOf(src);
+    if (!iw || !ih || !sz[0]) break;
+    const r = iw / sz[0]; // 元の 1px が今の画像の何 px か
+    if (fx.kind === 'wave' || fx.kind === 'swirl') {
+      src = distort(src, sz, [fx], t, k * r);
+      continue;
+    }
+    // 元の px で数えた余白 p を、四方に足す（書き出しの pad と同じく整数に切り上げ）
+    const grow = (p: number) => {
+      const pp = Math.ceil(p);
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(iw + pp * 2 * r));
+      cv.height = Math.max(1, Math.round(ih + pp * 2 * r));
+      cv.getContext('2d')!.drawImage(src, pp * r, pp * r, iw, ih);
+      sz = [sz[0] + pp * 2, sz[1] + pp * 2];
+      return cv;
+    };
+    // 形を色で塗ったもの
+    const silhouette = (base: HTMLCanvasElement, color: string) => {
+      const cv = document.createElement('canvas');
+      cv.width = base.width;
+      cv.height = base.height;
+      const x = cv.getContext('2d')!;
+      x.drawImage(base, 0, 0);
+      x.globalCompositeOperation = 'source-in';
+      x.fillStyle = color;
+      x.fillRect(0, 0, cv.width, cv.height);
+      return cv;
+    };
+    const blank = (base: HTMLCanvasElement) => {
+      const cv = document.createElement('canvas');
+      cv.width = base.width;
+      cv.height = base.height;
+      return [cv, cv.getContext('2d')!] as const;
+    };
+    if (fx.kind === 'outline' && fx.width > 0) {
+      const w = fx.width * k;
+      const base = grow(w + 1);
+      const sil = silhouette(base, fx.color);
+      const [cv, x] = blank(base);
+      x.drawImage(sil, 0, 0);
+      for (const rr of [w, w / 2])
+        for (let i = 0; i < RING; i++) {
+          const a = (i * Math.PI * 2) / RING;
+          x.drawImage(sil, rr * Math.cos(a) * r, rr * Math.sin(a) * r);
+        }
+      x.drawImage(base, 0, 0);
+      src = cv;
+    } else if (fx.kind === 'shadow' || fx.kind === 'glow') {
+      const b = Math.max(0, fx.blur) * k;
+      const [dx, dy] = fx.kind === 'shadow' ? [fx.x * k, fx.y * k] : [0, 0];
+      const base = grow(b * 3 + Math.max(Math.abs(dx), Math.abs(dy)) + 1);
+      const sil = silhouette(base, fx.color);
+      const [cv, x] = blank(base);
+      if (b > 0) x.filter = `blur(${b * r}px)`;
+      if (fx.kind === 'shadow') {
+        x.globalAlpha = Math.min(1, Math.max(0, fx.opacity));
+        x.drawImage(sil, dx * r, dy * r);
+      } else for (let i = 0; i < Math.min(5, Math.max(1, Math.round(fx.strength))); i++) x.drawImage(sil, 0, 0);
+      x.filter = 'none';
+      x.globalAlpha = 1;
+      x.drawImage(base, 0, 0);
+      src = cv;
+    } else if (fx.kind === 'radialBlur' && fx.amount > 0) {
+      // 真ん中へ向かって 8 点読む＝真ん中を中心に 1/s 倍した 8 枚の平均
+      const a = Math.min(0.9, fx.amount);
+      const [cv, x] = blank(grow(0));
+      x.globalCompositeOperation = 'lighter';
+      x.globalAlpha = 1 / 8;
+      for (let i = 0; i < 8; i++) {
+        const sc = 1 / (1 - (a * i) / 7);
+        x.drawImage(src, (iw - iw * sc) / 2, (ih - ih * sc) / 2, iw * sc, ih * sc);
+      }
+      src = cv;
+    } else if (fx.kind === 'dirBlur' && fx.length > 0) {
+      const l = fx.length * k;
+      const base = grow(l / 2 + 1);
+      const [cv, x] = blank(base);
+      x.globalCompositeOperation = 'lighter';
+      x.globalAlpha = 1 / 8;
+      const [c, sn] = [Math.cos((fx.angle * Math.PI) / 180), Math.sin((fx.angle * Math.PI) / 180)];
+      for (let i = 0; i < 8; i++) {
+        const d = l * (i / 7 - 0.5) * r;
+        x.drawImage(base, d * c, d * sn);
+      }
+      src = cv;
+    } else if (fx.kind === 'glitch' && fx.band > 0) {
+      // 帯ごと・時刻ごとに、4 割の帯だけ横にずらす（書き出しと同じ乱数）
+      const a = fx.amount * k;
+      const base = grow(Math.abs(a) + 1);
+      const [cv, x] = blank(base);
+      const n = Math.floor(t * fx.speed);
+      for (let y = 0; y < base.height; y++) {
+        const row = Math.floor((y + 0.5) / r / (fx.band * k));
+        const off = hash01(row + 0.5, n + 7) > 0.6 ? a * (hash01(row, n) * 2 - 1) : 0;
+        x.drawImage(base, 0, y, base.width, 1, off * r, y, base.width, 1);
+      }
+      src = cv;
+    } else if ((fx.kind === 'rgbShift' && fx.amount) || (fx.kind === 'noise' && fx.amount > 0)) {
+      const base = fx.kind === 'rgbShift' ? grow(Math.abs(fx.amount * k) + 1) : grow(0);
+      const W = base.width;
+      const H = base.height;
+      const x = base.getContext('2d', {willReadFrequently: true})!;
+      let d: ImageData;
+      try {
+        d = x.getImageData(0, 0, W, H);
+      } catch {
+        continue; // 読めない画像（別のオリジンの動画など）はそのまま
+      }
+      const o = x.createImageData(W, H);
+      const at = (X: number, Y: number, c: number) => {
+        const x0 = Math.floor(X);
+        const f = X - x0;
+        const g = (xx: number) => (xx < 0 || xx >= W ? 0 : d.data[(Y * W + xx) * 4 + c]);
+        return g(x0) * (1 - f) + g(x0 + 1) * f;
+      };
+      if (fx.kind === 'rgbShift') {
+        const a = fx.amount * k * r;
+        for (let Y = 0; Y < H; Y++)
+          for (let X = 0; X < W; X++) {
+            const i = (Y * W + X) * 4;
+            o.data[i] = at(X - a, Y, 0);
+            o.data[i + 1] = d.data[i + 1];
+            o.data[i + 2] = at(X + a, Y, 2);
+            o.data[i + 3] = Math.max(at(X - a, Y, 3), d.data[i + 3], at(X + a, Y, 3));
+          }
+      } else {
+        const N = Math.round(t * fps);
+        const amp = Math.min(1, fx.amount) * 255 * 2;
+        for (let Y = 0; Y < H; Y++)
+          for (let X = 0; X < W; X++) {
+            const i = (Y * W + X) * 4;
+            const v = (hash01(X / r + (Y / r) * 0.618, N + 0.37) - 0.5) * amp;
+            o.data[i] = d.data[i] + v;
+            o.data[i + 1] = d.data[i + 1] + v;
+            o.data[i + 2] = d.data[i + 2] + v;
+            o.data[i + 3] = d.data[i + 3];
+          }
+      }
+      x.putImageData(o, 0, 0);
+      src = base;
     }
   }
-  return {transform: tr, rotation, alpha, filter: filters.join(' '), blur, blend: l?.blend ?? null, wipe: wipe.some(v => v > 0) ? wipe : undefined};
+  return {img: src, size: sz};
+}
+
+/** 3D 回転の枠の広さ（書き出しの TILT_PAD と同じ） */
+export const TILT_PAD = 1.4;
+/** 3D 回転の枠の大きさ（書き出しの pad と同じく偶数に切り上げ） */
+const tiltSize = (n: number) => Math.ceil((n * TILT_PAD) / 2) * 2;
+
+/**
+ * 3D 回転：画像を TILT_PAD 倍の透明な枠の真ん中に置き、X 軸・Y 軸で傾ける（書き出しの tilt_filters と同じ式）。
+ * size は元の大きさ。返す大きさも元の大きさで数えた枠の大きさ
+ */
+export function tilt3d(img: CanvasImageSource, size: [number, number], rot: [number, number]): {img: CanvasImageSource; size: [number, number]} {
+  const out: [number, number] = [tiltSize(size[0]), tiltSize(size[1])];
+  const iw = (img as HTMLVideoElement).videoWidth || (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
+  const ih = (img as HTMLVideoElement).videoHeight || (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
+  if (!iw || !ih) return {img, size};
+  // プレビューでは小さめにして計算する（長い辺 480px まで）
+  const r = Math.min(1, 480 / Math.max(iw, ih));
+  const sw = Math.max(1, Math.round(iw * r));
+  const sh = Math.max(1, Math.round(ih * r));
+  const W = tiltSize(sw);
+  const H = tiltSize(sh);
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const x = cv.getContext('2d', {willReadFrequently: true})!;
+  x.drawImage(img, Math.floor((W - sw) / 2), Math.floor((H - sh) / 2), sw, sh);
+  let src: ImageData;
+  try {
+    src = x.getImageData(0, 0, W, H);
+  } catch {
+    return {img, size}; // 読めない画像（別のオリジンの動画など）はそのまま
+  }
+  const dst = x.createImageData(W, H);
+  const rx = (rot[0] * Math.PI) / 180;
+  const ry = (rot[1] * Math.PI) / 180;
+  const f = (Math.max(W, H) * 2) / TILT_PAD;
+  const [sx, cx, sy, cy] = [Math.sin(rx), Math.cos(rx), Math.sin(ry), Math.cos(ry)];
+  const d = src.data;
+  const o = dst.data;
+  // 端の外は透明として、4 点の間を混ぜて読む
+  const px = (X: number, Y: number, c: number) => (X < 0 || Y < 0 || X >= W || Y >= H ? 0 : d[(Y * W + X) * 4 + c]);
+  for (let Y = 0; Y < H; Y++)
+    for (let X = 0; X < W; X++) {
+      const xc = X - W / 2;
+      const yc = Y - H / 2;
+      const A = f * cy + xc * sy;
+      const B = f * sx * sy - xc * sx * cy;
+      const C = yc * sy;
+      const D = f * cx - yc * sx * cy;
+      const det = A * D - B * C;
+      if (Math.abs(det) <= 1e-6) continue;
+      const u = (f * (xc * D - yc * B)) / det;
+      const v = (f * (A * yc - C * xc)) / det;
+      if (f - u * sy + v * sx * cy <= 1) continue;
+      const qx = u + W / 2;
+      const qy = v + H / 2;
+      const x0 = Math.floor(qx);
+      const y0 = Math.floor(qy);
+      const fx = qx - x0;
+      const fy = qy - y0;
+      const i = (Y * W + X) * 4;
+      for (let c = 0; c < 4; c++) o[i + c] = (px(x0, y0, c) * (1 - fx) + px(x0 + 1, y0, c) * fx) * (1 - fy) + (px(x0, y0 + 1, c) * (1 - fx) + px(x0 + 1, y0 + 1, c) * fx) * fy;
+    }
+  x.putImageData(dst, 0, 0);
+  return {img: cv, size: out};
+}
+
+/**
+ * アイテムの絵を、置く前に加工する（書き出しの visual_filters の前半と同じ順）：反転 → 波・渦巻き →（3D 回転があれば）クリッピング解除 → 3D 回転。
+ * t はアイテムの頭からの秒、k は画面の 1px が画像の何 px か。3D 回転でクリッピング解除を済ませたときは、返す見た目から外す
+ */
+export function itemSource(
+  img: CanvasImageSource,
+  size: [number, number],
+  look: Look | undefined | null,
+  st: VisualState,
+  t: number,
+  k: number,
+  fps = 30,
+): {img: CanvasImageSource; size: [number, number]; st: VisualState} {
+  let src = img;
+  if (look?.flipX || look?.flipY) {
+    const iw = (img as HTMLVideoElement).videoWidth || (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
+    const ih = (img as HTMLVideoElement).videoHeight || (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
+    if (iw && ih) {
+      const cv = document.createElement('canvas');
+      cv.width = iw;
+      cv.height = ih;
+      const x = cv.getContext('2d')!;
+      x.translate(look.flipX ? iw : 0, look.flipY ? ih : 0);
+      x.scale(look.flipX ? -1 : 1, look.flipY ? -1 : 1);
+      x.drawImage(img, 0, 0);
+      src = cv;
+    }
+  }
+  const ef = effectsSource(src, size, look?.effects, t, k, fps);
+  src = ef.img;
+  size = ef.size;
+  if (!st.rot3d) return {img: src, size, st};
+  if (st.wipe) {
+    // 傾ける前に隠す（書き出しと同じ）
+    const iw = (src as HTMLVideoElement).videoWidth || (src as HTMLImageElement).naturalWidth || (src as HTMLCanvasElement).width;
+    const ih = (src as HTMLVideoElement).videoHeight || (src as HTMLImageElement).naturalHeight || (src as HTMLCanvasElement).height;
+    const cv = document.createElement('canvas');
+    cv.width = iw;
+    cv.height = ih;
+    const x = cv.getContext('2d')!;
+    const [l, tp, r, b] = st.wipe;
+    x.rect(iw * l, ih * tp, Math.max(0, iw * (1 - l - r)), Math.max(0, ih * (1 - tp - b)));
+    x.clip();
+    x.drawImage(src, 0, 0);
+    src = cv;
+  }
+  const tl = tilt3d(src, size, st.rot3d);
+  return {img: tl.img, size: tl.size, st: {...st, wipe: undefined}};
 }
 
 /**
@@ -363,6 +698,8 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
   const f = [st.filter, st.blur > 0 ? `blur(${st.blur * viewScale}px)` : ''].filter(Boolean).join(' ');
   if (f) ctx.filter = f;
   ctx.translate(cx, cy);
+  // 縦横の倍率は回したあと（書き出しと同じ順）
+  if (st.stretch) ctx.scale(st.stretch[0], st.stretch[1]);
   if (st.rotation) ctx.rotate((st.rotation * Math.PI) / 180);
   if (st.wipe) {
     // クリッピング解除：見えるところだけ（回す前の向きで）
@@ -375,7 +712,8 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
   }
   ctx.drawImage(img, (-size[0] * s) / 2, (-size[1] * s) / 2, size[0] * s, size[1] * s);
   ctx.restore();
-  return {x: cx - (bw * s) / 2, y: cy - (bh * s) / 2, w: bw * s, h: bh * s};
+  const [kx, ky] = st.stretch ?? [1, 1];
+  return {x: cx - (bw * s * kx) / 2, y: cy - (bh * s * ky) / 2, w: bw * s * kx, h: bh * s * ky};
 }
 
 /**

@@ -30,7 +30,7 @@ import {
   proxyKey,
   matteKey,
 } from '../model';
-import {distort, drawRegion, drawVisual, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
+import {distort, drawRegion, drawVisual, itemSource, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
@@ -551,16 +551,32 @@ export function Preview() {
         if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
         // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
         // キーフレームのあるアイテムは、ドラッグ中も確定した値（点を動かした結果）で描く
-        const look = (key: string, tr: Transform) => visualAt(c.look?.anim ? tr : tf(key, tr), c.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
-        // 波・渦巻き（元の大きさで掛ける。時刻はアイテムの頭から）
-        const warp = (img: CanvasImageSource, size: [number, number]) => distort(img, size, c.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, c.transform.scale));
+        const lookAt = (key: string, tr: Transform, local: number) =>
+          visualAt(c.look?.anim ? tr : tf(key, tr), c.look, local, c.duration, fps, (c.start + local) / fps, [p.video.width, p.video.height]);
+        const look = (key: string, tr: Transform) => lookAt(key, tr, playhead - c.start);
+        // 反転・波・渦巻き・3D 回転（元の大きさで掛ける。時刻はアイテムの頭から）して置く
+        const put = (img: CanvasImageSource, size: [number, number], key: string, tr: Transform) => {
+          const k = 1 / Math.max(0.01, c.transform.scale);
+          const st = look(key, tr);
+          // 残像：古いものから、前の時点の姿と位置で薄く重ねる（書き出しと同じ）
+          if (st.trail) {
+            const [n, iv] = st.trail;
+            for (let j = n; j >= 1; j--) {
+              const loc = playhead - c.start - j * iv;
+              if (loc < 0) continue;
+              const s2 = lookAt(key, tr, loc);
+              s2.alpha *= 1 - j / (n + 1);
+              const tv = itemSource(img, size, c.look, s2, loc / fps, k, fps);
+              drawVisual(ctx, tv.img, tv.size, {...tv.st, blend: null}, w, h, scale);
+            }
+          }
+          const sv = itemSource(img, size, c.look, st, (playhead - c.start) / fps, k, fps);
+          return c.type === 'shape' && c.region ? drawRegion(ctx, sv.img, sv.size, sv.st, w, h, scale, c.region) : drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+        };
         if (c.type === 'text' || c.type === 'shape') {
           const img = itemImage(c)!;
           const key = `m:${c.id}`;
-          const rect =
-            c.type === 'shape' && c.region
-              ? drawRegion(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale, c.region)
-              : drawVisual(ctx, warp(img, [img.width, img.height]), [img.width, img.height], look(key, c.transform), w, h, scale);
+          const rect = put(img, [img.width, img.height], key, c.transform);
           if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
           continue;
         }
@@ -575,7 +591,7 @@ export function Preview() {
             // 切り抜き・色抜き・形の切り抜き（書き出しと同じく、大きさを変える前に）
             const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src, matte);
             if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
-            const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
+            const rect = put(sv.img, sv.size, key, m.transform);
             if (!locked.has(m.trackId))
               targets.push({
                 key,
@@ -613,7 +629,7 @@ export function Preview() {
               }
               const sv = sourceView(v, [info.width, info.height], m, false, '', matte);
               if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
-              const rect = drawVisual(ctx, warp(sv.img, sv.size), sv.size, look(key, m.transform), w, h, scale);
+              const rect = put(sv.img, sv.size, key, m.transform);
               if (!locked.has(m.trackId))
                 targets.push({
                   key,
@@ -653,8 +669,9 @@ export function Preview() {
           const img = subtitleImage(v, sc, visibleChars(sc, text, playhead - c.start));
           const key = `s:${v.id}`;
           const tr = tf(key, sc.transform);
-          const warped = distort(img, [img.width, img.height], sc.look?.effects, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
-          const rect = drawVisual(ctx, warped, [img.width, img.height], visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]), w, h, scale);
+          const st = visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+          const sv = itemSource(img, [img.width, img.height], sc.look, st, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
+          const rect = drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
           if (!locked.has(c.trackId)) targets.push({key, kind: 'subtitle', id: v.id, selectId: c.id, rect, transform: tr});
           continue;
         }
