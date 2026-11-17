@@ -671,6 +671,53 @@ async def main():
         check("CapCut の残りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
+        # ── 無音カット・モザイク範囲・分割画面
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const out={};
+          for (const kind of ['mosaic','blur']) {
+            const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d');
+            for (let i=0;i<64;i++){x.fillStyle=i%2?'#fff':'#000'; x.fillRect(i,0,1,36);}
+            const sh=document.createElement('canvas'); sh.width=32; sh.height=36; const g=sh.getContext('2d'); g.fillStyle='#f00'; g.fillRect(0,0,32,36);
+            v.drawRegion(x, sh, [32,36], {transform:{x:-16,y:0,scale:1,opacity:1}, rotation:0, alpha:1, filter:'', blur:0}, 64, 36, 1, {kind, strength:4});
+            const row=(a,b)=>{const d=x.getImageData(a,18,b-a,1).data; const g=[]; for(let i=0;i<d.length;i+=4) g.push(d[i]); return [g, d]};
+            const [inn, di]=row(4,28); const [outs]=row(40,60);
+            const red=[...Array(di.length/4).keys()].some(i=>di[i*4]>200 && di[i*4+1]<60);
+            out[kind]=[Math.max(...inn)-Math.min(...inn), Math.max(...outs)-Math.min(...outs), red];
+          }
+          return out}""")
+        check("モザイク・ぼかし範囲：画面でも形の中だけ下の絵が均され、外は変わらず、図形の色は出ない", all(a < 60 and b > 200 and not red for a, b, red in r.values()), str(r))
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts'); s.addRegion('mosaic')}""")
+        await q.wait_for_timeout(300)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id===s.getState().selectedClipId); return [c.type, c.shape, c.region?.kind]}")
+        check("モザイク範囲：図形メニューから楕円の範囲を置ける", r == ['shape', 'ellipse', 'mosaic'], str(r))
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts');
+          const vt=s.getState().project.tracks.filter(t=>t.kind==='video'); const at=s.getState().project.tracks.find(t=>t.kind==='audio');
+          const base={type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, hasAudio:false, linkId:null};
+          s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>c.type!=='media' && c.type!=='shape'),
+            {...base, id:'sa', trackId:vt[0].id, start:0, duration:90, src:'/m/a.mp4', mediaKind:'video'},
+            {...base, id:'sb', trackId:vt[1].id, start:0, duration:90, src:'/m/b.png', mediaKind:'image'}]}));
+          s.setState({selectedClipId:'sa', selectedClipIds:['sa','sb']})}""")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_role("button", name="左右 2 分割").click(); await q.wait_for_timeout(500)
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const g=id=>{const c=s.getState().project.clips.find(c=>c.id===id); return [c.transform.x, c.transform.scale, c.crop]}; return [g('sa'), g('sb')]}""")
+        check("分割画面：選んだ素材をマスいっぱいに置き、はみ出すところは切り抜く", r == [[-480, 3, {'left': 0.25, 'right': 0.25, 'top': 0, 'bottom': 0}], [480, 2.4, {'left': 0, 'right': 0, 'top': 0.125, 'bottom': 0.125}]], str(r))
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const vt=s.getState().project.tracks.filter(t=>t.kind==='video');
+          const base={type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, linkId:null};
+          s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>c.type!=='media'), {...base, id:'tl', trackId:vt[0].id, start:0, duration:120, src:'/m/talk.mp4', mediaKind:'video', hasAudio:true},
+            {id:'tx9', trackId:vt[1].id, type:'shape', shape:'rect', start:100, duration:10, width:10, height:10, fill:'#fff', stroke:'', strokeWidth:0, transform:{x:0,y:0,scale:1,opacity:1}}]}));
+          window.__mockSilence=[[1,2]];
+          const sec=await a.cutSilence('tl', {thresholdDb:-38, minLen:0.6, pad:0.15});
+          const p=s.getState().project; const pieces=p.clips.filter(c=>c.type==='media').sort((a,b)=>a.start-b.start).map(c=>[c.start,c.duration,c.inPoint]);
+          return [Math.round(sec*30), pieces, p.clips.find(c=>c.id==='tx9').start]}""")
+        cut = r[0]
+        ok = 18 <= cut <= 24 and len(r[1]) == 2 and r[1][0][0] == 0 and r[1][1][0] == r[1][0][1] and r[1][0][1] + r[1][1][1] == 120 - cut and r[1][1][2] == r[1][0][1] + cut and r[2] == 100 - cut
+        check("無音カット：静かなところ（前後を少し残す）を切り取って詰め、後ろのアイテムも詰まる", ok, str(r))
+        check("無音カット：音のある素材に「静かなところを詰める」が出る", await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({selectedClipId:'tl', selectedClipIds:['tl']}); await new Promise(r=>setTimeout(r,300)); return [...document.querySelectorAll('button')].some(b=>b.textContent.includes('静かなところを詰める'))}"))
+        check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
         await b.close()
     print(f"\n{'すべて通りました' if not fails else str(len(fails)) + ' 件 NG'}")
