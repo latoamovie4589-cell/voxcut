@@ -986,3 +986,41 @@ fn collect_mattes(app: &AppHandle, project: &Project, project_dir: &Path) -> std
     }
     out
 }
+
+/// LUT（.cube）を画面用の近い形にする
+#[tauri::command]
+pub async fn lut_fit(path: PathBuf) -> CmdResult<voxcut_core::lut::LutFit> {
+    blocking(move || voxcut_core::lut::load(&path).map(|l| voxcut_core::lut::fit(&l)).map_err(err)).await
+}
+
+/// 被写体の位置を時刻ごとに調べる（背景を消す型を作って、その白いところの重心）。自動で位置合わせに使う
+#[tauri::command]
+pub async fn subject_track(app: AppHandle, state: State<'_, AppState>, src: PathBuf, model: String, still: bool, duration_ms: u64) -> CmdResult<Vec<voxcut_core::ai::SubjectPoint>> {
+    let ffmpeg = state.ffmpeg();
+    let mp = need_model(&app, &model)?;
+    let root = mattes_root(&app)?;
+    blocking(move || {
+        let id = src.to_string_lossy().into_owned();
+        let matte = voxcut_core::ai::make_matte(&ffmpeg, &mp, &model, &src, &root, still, duration_ms as f64 / 1000.0, &mut |ratio| {
+            let _ = app.emit("ai-progress", AiProgress { stage: "matte", id: id.clone(), ratio });
+        })
+        .map_err(err)?;
+        voxcut_core::ai::subject_points(&ffmpeg, &matte, still).map_err(err)
+    })
+    .await
+}
+
+/// 動画の中の 1 点を追う（素材の from〜to 秒。x・y・size は 0〜1）。進捗は "ai-progress"（stage "track"）
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn track_motion(app: AppHandle, state: State<'_, AppState>, src: PathBuf, from: f64, to: f64, x: f64, y: f64, size: f64) -> CmdResult<Vec<voxcut_core::track::TrackPoint>> {
+    let ffmpeg = state.ffmpeg();
+    blocking(move || {
+        let id = src.to_string_lossy().into_owned();
+        voxcut_core::track::track(&ffmpeg, &src, from, to, x, y, size, &mut |ratio| {
+            let _ = app.emit("ai-progress", AiProgress { stage: "track", id: id.clone(), ratio });
+        })
+        .map_err(err)
+    })
+    .await
+}
