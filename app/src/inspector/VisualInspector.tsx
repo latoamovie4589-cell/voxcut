@@ -1,6 +1,6 @@
 // テキスト・図形アイテムのプロパティと、画像・動画・テキスト・図形に共通の「動き・効果」（YMM4 のアニメーション・映像エフェクト）。
 
-import {useRef} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Hint} from '../Hint';
 import {Button} from '@astryxdesign/core/Button';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
@@ -27,6 +27,14 @@ import {KeyframeBar} from './KeyframeBar';
 import {TextDecoFields, TextDecoPicker} from './TextDeco';
 import {
   SHAPE_LABEL,
+  CONTROL_LABEL,
+  MAIN_SCENE,
+  type Scene,
+  type Plugin,
+  pluginEffect,
+  CHAR_ANIM_LABEL,
+  type CharAnim,
+  type Control,
   framesToTimecode,
   plainLook,
   type Ease,
@@ -45,7 +53,7 @@ import {
 } from '../model';
 import {api} from '../ipc';
 import {TrackSection} from './TrackSection';
-import {deleteClip, duplicateSelection, setState, updateClip, useStore} from '../store';
+import {deleteClip, duplicateSelection, openScene, renameScene, setState, updateClip, useStore} from '../store';
 
 const EFFECT_LABEL: Record<Effect['kind'], string> = {
   blur: 'ぼかし',
@@ -71,9 +79,18 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   threshold: '二値化',
   jitter: 'ランダム移動',
   oscillate: '反復移動',
+  plugin: 'プラグイン',
 };
 /** 立ち絵のセリフごとのエフェクトで使えるもの（書き出しの timed_effects と同じ） */
 export const PORTRAIT_FX: Effect['kind'][] = ['blur', 'shake', 'color', 'mono', 'invert', 'wave', 'swirl', 'grade', 'temperature', 'lut'];
+
+/** 読み込んだプラグイン（エフェクトの「追加」を開いたときに読み直す） */
+function usePlugins() {
+  const [list, setList] = useState<{dir: string; plugins: {file: string; plugin: Plugin | null; error: string | null}[]} | null>(null);
+  const reload = () => void api.then(a => a.listPlugins()).then(setList, () => setList({dir: '', plugins: []}));
+  useEffect(reload, []);
+  return [list, reload] as const;
+}
 const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   outline: {kind: 'outline', color: '#FFFFFF', width: 6},
   shadow: {kind: 'shadow', color: '#000000', blur: 6, x: 8, y: 8, opacity: 0.6},
@@ -454,12 +471,14 @@ export function EffectsEditor({
   kinds?: Effect['kind'][];
 }) {
   const setFx = (i: number, fx: Effect | null) => onChange(fx ? effects.map((e, j) => (j === i ? fx : e)) : effects.filter((_, j) => j !== i));
+  const [plugins, reloadPlugins] = usePlugins();
+  const withPlugins = !kinds;
   return (
     <>
       <HStack hAlign="between" vAlign="center">
         <Heading level={headingLevel}>{title}</Heading>
         <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={160}>
-          {(kinds ?? (Object.keys(EFFECT_LABEL) as Effect['kind'][])).map(k => (
+          {(kinds ?? (Object.keys(EFFECT_LABEL) as Effect['kind'][]).filter(k => k !== 'plugin')).map(k => (
             <DropdownMenuItem
               key={k}
               label={EFFECT_LABEL[k] + (k === 'lut' ? '…' : '')}
@@ -474,13 +493,31 @@ export function EffectsEditor({
               }}
             />
           ))}
+          {withPlugins &&
+            (plugins?.plugins ?? []).flatMap(f =>
+              f.plugin
+                ? f.plugin.effects.map(e => (
+                    <DropdownMenuItem key={`${f.file}:${e.id}`} label={e.label} description={`プラグイン（${f.plugin!.name}）`} onClick={() => onChange([...effects, pluginEffect(f.plugin!, e)])} />
+                  ))
+                : [<DropdownMenuItem key={f.file} label={`${f.file}（読めません）`} description={f.error ?? ''} onClick={() => {}} />],
+            )}
+          {withPlugins && plugins?.dir && (
+            <DropdownMenuItem
+              label="プラグインのフォルダを開く"
+              description="エフェクトの .json を置くと、ここに出ます"
+              onClick={() => {
+                void api.then(a => a.openPath(plugins.dir));
+                reloadPlugins();
+              }}
+            />
+          )}
         </DropdownMenu>
       </HStack>
       {!effects.length && <Text type="supporting">{empty}</Text>}
       {effects.map((fx, i) => (
         <div key={i} className="vx-preset">
           <HStack hAlign="between" vAlign="center">
-            <Text type="label">{EFFECT_LABEL[fx.kind]}</Text>
+            <Text type="label">{fx.kind === 'plugin' ? fx.name : EFFECT_LABEL[fx.kind]}</Text>
             <IconButton label={`${EFFECT_LABEL[fx.kind]}を外す`} size="sm" variant="ghost" icon={<Icon icon={X} />} onClick={() => setFx(i, null)} />
           </HStack>
           {fx.kind === 'blur' && (
@@ -617,6 +654,24 @@ export function EffectsEditor({
               <Slider label="速さ" value={fx.speed} min={0.1} max={10} step={0.1} valueDisplay="text" formatValue={v => `${v} 回/秒`} onChange={(speed: number) => setFx(i, {...fx, speed})} />
             </VStack>
           )}
+          {fx.kind === 'plugin' && (
+            <VStack gap={2}>
+              {(fx.params ?? []).map(pa => (
+                <Slider
+                  key={pa.key}
+                  label={pa.label}
+                  value={fx.values[pa.key] ?? pa.default}
+                  min={pa.min}
+                  max={pa.max}
+                  step={pa.step || 0.01}
+                  valueDisplay="text"
+                  formatValue={v => `${Math.round(v * 1000) / 1000}`}
+                  onChange={(v: number) => setFx(i, {...fx, values: {...fx.values, [pa.key]: v}})}
+                />
+              ))}
+              {!fx.canvas && <Text type="supporting">このエフェクトはプレビューには出ません（書き出しでは掛かります）</Text>}
+            </VStack>
+          )}
           {fx.kind === 'color' && (
             <VStack gap={2}>
               <Slider label="明るさ" value={fx.brightness} min={0} max={2} step={0.01} valueDisplay="text" formatValue={pct} onChange={(brightness: number) => setFx(i, {...fx, brightness})} />
@@ -729,6 +784,46 @@ export function TextInspector({clip}: {clip: TextClip}) {
         <HStack gap={2} hAlign="start">
           <RubyButton host={() => textRef.current} value={clip.text} onChange={text => set({text})} />
         </HStack>
+        <Switch label="縦書き" value={!!clip.vertical} onChange={vertical => set({vertical: vertical || undefined})} labelPosition="start" labelSpacing="spread" width="100%" />
+        <Switch
+          label="1 文字ずつ出す"
+          value={!!clip.charAnim}
+          onChange={on => set({charAnim: on ? {kind: 'fade', interval: 3, length: 8} : null})}
+          labelPosition="start"
+          labelSpacing="spread"
+          width="100%"
+        />
+        {clip.charAnim && (
+          <VStack gap={2}>
+            <SegmentedControl label="出かた" size="sm" layout="fill" value={clip.charAnim.kind} onChange={v => set({charAnim: {...clip.charAnim!, kind: v as CharAnim['kind']}})}>
+              {(Object.keys(CHAR_ANIM_LABEL) as CharAnim['kind'][]).map(k => (
+                <SegmentedControlItem key={k} value={k} label={CHAR_ANIM_LABEL[k]} />
+              ))}
+            </SegmentedControl>
+            <Slider
+              label="次の文字までの間隔"
+              value={clip.charAnim.interval}
+              min={1}
+              max={30}
+              step={1}
+              valueDisplay="text"
+              formatValue={v => `${v} フレーム`}
+              onChange={(interval: number) => set({charAnim: {...clip.charAnim!, interval}})}
+            />
+            {clip.charAnim.kind !== 'type' && (
+              <Slider
+                label="1 文字が出きるまで"
+                value={clip.charAnim.length}
+                min={1}
+                max={60}
+                step={1}
+                valueDisplay="text"
+                formatValue={v => `${v} フレーム`}
+                onChange={(length: number) => set({charAnim: {...clip.charAnim!, length}})}
+              />
+            )}
+          </VStack>
+        )}
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
@@ -742,12 +837,78 @@ export function TextInspector({clip}: {clip: TextClip}) {
   );
 }
 
+const NO_SCENES: Scene[] = [];
+
 export function ShapeInspector({clip}: {clip: ShapeClip}) {
   const set = (patch: Partial<ShapeClip>) => updateClip(clip.id, patch);
+  const ctl = clip.control;
+  const scenes = (useStore(s => s.project?.scenes) ?? NO_SCENES).filter(x => x.id !== MAIN_SCENE);
+  const editing = useStore(s => s.project?.sceneId ?? null);
+  if (clip.scene)
+    return (
+      <>
+        <VStack gap={3} paddingBlock={4} paddingInline={4}>
+          <ItemHeader clip={clip} title="シーン" />
+          <Selector label="置くシーン" value={clip.scene} options={scenes.filter(x => x.id !== editing).map(x => ({value: x.id, label: x.name}))} onChange={v => set({scene: v})} width="100%" />
+          <Text type="supporting">シーンを、このアイテムの頭から再生して置きます。位置・大きさ・回転・エフェクトはシーン全体に掛かります。</Text>
+          <TextInput label="シーンの名前" value={scenes.find(x => x.id === clip.scene)?.name ?? ''} onChange={name => renameScene(clip.scene!, name)} />
+          <div>
+            <Button label="このシーンを開く" size="sm" variant="secondary" onClick={() => openScene(clip.scene!)} />
+          </div>
+        </VStack>
+        <Divider />
+        <LookEditor clip={clip} />
+      </>
+    );
+  if (ctl)
+    return (
+      <>
+        <VStack gap={3} paddingBlock={4} paddingInline={4}>
+          <ItemHeader clip={clip} title={CONTROL_LABEL[ctl.kind]} />
+          <SegmentedControl label="種類" layout="fill" value={ctl.kind} onChange={v => set({control: {...ctl, kind: v as Control['kind']}})}>
+            <SegmentedControlItem value="group" label="グループ制御" />
+            <SegmentedControlItem value="camera" label="カメラ" />
+            <SegmentedControlItem value="adjust" label="調整レイヤー" />
+          </SegmentedControl>
+          <Text type="supporting">
+            {ctl.kind === 'group'
+              ? 'すぐ下のレイヤーをまとめて、このアイテムの位置・大きさ・回転・不透明度・エフェクトで動かします。'
+              : ctl.kind === 'camera'
+                ? '下のレイヤー全部を、カメラを動かしたように見せます（右へ動かすと絵は左へ、大きくすると寄ります）。字幕は動きません。'
+                : '下のレイヤー全部に、このアイテムの映像エフェクト・不透明度・フェードを掛けます。'}
+          </Text>
+          {ctl.kind === 'group' && (
+            <NumberInput
+              label="まとめるレイヤーの数"
+              description="このレイヤーのすぐ下から数えます"
+              value={ctl.layers}
+              min={1}
+              max={99}
+              step={1}
+              onChange={layers => set({control: {...ctl, layers: Math.max(1, Math.round(layers))}})}
+            />
+          )}
+        </VStack>
+        <Divider />
+        <LookEditor clip={clip} />
+      </>
+    );
   return (
     <>
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
-        <ItemHeader clip={clip} title={clip.region ? (clip.region.kind === 'mosaic' ? 'モザイク範囲' : 'ぼかし範囲') : '図形'} />
+        <ItemHeader
+          clip={clip}
+          title={clip.viz ? (clip.viz === 'bars' ? '音声のスペクトラム' : '音声の波形') : clip.region ? (clip.region.kind === 'mosaic' ? 'モザイク範囲' : 'ぼかし範囲') : '図形'}
+        />
+        {clip.viz && (
+          <VStack gap={2}>
+            <SegmentedControl label="出しかた" layout="fill" value={clip.viz} onChange={v => set({viz: v as 'wave' | 'bars'})}>
+              <SegmentedControlItem value="wave" label="波形" />
+              <SegmentedControlItem value="bars" label="スペクトラム" />
+            </SegmentedControl>
+            <Text type="supporting">動画の音（セリフ・BGM・効果音を混ぜたもの）を、この大きさと色で描きます。プレビューはセリフの音の大きさからの目安です。</Text>
+          </VStack>
+        )}
         {clip.region && (
           <VStack gap={2}>
             <Text type="supporting">形の中だけ、下にある絵を{clip.region.kind === 'mosaic' ? 'モザイク' : 'ぼかし'}にします。動く物に合わせるときは、下の「動きに付いていく」を使ってください</Text>
@@ -767,19 +928,21 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
             />
           </VStack>
         )}
-        <Selector
-          label="形"
-          value={clip.shape}
-          options={(Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => ({value: k, label: SHAPE_LABEL[k]}))}
-          onChange={v => set({shape: v as ShapeKind})}
-          width="100%"
-        />
+        {!clip.viz && (
+          <Selector
+            label="形"
+            value={clip.shape}
+            options={(Object.keys(SHAPE_LABEL) as ShapeKind[]).map(k => ({value: k, label: SHAPE_LABEL[k]}))}
+            onChange={v => set({shape: v as ShapeKind})}
+            width="100%"
+          />
+        )}
         <HStack gap={2}>
           <NumberInput label="幅" units="px" value={clip.width} min={1} max={8000} step={10} onChange={width => set({width})} />
           <NumberInput label={clip.shape === 'line' ? '太さ' : '高さ'} units="px" value={clip.height} min={1} max={8000} step={clip.shape === 'line' ? 1 : 10} onChange={height => set({height})} />
         </HStack>
         {!clip.region && <ColorRow label={clip.shape === 'line' ? '線の色' : '塗りの色'} value={clip.fill} onChange={fill => set({fill})} />}
-        {clip.shape !== 'line' && !clip.region && (
+        {clip.shape !== 'line' && !clip.region && !clip.viz && (
           <Collapsible defaultIsOpen={!!clip.stroke} trigger={<Text type="label">枠線</Text>}>
             <VStack gap={2} paddingBlockStart={2}>
               <ColorRow label="枠線の色" value={clip.stroke} allowNone onChange={stroke => set({stroke, strokeWidth: stroke && !clip.strokeWidth ? 6 : clip.strokeWidth})} />
