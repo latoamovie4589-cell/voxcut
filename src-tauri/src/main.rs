@@ -35,6 +35,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::list_plugins,
             commands::new_project,
             commands::export_srt,
             commands::open_project,

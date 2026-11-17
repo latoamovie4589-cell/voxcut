@@ -591,6 +591,16 @@ pub async fn export_video(
                 return Err(format!("セリフ {id} を合成できませんでした: {e}"));
             }
         }
+        // シーンアイテムはシーンのレイヤーに置き換えて書き出す（シーンのセリフもここで合成する。返すのは元のプロジェクト）
+        let mut exp = project.with_scenes();
+        if still.is_none() && !project.scenes.is_empty() {
+            let (todo, mut ready) = jobs::plan(&exp, &cache, None, &dict);
+            ready.extend(jobs::run(todo, &engines, &cache, &|p| emit("synth", p.done as f64 / p.total.max(1) as f64)));
+            let failed = jobs::apply(&mut exp, ready);
+            if let Some((id, e)) = failed.first() {
+                return Err(format!("セリフ {id} を合成できませんでした: {e}"));
+            }
+        }
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(voxcut_core::Error::Cancelled.to_string());
         }
@@ -598,20 +608,20 @@ pub async fn export_video(
         let work = tempdir_in(cache.root())?;
         // 字幕は映像トラックごとに分けて、そのトラックの順番で焼き込む
         let mut captions: Vec<(String, std::path::PathBuf)> = vec![];
-        for (i, t) in subtitle::caption_tracks(&project).into_iter().enumerate() {
+        for (i, t) in subtitle::caption_tracks(&exp).into_iter().enumerate() {
             let ass = work.join(format!("subtitles{i}.ass"));
-            std::fs::write(&ass, subtitle::build_ass_for(&project, Some(&t))).map_err(err)?;
+            std::fs::write(&ass, subtitle::build_ass_for(&exp, Some(&t))).map_err(err)?;
             captions.push((t, ass));
         }
         let project_dir = project_path.as_deref().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
         emit("portrait", 0.0);
         let peaks = |key: &str| cache.get(key).and_then(|p| waveform::peaks(&p, lipsync::PEAKS_PER_SEC).ok());
-        let portraits = render::prepare_portraits(&project, &project_dir, &ffmpeg, &work, &peaks, &options.portrait_frames).map_err(err)?;
+        let portraits = render::prepare_portraits(&exp, &project_dir, &ffmpeg, &work, &peaks, &options.portrait_frames).map_err(err)?;
         let mut opt = ExportOptions::new(&ffmpeg, &out, project_dir);
         opt.item_images = options.item_images.clone();
         // 1 文字ずつ出す字幕は、文字数ごとの画像を順に出す
-        opt.item_sequences = render::prepare_sequences(&project, &opt.item_images, &work).map_err(err)?;
-        opt.mattes = collect_mattes(&app, &project, &opt.project_dir);
+        opt.item_sequences = render::prepare_sequences(&exp, &opt.item_images, &work).map_err(err)?;
+        opt.mattes = collect_mattes(&app, &exp, &opt.project_dir);
         if let Some(crf) = options.crf {
             opt.crf = crf.clamp(10, 40);
         }
@@ -623,12 +633,12 @@ pub async fn export_video(
         opt.range = range;
         // 静止画では音のないプロジェクトとして組み立てる（まだ合成していないセリフがあっても書き出せるように）
         let silent = still.map(|_| {
-            let mut q = project.clone();
+            let mut q = exp.clone();
             q.tracks.iter_mut().for_each(|t| t.muted = true);
             q
         });
         let lookup = |id: &str| {
-            project.clips.iter().find(|c| c.id == id).and_then(|c| c.as_voice()).and_then(|v| v.audio.as_ref()).and_then(|a| cache.get(&a.cache_key))
+            exp.clips.iter().find(|c| c.id == id).and_then(|c| c.as_voice()).and_then(|v| v.audio.as_ref()).and_then(|a| cache.get(&a.cache_key))
         };
         let total = still
             .map(|t| t.max(0.04))
@@ -636,7 +646,7 @@ pub async fn export_video(
             .unwrap_or_else(|| project.video.frames_to_secs(project.duration()));
         let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
         let run = |opt: &ExportOptions| -> CmdResult<()> {
-            let mut args = render::build_args(silent.as_ref().unwrap_or(&project), &lookup, &portraits, &captions, opt).map_err(err)?;
+            let mut args = render::build_args(silent.as_ref().unwrap_or(&exp), &lookup, &portraits, &captions, opt).map_err(err)?;
             render::externalize_filter(&mut args, &work.join("graph.txt"), new_syntax, 6000).map_err(err)?;
             render::run_cancellable(&args, &ffmpeg, total, &mut |x| emit("encode", x), Some(&cancel)).map_err(err)
         };
@@ -787,6 +797,13 @@ fn allow_dir(app: &AppHandle, file: &Path) {
 struct ProxyProgress {
     src: String,
     ratio: f64,
+}
+
+/// エフェクトのプラグイン（アプリのデータの plugins フォルダの .json。はじめては見本を置く）とフォルダの場所
+#[tauri::command]
+pub async fn list_plugins(app: AppHandle) -> CmdResult<(PathBuf, Vec<voxcut_core::plugin::Loaded>)> {
+    let dir = app.path().app_data_dir().map_err(err)?.join("plugins");
+    blocking(move || Ok((dir.clone(), voxcut_core::plugin::load_dir(&dir)))).await
 }
 
 /// 効果音のファイル（なければ作る。アプリのデータの中に置く）
