@@ -3,7 +3,22 @@
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
 import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {BLEND_CANVAS, animStateAt, easeValue, hash01, jitterAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
+import {
+  BLEND_CANVAS,
+  animStateAt,
+  charAnimFrames,
+  fillTemplate,
+  charProgress,
+  easeValue,
+  hash01,
+  jitterAt,
+  chromaWeights,
+  colorGrade,
+  cropKeep,
+  lineOfSubtitle,
+  maskAlpha,
+  type MediaClip,
+} from '../model';
 import {api, type LutFit} from '../ipc';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 
@@ -99,7 +114,10 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
       tr.x += fx.x * Math.sin(2 * Math.PI * fx.speed * sec);
       tr.y += fx.y * Math.sin(2 * Math.PI * fx.speed * sec);
     } else if (fx.kind === 'threshold') filters.push(thresholdFilter(fx.level));
-    else if (fx.kind === 'trail' && fx.count > 0 && fx.interval > 0) trail = [Math.min(8, fx.count), fx.interval];
+    else if (fx.kind === 'plugin') {
+      const f = fx.canvas ? fillTemplate(fx.canvas, fx.values) : null;
+      if (f) filters.push(f);
+    } else if (fx.kind === 'trail' && fx.count > 0 && fx.interval > 0) trail = [Math.min(8, fx.count), fx.interval];
   }
   const [kx, ky] = (l?.stretch ?? [1, 1]).map(v => Math.max(0.01, v));
   // 回転・拡大の中心：その点が位置に来るよう、中心から点までを回して大きさを掛けた分だけ戻す（書き出しと同じ）
@@ -791,6 +809,8 @@ export interface TextExtra {
   boxPadding?: number;
   /** 出す文字の数（1 文字ずつ出すとき）。undefined なら全部 */
   visible?: number;
+  /** テキストの 1 文字ずつの登場で、アイテムの頭からのフレーム（charAnim があるとき） */
+  charFrame?: number;
 }
 
 /** 縦書きで右上に寄せる句読点 */
@@ -824,10 +844,17 @@ export const textKey = (c: TextClip) => [
   c.boxPadding ?? 0,
   c.boxRadius ?? 0,
   c.gradientColor ?? '',
+  c.vertical ?? false,
+  c.charAnim ?? null,
 ];
 
 /** テキストアイテムの画像（大きさは文字に合わせる。縁取りの分だけ余白を足す）。字幕の「個別に設定」では組み方と飾りも */
 export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
+  // テキストアイテムの縦書き・1 文字ずつの登場（出きったあとは同じ画像）
+  if (c.vertical) ex = {...ex, vertical: true};
+  const ca = c.charAnim ?? null;
+  if (ca) ex = {...ex, charFrame: Math.min(Math.max(0, Math.floor(ex.charFrame ?? 1e9)), charAnimFrames(ca, textCharCount(c.text)))};
+  else if (ex.charFrame !== undefined) ex = {...ex, charFrame: undefined};
   const key = JSON.stringify([...textKey(c), ex]);
   return cached(key, () => {
     const font = `${c.italic ? 'italic ' : ''}${c.bold ? 'bold ' : ''}${c.fontSize}px "${c.fontFamily}", "Yu Gothic UI", sans-serif`;
@@ -872,7 +899,9 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const shadowOn = !!c.shadowColor && ((c.shadowBlur ?? 0) > 0 || (c.shadowX ?? 0) !== 0 || (c.shadowY ?? 0) !== 0);
     // 影と光は四方に同じだけ余白を取る（文字の中心がずれないように）
     const glow = shadowOn ? Math.ceil((c.shadowBlur ?? 0) * 2 + Math.max(Math.abs(c.shadowX ?? 0), Math.abs(c.shadowY ?? 0))) : 0;
-    const pad = Math.ceil(c.outlineWidth + o2 + c.fontSize * 0.1);
+    // はねる・下からは文字が枠の外へ出るので、四方に余白を足す（真ん中の位置は変えない）
+    const caPad = ca && (ca.kind === 'pop' || ca.kind === 'slideUp') ? Math.ceil(c.fontSize * 0.6) : 0;
+    const pad = Math.ceil(c.outlineWidth + o2 + c.fontSize * 0.1) + caPad;
     const boxColor = ex.boxColor ?? (c.boxColor || undefined);
     const box = boxColor ? Math.max(0, ex.boxColor ? (ex.boxPadding ?? 16) : (c.boxPadding ?? 16)) : 0;
     const sh = ex.shadowColor ? Math.abs(ex.shadowOffset ?? 4) : 0;
@@ -904,10 +933,14 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     // 出す文字の位置（1 文字ずつ出すときも位置は全部出したときと同じ）
     let left = ex.visible ?? Infinity;
     // k はルビの縮め（文字の大きさの比）、sx は横の縮め
-    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number}[] = [];
+    // ci は何文字目か（1 文字ずつの登場に使う）
+    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number; ci?: number}[] = [];
+    let ci0 = 0;
     const shownAll = ex.visible ?? Infinity;
     lines.forEach((l, i) => {
       const chars = Array.from(l);
+      const base = ci0;
+      ci0 += chars.length;
       const n = Math.max(0, Math.min(chars.length, left));
       left -= chars.length;
       if (!n) return;
@@ -919,26 +952,28 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const colX = edge + tw - off[i] - rh - lineH / 2;
         const colH = chars.length * charStep;
         const y0 = edge + (c.align === 'left' ? 0 : c.align === 'right' ? th - colH : (th - colH) / 2);
-        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k])});
+        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k]), ci: base + k});
         for (const pc of pieces) {
           if (!pc.ruby || pc.at >= shownAll) continue;
           const rc = Array.from(pc.ruby);
           const span = Array.from(pc.text).length * charStep;
           const step = Math.min(rs + ls * rk, span / rc.length);
           const top = y0 + (pc.at - at0) * charStep + (span - step * rc.length) / 2;
-          rc.forEach((r, k) => glyphs.push({s: r, px: colX + lineH / 2 + rh / 2, py: top + step * k + step / 2, rot: ROTATE_V.has(r), k: rk}));
+          rc.forEach((r, k) => glyphs.push({s: r, px: colX + lineH / 2 + rh / 2, py: top + step * k + step / 2, rot: ROTATE_V.has(r), k: rk, ci: base + pc.at - at0}));
         }
       } else {
         const lx = edge + (c.align === 'left' ? 0 : c.align === 'right' ? tw - widths[i] : (tw - widths[i]) / 2);
         const rh = rhOf[i];
         const py = edge + off[i] + rh + lineH / 2;
-        glyphs.push({s: chars.slice(0, n).join(''), px: lx, py, rot: false});
+        // 1 文字ずつ出すときは文字ごとに置く（位置は行をまとめて描いたときと同じ）
+        if (ca) for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: lx + m.measureText(chars.slice(0, k).join('')).width, py, rot: false, ci: base + k});
+        else glyphs.push({s: chars.slice(0, n).join(''), px: lx, py, rot: false});
         let x0 = lx;
         for (const pc of pieces) {
           const wb = m.measureText(pc.text).width;
           if (pc.ruby && pc.at < shownAll) {
             const wr = m.measureText(pc.ruby).width * rk;
-            glyphs.push({s: pc.ruby, px: wr <= wb ? x0 + (wb - wr) / 2 : x0, py: py - lineH / 2 - rh / 2, rot: false, k: rk, sx: wr <= wb ? 1 : wb / wr});
+            glyphs.push({s: pc.ruby, px: wr <= wb ? x0 + (wb - wr) / 2 : x0, py: py - lineH / 2 - rh / 2, rot: false, k: rk, sx: wr <= wb ? 1 : wb / wr, ci: base + pc.at - at0});
           }
           x0 += wb;
         }
@@ -947,9 +982,25 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const outline = c.outlineWidth > 0 && c.outlineColor ? c.outlineWidth : 0;
     const paint = (dx: number, dy: number, fill: string, stroke: boolean, all = false) => {
       for (const g of glyphs) {
+        // 1 文字ずつの登場（まだ出ていない文字は描かない）
+        const pr = ca && g.ci !== undefined ? charProgress(ca, g.ci, ex.charFrame ?? 0) : 1;
+        if (pr <= 0) continue;
         x.save();
         // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
         x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
+        if (ca && pr < 1) {
+          x.globalAlpha *= pr;
+          if (ca.kind === 'slideUp') x.translate(0, (1 - pr) * c.fontSize * 0.6);
+          if (ca.kind === 'pop') {
+            // はねる：少し大きくなってから戻る（文字の真ん中を中心に）
+            const q = pr - 1;
+            const k = 0.4 + 0.6 * (1 + 2.70158 * q * q * q + 1.70158 * q * q);
+            const cw = ex.vertical ? 0 : x.measureText(g.s).width / 2;
+            x.translate(cw, 0);
+            x.scale(k, k);
+            x.translate(-cw, 0);
+          }
+        }
         if (g.k) x.scale(g.k * (g.sx ?? 1), g.k);
         if (g.rot) x.rotate(Math.PI / 2);
         x.textAlign = ex.vertical ? 'center' : 'left';
@@ -1166,6 +1217,42 @@ export function shapeImage(c: ShapeClip): HTMLCanvasElement {
   });
 }
 
+/**
+ * 音声の波形・スペクトラムの画像（プレビュー用の目安。level は今の音の大きさ 0〜1、t は秒）。
+ * 書き出しは FFmpeg の showwaves・showfreqs で、動画の音そのものから描く
+ */
+export function vizImage(c: ShapeClip, level: number, t: number): HTMLCanvasElement {
+  const W = Math.max(2, Math.round(c.width));
+  const H = Math.max(2, Math.round(c.height));
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const x = cv.getContext('2d')!;
+  x.fillStyle = c.fill;
+  x.strokeStyle = c.fill;
+  const lv = Math.min(1, Math.max(0, level));
+  if (c.viz === 'bars') {
+    const n = 24;
+    const bw = W / n;
+    const step = Math.floor(t * 15);
+    for (let i = 0; i < n; i++) {
+      const hh = H * lv * (0.25 + 0.75 * hash01(i, step)) * (1 - (i / n) * 0.5);
+      x.fillRect(i * bw + bw * 0.15, H - hh, bw * 0.7, hh);
+    }
+  } else {
+    x.lineWidth = Math.max(1, H / 40);
+    x.beginPath();
+    for (let X = 0; X <= W; X++) {
+      const u = X / W;
+      const y = H / 2 + (H / 2) * lv * Math.sin(u * Math.PI) * (0.6 * Math.sin(u * 40 + t * 30) + 0.4 * Math.sin(u * 97 - t * 50));
+      if (X) x.lineTo(X, y);
+      else x.moveTo(X, y);
+    }
+    x.stroke();
+  }
+  return cv;
+}
+
 /** 「個別に設定」した字幕を、テキストアイテムとして描くための形にする */
 export function subtitleTextClip(v: VoiceClip, sc: SubtitleCustom): TextClip {
   return {
@@ -1216,9 +1303,9 @@ export function subtitleImage(v: VoiceClip, sc: SubtitleCustom, visible?: number
   return textImage(subtitleTextClip(v, sc), subtitleExtra(sc, visible));
 }
 
-/** テキスト・図形の画像（画像・動画は null） */
-export function itemImage(c: VisualClip): HTMLCanvasElement | null {
-  if (c.type === 'text') return textImage(c);
+/** テキスト・図形の画像（画像・動画は null）。local はアイテムの頭からのフレーム（1 文字ずつ出すテキストで使う） */
+export function itemImage(c: VisualClip, local?: number): HTMLCanvasElement | null {
+  if (c.type === 'text') return textImage(c, c.charAnim ? {charFrame: local ?? 1e9} : {});
   if (c.type === 'shape') return shapeImage(c);
   return null;
 }
@@ -1248,7 +1335,11 @@ export async function bakeItemImages(project: Project): Promise<Record<string, s
   // 1 文字ずつ出す字幕は、文字数ごとの画像を id#1, id#2, … で渡す（書き出しの prepare_sequences が順に並べる）
   const items: {id: string; img: HTMLCanvasElement; key: unknown}[] = [];
   for (const c of project.clips) {
-    if (c.type === 'text' || c.type === 'shape') {
+    if (c.type === 'text' && c.charAnim) {
+      // 1 文字ずつ出すテキスト：出きるまでのコマごとの画像（id#1 = 頭のコマ…。書き出しの prepare_sequences が 1 コマずつ並べる）
+      const F = Math.min(c.duration, charAnimFrames(c.charAnim, textCharCount(c.text)));
+      for (let f = 0; f <= F; f++) items.push({id: `${c.id}#${f + 1}`, img: textImage(c, {charFrame: f}), key: [...textKey(c), f]});
+    } else if (c.type === 'text' || c.type === 'shape') {
       const key = c.type === 'text' ? textKey(c) : ['s', c.shape, c.width, c.height, c.fill, c.stroke, c.strokeWidth];
       items.push({id: c.id, img: itemImage(c)!, key});
     }
