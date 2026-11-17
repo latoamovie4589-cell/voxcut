@@ -608,12 +608,67 @@ async def main():
           const base={trackId:'V1', type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, src:'/m/person.png', hasAudio:false, linkId:null, mediaKind:'image'};
           s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>!(c.trackId==='V1' && c.start<300)), {...base, id:'pp', start:0, duration:150}]})); s.setState({selectedClipId:'pp', selectedClipIds:['pp']})}""")
         await q.wait_for_timeout(500)
-        await q.get_by_role("button", name="モデルをダウンロード").click(); await q.wait_for_timeout(800)
+        await q.get_by_role("button", name="モデルをダウンロード").first.click(); await q.wait_for_timeout(800)
         await q.get_by_label("背景を消す", exact=True).click(); await q.wait_for_timeout(400)
         r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); const c=s.getState().project.clips.find(c=>c.id==='pp'); return [c.matte, !!s.getState().proxies['/m/person.png#matte:matte-fast']?.url]}")
         check("背景を消す：付けると型を作り、プレビューで使う", r == ['matte-fast', True], str(r))
         await q.wait_for_timeout(300)
         check("AI の画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
+        await q.close()
+
+        # ── CapCut の残り：合成モード・LUT・GIF・字幕ファイル・なめらかスロー・自動で位置合わせ・トラッキング
+        q = await fresh(b)
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const out={};
+          const f={multiply:(b,s)=>b*s, screen:(b,s)=>1-(1-b)*(1-s), difference:(b,s)=>Math.abs(b-s), add:(b,s)=>Math.min(1,b+s)};
+          for (const m of Object.keys(f)) {
+            const c=document.createElement('canvas'); c.width=40; c.height=40; const x=c.getContext('2d'); x.fillStyle='#a04020'; x.fillRect(0,0,40,40);
+            const src=document.createElement('canvas'); src.width=10; src.height=10; const g=src.getContext('2d'); g.fillStyle='#2060c0'; g.fillRect(0,0,10,10);
+            v.drawVisual(x, src, [10,10], {transform:{x:0,y:0,scale:1,opacity:1}, rotation:0, alpha:0.5, filter:'', blur:0, blend:m}, 40, 40, 1);
+            const d=x.getImageData(20,20,1,1).data; const want=[[160,32],[64,96],[32,192]].map(([b,s])=>Math.round((0.5*b/255+0.5*f[m](b/255,s/255))*255));
+            out[m]=[...d].slice(0,3).every((v,i)=>Math.abs(v-want[i])<=3) && x.getImageData(2,2,1,1).data[0]===160;
+          }
+          return out}""")
+        check("合成モード：画面でも書き出しと同じ式で下の絵と混ざる（乗算・スクリーン・差・加算）", all(r.values()), str(r))
+        r = await q.evaluate("""async()=>{const v=await import('/src/preview/visual.ts');
+          const first=v.lutFilter('/m/swap.cube', 1); await new Promise(r=>setTimeout(r,50)); const f=v.lutFilter('/m/swap.cube', 1); const h=v.lutFilter('/m/swap.cube', 0.5);
+          const px=(flt)=>{const c=document.createElement('canvas'); c.width=4; c.height=4; const x=c.getContext('2d'); x.filter=flt; const s=document.createElement('canvas'); s.width=4; s.height=4; const g=s.getContext('2d'); g.fillStyle='#33b266'; g.fillRect(0,0,4,4); x.drawImage(s,0,0); return [...x.getImageData(1,1,1,1).data].slice(0,3)};
+          return [first, px(f), px(h), v.lutFilter('/m/bad.txt',1)]}""")
+        ok = r[0] is None and all(abs(a-b) <= 3 for a, b in zip(r[1], [0xb2, 0x33, 0x66])) and all(abs(a-b) <= 4 for a, b in zip(r[2], [0x72, 0x72, 0x66]))
+        check("LUT：読み終わると画面でも色が変わり、強さで元の色と混ざる", ok, str(r))
+        r = await q.evaluate(r"""async()=>{const {parseSubtitles}=await import('/src/srt.ts');
+          const a=parseSubtitles('1\r\n00:00:01,000 --> 00:00:02,500\r\n<i>こんにちは</i>\r\n二行目\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nさようなら\r\n', 30);
+          const b=parseSubtitles('WEBVTT\n\n00:01.500 --> 00:02.000\nVTT です\n', 30);
+          const ac=await import('/src/actions.ts'); const s=await import('/src/store.ts');
+          const n=await ac.importSubtitleFile(new File(['1\n00:00:00,500 --> 00:00:01,000\nファイル\n'], 'x.srt'));
+          const p=s.getState().project; const t=p.tracks.find(t=>t.name==='字幕');
+          return [a, b, n, p.clips.filter(c=>c.trackId===t.id).map(c=>[c.start,c.duration,c.text])]}""")
+        check("字幕ファイル：srt・vtt を読み、時刻どおりにテキストで並べる", r[0] == [{'start': 30, 'duration': 45, 'text': 'こんにちは\n二行目'}, {'start': 90, 'duration': 30, 'text': 'さようなら'}] and r[1] == [{'start': 45, 'duration': 15, 'text': 'VTT です'}] and r[2] == 1 and r[3] == [[15, 15, 'ファイル']], str(r))
+        r = await q.evaluate("async()=>{const a=await import('/src/actions.ts'); const {api}=await import('/src/ipc.ts'); const x=await api; return (await x.pickSavePath('gif', 'a.gif'))}")
+        check("GIF：書き出す先を選べる", r == 'a.gif', str(r))
+        await q.evaluate("""async()=>{const s=await import('/src/store.ts');
+          const base={type:'media', inPoint:0, volume:1, transform:{x:0,y:0,scale:3,opacity:1}, src:'/m/walk.mp4', hasAudio:false, linkId:null, mediaKind:'video'};
+          s.commit(pr=>({...pr, clips:[...pr.clips.filter(c=>c.trackId!=='V1'), {...base, trackId:'V1', id:'wk', start:0, duration:120, speed:0.5}]})); s.setState({selectedClipId:'wk', selectedClipIds:['wk']})}""")
+        await q.get_by_role("tab", name="プロパティ").click(); await q.wait_for_timeout(500)
+        await q.get_by_label("なめらかスロー", exact=True).click(); await q.wait_for_timeout(300)
+        r = await q.evaluate("async()=>{const s=await import('/src/store.ts'); return s.getState().project.clips.find(c=>c.id==='wk').smooth}")
+        check("なめらかスロー：遅くした動画で付けられる", r is True, str(r))
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const a=await import('/src/actions.ts'); const {api}=await import('/src/ipc.ts');
+          s.commit(pr=>({...pr, video:{...pr.video, width:1080, height:1920}, clips:pr.clips.map(c=>c.id==='wk'?{...c, speed:undefined, smooth:undefined}:c)}));
+          await (await api).downloadModel('matte-fast'); await a.autoReframe('wk', 'matte-fast');
+          const c=s.getState().project.clips.find(c=>c.id==='wk'); return [c.transform.x, Math.round(c.transform.scale*1000), c.look.anim?.to.x, (c.look.anim?.keys??[]).length]}""")
+        check("自動で位置合わせ：画面いっぱいに広げ、被写体を追って真ん中に置く", r[0] > 500 and r[1] == 5333 and r[2] is not None and r[2] < -500 and r[3] >= 2, str(r))
+        r = await q.evaluate("""async()=>{const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          s.commit(pr=>({...pr, video:{...pr.video, width:1920, height:1080}, clips:pr.clips.map(c=>c.id==='wk'?{...c, transform:{x:0,y:0,scale:3,opacity:1}, look:undefined}:c)}));
+          const tr=s.getState().project.tracks.find(t=>t.kind==='video' && t.id!=='V1').id;
+          s.commit(pr=>({...pr, clips:[...pr.clips, {id:'tk2', trackId:tr, type:'shape', shape:'star', start:0, duration:60, width:80, height:80, fill:'#fff', stroke:null, strokeWidth:0, cornerRadius:0, transform:{x:30,y:-20,scale:1,opacity:1}, look:{rotation:0, fadeIn:0, fadeOut:0}}]}));
+          const v=a.videoUnder('tk2'); await a.trackItem('tk2');
+          const c=s.getState().project.clips.find(c=>c.id==='tk2'); return [v?.id, c.transform.x, c.transform.y, c.look.anim?.to.x, c.look.anim?.to.y]}""")
+        check("トラッキング：下の動画の中の点を追い、ずれを保ったまま付いて動く", r[0] == 'wk' and r[1] == 30 and r[2] == -20 and r[3] is not None and abs(r[3] - 414) <= 2 and r[4] == -20, str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({selectedClipId:'tk2', selectedClipIds:['tk2']})}")
+        await q.wait_for_timeout(400)
+        check("トラッキング：下に動画があるアイテムには「動画の動きに付いていく」が出る", await q.get_by_role("button", name="動画の動きに付いていく").count() == 1)
+        check("CapCut の残りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
         check("画面のエラーが出ていない", not pg.errs, str(pg.errs[:3]))
