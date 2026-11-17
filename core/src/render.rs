@@ -1160,6 +1160,31 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             }
         }
     }
+    // クリッピング解除（ワイプ）：見える範囲を、アイテムの頭からの秒 T で広げる・狭める（回す前の向きで）
+    let mut wipe: Vec<String> = vec![];
+    if let Some((k, d)) = enter {
+        let v = enter_k("T", d);
+        match k {
+            MotionKind::WipeRight => wipe.push(format!("lt(X,W*(1-{v}))")),
+            MotionKind::WipeLeft => wipe.push(format!("gte(X,W*{v})")),
+            MotionKind::WipeDown => wipe.push(format!("lt(Y,H*(1-{v}))")),
+            MotionKind::WipeUp => wipe.push(format!("gte(Y,H*{v})")),
+            _ => {}
+        }
+    }
+    if let Some((k, d)) = exit {
+        let q = exit_k("T", d);
+        match k {
+            MotionKind::WipeRight => wipe.push(format!("gte(X,W*{q})")),
+            MotionKind::WipeLeft => wipe.push(format!("lt(X,W*(1-{q}))")),
+            MotionKind::WipeDown => wipe.push(format!("gte(Y,H*{q})")),
+            MotionKind::WipeUp => wipe.push(format!("lt(Y,H*(1-{q}))")),
+            _ => {}
+        }
+    }
+    if !wipe.is_empty() {
+        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", wipe.join("*")));
+    }
     if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.iter().any(|(_, v)| v.abs() > 1e-9) {
         chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween3(sr, &mr, er, e, "t", dur)));
     }
@@ -1986,6 +2011,40 @@ mod tests {
         // 右半分を切ると、左半分（緑と赤の左側）が真ん中に寄る
         let c = px(SourceFx { crop: Some(Crop { right: 0.5, ..Default::default() }), ..Default::default() });
         assert_eq!((at(&c, 20, 18), at(&c, 40, 18), at(&c, 60, 18)), ('G', 'R', 'K'));
+    }
+
+    /// クリッピング解除（ワイプ）：登場は左から広がって現れ、退場は上から消えていく（画面と同じ式）
+    #[test]
+    fn wipe_reveals_and_hides() {
+        use crate::model::{Clip, Motion, MotionKind};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("w.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=40x20", "-frames:v", "1"]).arg(&src).status().unwrap().success());
+        let shot = |enter: Option<MotionKind>, exit: Option<MotionKind>, at: f64| -> Vec<u8> {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.video.background = "#000000".into();
+            p.clips.clear();
+            let look = Look { enter: enter.map(|kind| Motion { kind, frames: 30, smooth: false }), exit: exit.map(|kind| Motion { kind, frames: 30, smooth: false }), ..Default::default() };
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 90, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look, audio_frames: None, src_fx: Default::default() }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(at);
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "gray", "-"]).output().unwrap().stdout
+        };
+        // 左右：アイテムは x = 12〜52。0.5 秒で残り (1-0.5)² = 0.25 → 左から 75%（x < 42）まで見える
+        let a = shot(Some(MotionKind::WipeRight), None, 0.5);
+        assert!(a[18 * 64 + 14] > 200 && a[18 * 64 + 38] > 200, "左は見える");
+        assert!(a[18 * 64 + 46] < 50, "右はまだ見えない");
+        // 退場（上下）：2.5 秒で進み 0.25 → 上から 25% が消えている（アイテムは y = 8〜28）
+        let b = shot(None, Some(MotionKind::WipeDown), 2.5);
+        assert!(b[9 * 64 + 32] < 50 && b[20 * 64 + 32] > 200, "上から消えていく");
     }
 
     /// モザイク・ぼかし範囲：図形の中だけ下の絵がモザイク・ぼかしになり、外は変わらない
