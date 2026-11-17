@@ -132,7 +132,6 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     enterPreset('in-up', '上から', 'slideUp', false),
     enterPreset('in-down', '下から', 'slideDown', false),
     enterPreset('in-wipe', 'クリッピング解除', 'wipeRight', false),
-    enterPreset('in-wipe-down', '上から伸びる', 'wipeDown', false),
   ],
   out: [
     exitPreset('out-none', 'なし', null, false),
