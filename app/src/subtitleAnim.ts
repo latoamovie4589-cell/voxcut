@@ -1,6 +1,6 @@
 // 字幕アニメーションの時間配分。core/src/subtitle.rs と同じ式にしてある（プレビューと書き出しを揃えるため）。
 
-export type SubtitleAnimation = 'none' | 'fade' | 'pop' | 'typewriter' | 'karaoke';
+export type SubtitleAnimation = 'none' | 'fade' | 'pop' | 'typewriter' | 'karaoke' | 'wipe';
 
 export const ANIMATION_LABEL: Record<SubtitleAnimation, string> = {
   none: 'なし',
@@ -8,7 +8,25 @@ export const ANIMATION_LABEL: Record<SubtitleAnimation, string> = {
   pop: 'ポップ',
   typewriter: '1文字ずつ',
   karaoke: 'カラオケ',
+  wipe: 'クリッピング解除',
 };
+
+const charEm = (c: string) => {
+  const cp = c.codePointAt(0)!;
+  return cp < 0x2000 || (cp >= 0xff61 && cp <= 0xff9f) ? 0.55 : 1;
+};
+
+/**
+ * クリッピング解除で見せる横の範囲（画面の px。文字の幅は全角 1・半角 0.55 で見積もり、縁の分を足す）と、かける長さ（ミリ秒）。
+ * core/src/subtitle.rs の wipe_bounds と同じ式
+ */
+export function wipeBounds(text: string, fontSize: number, width: number, duration: number, fps: number): [number, number, number] {
+  const em = Math.max(0, ...text.split('\n').map(l => [...l].reduce((a, c) => a + charEm(c), 0)));
+  const half = (em * fontSize) / 2 + fontSize * 0.15 + 8;
+  const c = width / 2;
+  const ms = Math.round(Math.min(500, (duration / Math.max(1, fps)) * 1000 * 0.6));
+  return [Math.floor(c - half), Math.ceil(c + half), Math.max(1, ms)];
+}
 
 /** カラオケの塗りの色の決まり */
 export const KARAOKE_COLOR = '#FFD400';
