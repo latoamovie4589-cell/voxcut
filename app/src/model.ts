@@ -198,8 +198,6 @@ export interface VoiceClip extends ClipBase {
   accent?: AccentEdit | null;
   /** 字幕を「個別に設定」したときの見た目。null ならキャラクターの字幕設定どおり */
   subtitleCustom?: SubtitleCustom | null;
-  /** 字幕で色を変える言葉（あとに書いたものが優先。ルビ・1 文字ずつ・カラオケのときは変えない） */
-  highlights?: Highlight[];
   /** このセリフの間だけ立ち絵を変える（レイヤーの表示・目パチ・口パク・エフェクト） */
   portrait?: LinePortrait | null;
   /** 声の聞こえ方（左右・フェード・エコー・音声エフェクト・再生開始位置） */
@@ -232,30 +230,6 @@ export function panGains(pan: number): [number, number] {
 }
 
 /** セリフの字幕を「個別に設定」したときの見た目（テキストアイテムと同じ項目。画像にして重ねる） */
-/** 字幕で色を変える言葉 */
-export interface Highlight {
-  word: string;
-  color: string;
-}
-
-/** 文（改行は数えない）の 1 文字ごとの色（変えない文字は null）。言葉ごとに、左から重ならないように探す。core/src/model.rs と同じ */
-export function highlightMask(text: string, highlights: Highlight[]): (string | null)[] {
-  const chars = [...text.replace(/[\r\n]/g, '')];
-  const out: (string | null)[] = chars.map(() => null);
-  for (const h of highlights) {
-    const w = [...h.word];
-    if (!w.length || !h.color) continue;
-    let i = 0;
-    while (i + w.length <= chars.length) {
-      if (w.every((c, k) => chars[i + k] === c)) {
-        for (let k = 0; k < w.length; k++) out[i + k] = h.color;
-        i += w.length;
-      } else i++;
-    }
-  }
-  return out;
-}
-
 export interface SubtitleCustom {
   fontFamily: string;
   fontSize: number;
