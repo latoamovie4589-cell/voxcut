@@ -40,7 +40,11 @@ import {
   type Transform,
   type VisualClip,
   GRADES,
+  BLEND_MODES,
+  type BlendMode,
 } from '../model';
+import {api} from '../ipc';
+import {TrackSection} from './TrackSection';
 import {deleteClip, duplicateSelection, setState, updateClip, useStore} from '../store';
 
 const EFFECT_LABEL: Record<Effect['kind'], string> = {
@@ -53,6 +57,7 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   swirl: '渦巻き',
   grade: 'フィルター',
   temperature: '色温度',
+  lut: 'LUT（.cube）',
 };
 const newEffect = (k: Effect['kind']): Effect =>
   k === 'blur'
@@ -96,6 +101,7 @@ export function LookEditor({clip}: {clip: VisualClip}) {
       <Divider />
       <KeyframeBar clip={clip} />
       <Divider />
+      <TrackSection clip={clip} />
       <LookFields
         transform={clip.transform}
         look={clip.look}
@@ -229,6 +235,13 @@ export function LookFields({
           <NumberInput label="フェードイン" units="フレーム" value={look.fadeIn} min={0} max={duration} onChange={fadeIn => set({fadeIn})} />
           <NumberInput label="フェードアウト" units="フレーム" value={look.fadeOut} min={0} max={duration} onChange={fadeOut => set({fadeOut})} />
         </HStack>
+        <Selector
+          label="合成モード"
+          value={look.blend ?? 'normal'}
+          options={[{value: 'normal', label: '通常'}, ...BLEND_MODES]}
+          onChange={v => set({blend: v === 'normal' ? null : (v as BlendMode)})}
+          width="100%"
+        />
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
@@ -298,7 +311,19 @@ export function EffectsEditor({
         <Heading level={headingLevel}>{title}</Heading>
         <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={160}>
           {(Object.keys(EFFECT_LABEL) as Effect['kind'][]).map(k => (
-            <DropdownMenuItem key={k} label={EFFECT_LABEL[k]} onClick={() => onChange([...effects, newEffect(k)])} />
+            <DropdownMenuItem
+              key={k}
+              label={EFFECT_LABEL[k] + (k === 'lut' ? '…' : '')}
+              onClick={() => {
+                if (k !== 'lut') return onChange([...effects, newEffect(k)]);
+                // LUT はファイルを選んでから足す
+                void api
+                  .then(a => a.pickLutPath())
+                  .then(path => {
+                    if (path) onChange([...effects, {kind: 'lut', path, strength: 1}]);
+                  });
+              }}
+            />
           ))}
         </DropdownMenu>
       </HStack>
@@ -331,6 +356,12 @@ export function EffectsEditor({
           {fx.kind === 'grade' && (
             <VStack gap={2}>
               <Selector label="フィルター" value={fx.name} options={Object.entries(GRADES).map(([value, g]) => ({value, label: g.label}))} onChange={(name: string) => setFx(i, {...fx, name})} />
+              <Slider label="強さ" value={fx.strength} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(strength: number) => setFx(i, {...fx, strength})} />
+            </VStack>
+          )}
+          {fx.kind === 'lut' && (
+            <VStack gap={2}>
+              <Text type="supporting">{fx.path.split(/[\\/]/).pop()}（プレビューは近い色。書き出しはファイルのとおり）</Text>
               <Slider label="強さ" value={fx.strength} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(strength: number) => setFx(i, {...fx, strength})} />
             </VStack>
           )}

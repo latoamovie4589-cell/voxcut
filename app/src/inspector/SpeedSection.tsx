@@ -8,7 +8,7 @@ import {Snowflake} from 'lucide-react';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {framesToTimecode, speedsOf, srcSpan, type MediaClip} from '../model';
-import {freezeFrame, getState, setMediaFlag, setMediaSpeed, useStore} from '../store';
+import {freezeFrame, getState, setMediaFlag, setMediaSpeed, updateClip, useStore} from '../store';
 
 function Section({title, children}: {title: string; children: React.ReactNode}) {
   return (
@@ -67,6 +67,12 @@ export function SpeedSection({clip, notify}: {clip: MediaClip; notify: (m: strin
             </>
           )}
           <Switch label="逆再生" value={!!clip.reverse} onChange={on => setMediaFlag(clip.id, 'reverse', on)} labelPosition="start" labelSpacing="spread" width="100%" />
+          {clip.mediaKind === 'video' && Math.min(a, b) < 1 && (
+            <VStack gap={1}>
+              <Switch label="なめらかスロー" value={!!clip.smooth} onChange={on => updateClip(clip.id, {smooth: on || undefined})} labelPosition="start" labelSpacing="spread" width="100%" />
+              <Text type="supporting">遅くしたところのコマを、動きから作って補います（書き出しで効きます。書き出しに時間がかかります）</Text>
+            </VStack>
+          )}
           <Text type="supporting" hasTabularNumbers>
             素材の {framesToTimecode(Math.round(srcSpan(clip)), fps)} 分を {framesToTimecode(clip.duration, fps)} で{clip.reverse ? '逆から' : ''}再生（音の高さは変わりません）
           </Text>

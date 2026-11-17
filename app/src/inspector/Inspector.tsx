@@ -10,7 +10,7 @@ import {Icon} from '@astryxdesign/core/Icon';
 import {RubyButton} from './RubyButton';
 import {SpeedSection} from './SpeedSection';
 import {CutoutSection} from './CutoutSection';
-import {AutoCaptionSection, RemoveBackgroundSection} from './AiSection';
+import {AutoCaptionSection, AutoReframeSection, RemoveBackgroundSection} from './AiSection';
 import {SoundFxFields} from './SoundFxFields';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
@@ -807,6 +807,8 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
       {clip.mediaKind !== 'audio' && <CutoutSection clip={clip} />}
       {clip.mediaKind !== 'audio' && <Divider />}
       {clip.mediaKind !== 'audio' && <RemoveBackgroundSection clip={clip} />}
+      {clip.mediaKind !== 'audio' && <Divider />}
+      {clip.mediaKind !== 'audio' && <AutoReframeSection clip={clip} notify={notify} />}
       {clip.mediaKind !== 'audio' && <Divider />}
       {(clip.mediaKind === 'audio' || clip.hasAudio) && <AutoCaptionSection clip={clip} notify={notify} />}
       {(clip.mediaKind === 'audio' || clip.hasAudio) && <Divider />}

@@ -10,7 +10,7 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {api, type AiModel} from '../ipc';
 import {matteKey, type MediaClip} from '../model';
 import {updateClip, useStore} from '../store';
-import {autoCaptions, ensureMatte, watchAi, type Notify} from '../actions';
+import {autoCaptions, autoReframe, ensureMatte, watchAi, type Notify} from '../actions';
 
 let models: AiModel[] | null = null;
 const listeners = new Set<() => void>();
@@ -158,6 +158,47 @@ export function RemoveBackgroundSection({clip}: {clip: MediaClip}) {
           <HStack gap={2} vAlign="center">
             <Text type="supporting">できませんでした</Text>
             <Button size="sm" variant="ghost" label="もう一度" onClick={() => void ensureMatte(clip.src, clip.matte!, kind, false, true)} />
+          </HStack>
+        )}
+      </ModelPicker>
+    </Block>
+  );
+}
+
+/** 自動で位置合わせ（被写体を真ん中に。縦長・横長に変えたときに） */
+export function AutoReframeSection({clip, notify}: {clip: MediaClip; notify: Notify}) {
+  const [model, setModel] = useState(chosen.matte);
+  const [busy, setBusy] = useState<number | null>(null);
+  const run = async () => {
+    setBusy(0);
+    const unwatch = await watchAi(p => {
+      if (p.stage === 'matte') setBusy(p.ratio);
+    });
+    try {
+      const ok = await autoReframe(clip.id, model);
+      notify(ok ? (clip.mediaKind === 'video' ? '被写体を追って位置を合わせました（キーフレーム）' : '被写体が真ん中に来るように合わせました') : '大きさが分からない素材です', ok ? 'info' : 'error');
+    } catch (e) {
+      notify(`位置を合わせられませんでした：${String(e)}`, 'error');
+    } finally {
+      unwatch();
+      setBusy(null);
+    }
+  };
+  return (
+    <Block title="自動で位置合わせ">
+      <Text type="supporting">画面いっぱいに広げて、人物などが真ん中に来るように動かします。縦長・横長に作り直すときに</Text>
+      <ModelPicker
+        kind="matte"
+        value={model}
+        onChange={id => {
+          chosen.matte = id;
+          setModel(id);
+        }}>
+        {busy !== null ? (
+          <ProgressBar label="被写体を探しています" value={busy * 100} hasValueLabel />
+        ) : (
+          <HStack>
+            <Button size="sm" variant="secondary" label="被写体を真ん中にする" onClick={() => void run()} />
           </HStack>
         )}
       </ModelPicker>
