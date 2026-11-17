@@ -330,6 +330,8 @@ export interface MediaClip extends ClipBase {
   stabilize?: boolean;
   /** 背景を消す（人物などを切り抜く）。使うモデルの id。型は先に作っておく */
   matte?: string;
+  /** なめらかスロー：遅くしたとき、間のコマを動きから作る（書き出しのみ。画面はコマをくり返す） */
+  smooth?: boolean;
 }
 
 /** 効果音集（Rust の sfx::SFX と同じ名前と順） */
@@ -530,7 +532,33 @@ export interface Look {
   exit?: Motion | null;
   /** 同じレイヤーのすぐ前のアイテムとのつなぎ目に入れる切り替え（場面転換） */
   transition?: Transition | null;
+  /** 合成モード（下の絵との重ね方）。なしはふつうに重ねる */
+  blend?: BlendMode | null;
 }
+
+/** 合成モード（画面は canvas の合成、書き出しは ffmpeg の blend。同じ式） */
+export type BlendMode = 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'hardLight' | 'difference' | 'add';
+export const BLEND_MODES: {value: BlendMode; label: string}[] = [
+  {value: 'multiply', label: '乗算'},
+  {value: 'screen', label: 'スクリーン'},
+  {value: 'overlay', label: 'オーバーレイ'},
+  {value: 'hardLight', label: 'ハードライト'},
+  {value: 'darken', label: '比較（暗）'},
+  {value: 'lighten', label: '比較（明）'},
+  {value: 'difference', label: '差の絶対値'},
+  {value: 'add', label: '加算'},
+];
+/** canvas の globalCompositeOperation */
+export const BLEND_CANVAS: Record<BlendMode, GlobalCompositeOperation> = {
+  multiply: 'multiply',
+  screen: 'screen',
+  overlay: 'overlay',
+  hardLight: 'hard-light',
+  darken: 'darken',
+  lighten: 'lighten',
+  difference: 'difference',
+  add: 'lighter',
+};
 /** つなぎ目の切り替え。slide は「前の場面がその方向へ流れ、次の場面が反対側から入る」 */
 export type TransitionKind = 'dissolve' | 'black' | 'white' | 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom';
 export interface Transition {
@@ -635,6 +663,93 @@ export function setKeyframe<T extends {transform: Transform; look?: Look}>(c: T,
   return {...c, look: {...look, anim: {...an, mid, keys}}};
 }
 
+/**
+ * 自動で位置合わせ（CapCut の自動リフレーム）：素材を画面いっぱいに広げ、被写体（pts の重心。素材の t 秒目に 0〜1 の位置）が
+ * 真ん中に来るように位置を決める。動画は時刻ごとのキーフレームにする（ゆっくり追う。画面の外の黒は出さない）
+ */
+export function reframeClip(m: MediaClip, pts: {t: number; x: number; y: number}[], size: [number, number], canvas: [number, number], fps: number): MediaClip {
+  const [sw, sh] = size;
+  const [W, H] = canvas;
+  const s = Math.max(W / sw, H / sh);
+  const lim = [(sw * s - W) / 2, (sh * s - H) / 2];
+  const clamp = (v: number, l: number) => Math.round(Math.max(-l, Math.min(l, v)));
+  const at = (cx: number, cy: number): Transform => ({x: clamp(-(cx - 0.5) * sw * s, lim[0]), y: clamp(-(cy - 0.5) * sh * s, lim[1]), scale: s, opacity: m.transform.opacity});
+  const base = {...m, look: {...plainLook(), ...m.look, anim: null}};
+  if (!pts.length) return {...base, transform: at(0.5, 0.5)};
+  if (m.mediaKind === 'image') return {...base, transform: at(pts[0].x, pts[0].y)};
+  // クリップの中に出る時刻だけを、出る順に
+  const seq = pts
+    .map(p => ({f: timelineFrameOf(m, p.t, fps), x: p.x, y: p.y}))
+    .filter((p): p is {f: number; x: number; y: number} => p.f !== null)
+    .map(p => ({...p, at: (p.f - m.start) / Math.max(1, m.duration)}))
+    .filter(p => p.at >= 0 && p.at <= 1)
+    .sort((a, b) => a.at - b.at);
+  if (!seq.length) return {...base, transform: at(0.5, 0.5)};
+  // 細かい揺れを均す（前後 2 つずつの平均）
+  const sm = seq.map((p, i) => {
+    const w = seq.slice(Math.max(0, i - 2), i + 3);
+    return {at: p.at, x: w.reduce((a, q) => a + q.x, 0) / w.length, y: w.reduce((a, q) => a + q.y, 0) / w.length};
+  });
+  const first = at(sm[0].x, sm[0].y);
+  const last = at(sm[sm.length - 1].x, sm[sm.length - 1].y);
+  // 途中は 0.5 秒ごとくらいに間引く
+  const gap = (fps * 0.5) / Math.max(1, m.duration);
+  const keys: AnimMid[] = [];
+  let prev = 0;
+  for (const p of sm.slice(1, -1)) {
+    if (p.at - prev < gap || p.at > 1 - gap / 2) continue;
+    keys.push({at: p.at, transform: at(p.x, p.y), rotation: base.look.rotation});
+    prev = p.at;
+  }
+  const moves = keys.some(k => k.transform.x !== first.x || k.transform.y !== first.y) || last.x !== first.x || last.y !== first.y;
+  if (!moves) return {...base, transform: first};
+  return {...base, transform: first, look: {...base.look, anim: {to: last, rotation: base.look.rotation, ease: 'linear', keys}}};
+}
+
+/** 動画の素材の位置（0〜1）が、画面のどこ（transform と同じ、真ん中からの px）に出るか。動画の始まりの置き方で計算する */
+export function sourceToCanvas(video: MediaClip, size: [number, number], u: number, v: number): [number, number] {
+  const s = video.transform.scale;
+  return [video.transform.x + (u - 0.5) * size[0] * s, video.transform.y + (v - 0.5) * size[1] * s];
+}
+export function canvasToSource(video: MediaClip, size: [number, number], x: number, y: number): [number, number] {
+  const s = Math.max(1e-6, video.transform.scale);
+  return [(x - video.transform.x) / (size[0] * s) + 0.5, (y - video.transform.y) / (size[1] * s) + 0.5];
+}
+
+/**
+ * モーショントラッキング：追った点（素材の t 秒目に 0〜1 の位置）に、アイテムを付いて動かす（始まりのずれを保つ）。
+ * 位置だけをキーフレームにする（大きさ・不透明度・回転は今のまま）。ほぼまっすぐ動くところのキーフレームは省く
+ */
+export function followTrack<T extends VisualClip>(item: T, video: MediaClip, pts: {t: number; x: number; y: number}[], size: [number, number], fps: number): T {
+  const seq = pts
+    .map(p => ({f: timelineFrameOf(video, p.t, fps), pos: sourceToCanvas(video, size, p.x, p.y)}))
+    .filter((p): p is {f: number; pos: [number, number]} => p.f !== null)
+    .map(p => ({at: (p.f - item.start) / Math.max(1, item.duration), pos: p.pos}))
+    .filter(p => p.at >= -1e-6 && p.at <= 1 + 1e-6)
+    .sort((a, b) => a.at - b.at);
+  if (seq.length < 2) return item;
+  const dx = item.transform.x - seq[0].pos[0];
+  const dy = item.transform.y - seq[0].pos[1];
+  const look: Look = {...plainLook(), ...item.look};
+  const tr = (p: {pos: [number, number]}): Transform => ({...item.transform, x: Math.round((p.pos[0] + dx) * 10) / 10, y: Math.round((p.pos[1] + dy) * 10) / 10});
+  // 間引く：前に残した点と次の点を結ぶ線から 1.5px 以上ずれる点だけ残す
+  const kept = [seq[0]];
+  for (let i = 1; i < seq.length - 1; i++) {
+    const a = kept[kept.length - 1];
+    const b = seq[i + 1];
+    const k = (seq[i].at - a.at) / Math.max(1e-9, b.at - a.at);
+    const ex = a.pos[0] + (b.pos[0] - a.pos[0]) * k;
+    const ey = a.pos[1] + (b.pos[1] - a.pos[1]) * k;
+    if (Math.hypot(seq[i].pos[0] - ex, seq[i].pos[1] - ey) > 1.5) kept.push(seq[i]);
+  }
+  const last = seq[seq.length - 1];
+  // 追った区間がアイテムより短いときは、終わりでその場に留まる
+  const keys: AnimMid[] = kept.slice(1).map(p => ({at: Math.min(1, Math.max(0, p.at)), transform: tr(p), rotation: look.rotation}));
+  if (last.at < 1 - 1e-6) keys.push({at: last.at, transform: tr(last), rotation: look.rotation});
+  const anim: Anim = {to: tr(last), rotation: look.rotation, ease: 'linear', keys: keys.filter(k => k.at > 1e-6 && k.at < 1 - 1e-6)};
+  return {...item, transform: tr(seq[0]), look: {...look, anim}};
+}
+
 /** その時点（割合）の途中のキーフレームを消す。頭・終わりは消さない */
 export function removeKeyframe<T extends {look?: Look}>(c: T, p: number): T {
   const an = c.look?.anim;
@@ -653,7 +768,9 @@ export type Effect =
   /** フィルター（色の雰囲気。name は GRADES の名前、strength は 0〜1） */
   | {kind: 'grade'; name: string; strength: number}
   /** 色温度（warm：-1 で青く 〜 1 で黄色く）と色合い（tint：-1 で緑 〜 1 で赤紫） */
-  | {kind: 'temperature'; warm: number; tint: number};
+  | {kind: 'temperature'; warm: number; tint: number}
+  /** LUT（.cube のファイル）。書き出しはそのまま、画面は近い色。strength は 0〜1 */
+  | {kind: 'lut'; path: string; strength: number};
 
 /**
  * フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。

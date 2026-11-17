@@ -1,8 +1,28 @@
 // UI から呼ぶ非同期の操作（IPC ＋ 状態更新）。
 
+import {parseSubtitles} from './srt';
 import {api, type AiProgress, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
 import type {EngineId, Portrait, Project, VoiceClip} from './model';
-import {ENGINE_LABEL, effectiveVoice, framesToTimecode, withTransitions, isSpeakerMissing, projectDuration, proxyKey, matteKey, srcSpan, reflowAll, synthKey, timelineFrameOf} from './model';
+import {
+  ENGINE_LABEL,
+  effectiveVoice,
+  framesToTimecode,
+  withTransitions,
+  isSpeakerMissing,
+  projectDuration,
+  proxyKey,
+  matteKey,
+  reframeClip,
+  srcSpan,
+  srcFrameAt,
+  canvasToSource,
+  followTrack,
+  type MediaClip,
+  type VisualClip,
+  reflowAll,
+  synthKey,
+  timelineFrameOf,
+} from './model';
 import {addCaptionClips, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
@@ -102,6 +122,75 @@ export async function autoCaptions(clipId: string, model: string): Promise<numbe
     return [{start: Math.min(a, b), duration: Math.abs(b - a), text: sg.text}];
   });
   return addCaptionClips(items);
+}
+
+/** アイテムの下で流れている動画（アイテムの頭の時点で重なっていて、違うレイヤーのもの） */
+export function videoUnder(itemId: string): MediaClip | null {
+  const p = getState().project;
+  const it = p?.clips.find(c => c.id === itemId);
+  if (!p || !it) return null;
+  const order = p.tracks.map(t => t.id);
+  const mine = order.indexOf(it.trackId);
+  const cands = p.clips.filter(
+    (c): c is MediaClip => c.type === 'media' && c.mediaKind === 'video' && c.id !== it.id && c.trackId !== it.trackId && c.start <= it.start && c.start + c.duration > it.start,
+  );
+  // 奥（下に描かれる）レイヤーのうち、いちばん近いもの
+  cands.sort((a, b) => Math.abs(order.indexOf(a.trackId) - mine) - Math.abs(order.indexOf(b.trackId) - mine));
+  return cands[0] ?? null;
+}
+
+/**
+ * モーショントラッキング：アイテムの頭の時点でアイテムが乗っている点を、下の動画の中で追い、アイテムを付いて動かす。
+ * 追えた秒数を返す
+ */
+export async function trackItem(itemId: string, size = 0.06): Promise<number> {
+  const s0 = getState();
+  const p = s0.project;
+  const it = p?.clips.find(c => c.id === itemId);
+  const video = videoUnder(itemId);
+  if (!p || !it || !('transform' in it) || it.type === 'portrait') throw new Error('付いていかせるアイテムを選んでください');
+  if (!video) throw new Error('アイテムの頭の時点で、下に動画がありません');
+  if (video.reverse || video.freeze) throw new Error('逆再生・静止にした動画は追えません');
+  const a = await api;
+  const info = s0.media[video.src] ?? (await a.probeMedia(video.src, s0.projectPath));
+  if (!info.width || !info.height) throw new Error('動画の大きさが分かりません');
+  const fps = p.video.fps;
+  const t0 = Math.max(it.start, video.start);
+  const t1 = Math.min(it.start + it.duration, video.start + video.duration);
+  const from = srcFrameAt(video, t0 - video.start) / fps;
+  const to = srcFrameAt(video, t1 - video.start) / fps;
+  const [u, v] = canvasToSource(video, [info.width, info.height], it.transform.x, it.transform.y);
+  if (u < 0 || u > 1 || v < 0 || v > 1) throw new Error('アイテムが動画の外にあります。追わせたい物の上に置いてください');
+  const pts = await a.trackMotion(video.src, s0.projectPath, from, to, u, v, size);
+  const cur = getState().project?.clips.find(c => c.id === itemId);
+  if (!cur || !('transform' in cur) || cur.type === 'portrait') return 0;
+  const next = followTrack(cur as VisualClip, video, pts, [info.width, info.height], fps);
+  commit(pr => ({...pr, clips: pr.clips.map(x => (x.id === itemId ? next : x))}));
+  return pts.length ? pts[pts.length - 1].t - pts[0].t : 0;
+}
+
+/** 自動で位置合わせ：素材を画面いっぱいにして、被写体が真ん中に来るように位置（動画は時刻ごとのキーフレーム）を決める */
+export async function autoReframe(clipId: string, model: string): Promise<boolean> {
+  const s0 = getState();
+  const c = s0.project?.clips.find(x => x.id === clipId);
+  if (!s0.project || !c || c.type !== 'media' || c.mediaKind === 'audio') return false;
+  const a = await api;
+  const info = s0.media[c.src] ?? (await a.probeMedia(c.src, s0.projectPath));
+  if (!info.width || !info.height) return false;
+  const pts = await a.subjectTrack(c.src, s0.projectPath, model, c.mediaKind === 'image', info.durationMs ?? 0);
+  const p = getState().project;
+  const cur = p?.clips.find(x => x.id === clipId);
+  if (!p || !cur || cur.type !== 'media') return false;
+  const next = reframeClip(cur, pts, [info.width, info.height], [p.video.width, p.video.height], p.video.fps);
+  commit(pr => ({...pr, clips: pr.clips.map(x => (x.id === clipId ? next : x))}));
+  return true;
+}
+
+/** 字幕ファイル（.srt・.vtt）を読み込んで、新しいレイヤー「字幕」にテキストとして並べる。作った数を返す */
+export async function importSubtitleFile(file: File): Promise<number> {
+  const p = getState().project;
+  if (!p) return 0;
+  return addCaptionClips(parseSubtitles(await file.text(), p.video.fps));
 }
 
 /** 背景を消す型を用意する（作成中・作成済みなら何もしない）。型の URL は proxies[matteKey] に入る */
@@ -632,8 +721,8 @@ export async function cancelExport() {
   await (await api).cancelExport();
 }
 
-export type ExportKind = 'video' | 'audio' | 'subtitle';
-const EXT: Record<ExportKind, string> = {video: 'mp4', audio: 'wav', subtitle: 'srt'};
+export type ExportKind = 'video' | 'gif' | 'audio' | 'subtitle';
+const EXT: Record<ExportKind, string> = {video: 'mp4', gif: 'gif', audio: 'wav', subtitle: 'srt'};
 
 export async function pickExportPath(kind: ExportKind = 'video'): Promise<string | null> {
   const s = getState();
