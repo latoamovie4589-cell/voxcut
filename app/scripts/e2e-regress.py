@@ -806,6 +806,93 @@ async def main():
         check("反復移動（1 秒で右に 10px）", r['o'][0] > 200 and r['o'][1] < 30, str(r))
         check("ランダム移動（書き出しと同じ乱数でずれる）", r['j'][2] > 100 and abs(r['h'] - 0.0) >= 0, str(r))
         check("残像（前の時点の位置に薄く重なる）", r['t'][0] > 220 and 140 <= r['t'][1] < 200 and 60 <= r['t'][2] < 110, str(r))
+        # ── グループ制御・カメラ・調整レイヤー（core/src/render.rs の group_camera_adjust と同じ数。プレビューに描いて読む）
+        async def ctl_shot(kind, layers, tr, look, ph):
+            return await q.evaluate(r"""async([kind, layers, tr, look, ph])=>{const s=await import('/src/store.ts');
+              const p=structuredClone(s.getState().project); p.video={...p.video, width:64, height:36, background:'#000000'};
+              p.tracks=[1,2,3].map(n=>({...p.tracks[0], id:'V'+n, name:'', hidden:false, locked:false, muted:false}));
+              const sq=(id,t,x)=>({id, type:'shape', trackId:t, start:0, duration:60, shape:'rect', width:6, height:6, fill:'#FFFFFF', stroke:'', strokeWidth:0, transform:{x, y:0, scale:1, opacity:1}});
+              p.clips=[sq('a','V1',-12), sq('b','V2',12), {...sq('g','V3',0), duration:30, transform:{x:0,y:0,scale:1,opacity:1, ...tr}, look:{rotation:0, fadeIn:0, fadeOut:0, effects:[], ...look}, control:{kind, layers}}];
+              p.characters=[]; s.setState({project:p, playhead:ph, selectedClipId:null});
+              await new Promise(r=>setTimeout(r,250)); const c=document.querySelector('.vx-preview canvas'); const g=c.getContext('2d'); const k=c.width/64;
+              const row=[]; for (let X=0;X<64;X++) row.push(g.getImageData(Math.floor((X+0.5)*k), Math.floor(18.5*k), 1, 1).data[0]); return row}""", [kind, layers, tr, look, ph])
+        keep = await q.evaluate("async()=>structuredClone((await import('/src/store.ts')).getState().project)")
+        a1 = await ctl_shot('group', 2, {'x': 5}, {}, 15)
+        b1 = await ctl_shot('group', 2, {'x': 5}, {}, 45)
+        c1 = await ctl_shot('group', 1, {'x': 5}, {}, 15)
+        o1 = await ctl_shot('group', 2, {'opacity': 0.5}, {}, 15)
+        m1 = await ctl_shot('camera', 1, {'x': 5}, {}, 15)
+        z1 = await ctl_shot('camera', 1, {'scale': 2}, {}, 15)
+        j1 = await ctl_shot('adjust', 1, {}, {'effects': [{'kind': 'invert'}]}, 15)
+        await q.evaluate("async(p)=>(await import('/src/store.ts')).setState({project:p, playhead:0})", keep)
+        check("グループ制御：まとめた 2 レイヤーが右へ 5px（書き出しと同じ）", a1[25] > 200 and a1[49] > 200 and a1[18] < 30, str(a1))
+        check("グループ制御：時間の外は元の位置", b1[18] > 200 and b1[25] < 30, str(b1))
+        check("グループ制御：1 レイヤーならすぐ下だけ動く", c1[18] > 200 and c1[49] > 200 and c1[42] < 30, str(c1))
+        check("グループ制御：不透明度はまとめて掛かる", 100 <= o1[19] < 160, str(o1))
+        check("カメラ：右へ動かすと絵は左へ", m1[14] > 200 and m1[38] > 200 and m1[20] < 30, str(m1))
+        check("カメラ：大きくすると真ん中から寄る", z1[4] > 200 and z1[59] > 200 and z1[20] < 30, str(z1))
+        check("調整レイヤー：下の全部に掛かる（色の反転）", j1[30] > 220 and j1[19] < 30 and j1[43] < 30, str(j1))
+        # ── テキストの縦書き・1 文字ずつ登場
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts'); const m=await import('/src/model.ts');
+          const base={id:'t', type:'text', trackId:'V1', start:0, duration:90, text:'あいうえ', fontFamily:'sans-serif', fontSize:40, color:'#FFFFFF', outlineColor:'#000000', outlineWidth:0, bold:false, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}};
+          const h=v.textImage(base), vt=v.textImage({...base, vertical:true});
+          // 文字ごとの明るさ（横書き、4 つに分けた区画の不透明なところの数）
+          const cols=(img)=>{const d=img.getContext('2d').getImageData(0,0,img.width,img.height).data; const out=[0,0,0,0]; for (let X=0;X<img.width;X++) for (let Y=0;Y<img.height;Y++) if (d[(Y*img.width+X)*4+3]>128) out[Math.min(3,Math.floor(X/img.width*4))]++; return out};
+          const ca={kind:'type', interval:5, length:1};
+          const f0=cols(v.textImage({...base, charAnim:ca}, {charFrame:0})), f6=cols(v.textImage({...base, charAnim:ca}, {charFrame:6})), fe=cols(v.textImage({...base, charAnim:ca}, {charFrame:100}));
+          const fa={kind:'fade', interval:5, length:10};
+          const a1=v.textImage({...base, charAnim:fa}, {charFrame:5}); const ad=a1.getContext('2d').getImageData(0,0,a1.width,a1.height).data; let mx=0; for (let i=3;i<ad.length;i+=4) mx=Math.max(mx,ad[i]);
+          const same=v.textImage({...base, charAnim:ca}, {charFrame:100}).width===v.textImage({...base, charAnim:ca}, {charFrame:0}).width;
+          return {h:[h.width,h.height], v:[vt.width,vt.height], f0, f6, fe, mx, same, frames:m.charAnimFrames(fa,4), p:[m.charProgress(fa,1,10), m.charProgress(ca,2,9)]}}""")
+        check("テキストの縦書き：縦に長い画像になる", r['v'][1] > r['v'][0] * 2 and r['h'][0] > r['h'][1] * 2, str(r))
+        check("1 文字ずつ（そのまま）：0 コマ目は 1 文字目だけ、6 コマ目は 2 文字目まで、最後は全部", r['f0'][0] > 0 and r['f0'][1] == 0 and r['f6'][1] > 0 and r['f6'][2] == 0 and r['fe'][3] > 0, str(r))
+        check("1 文字ずつ（ふわっと）：途中は半分の濃さ、画像の大きさは変わらない", 90 < r['mx'] < 170 and r['same'], str(r))
+        check("1 文字ずつ：出きるまでのコマ数（書き出しの CharAnim::frames と同じ）", r['frames'] == 25 and r['p'] == [0.5, 0], str(r))
+        # ── シーン（core/src/render.rs の scene_item と同じ数）
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const m=await import('/src/model.ts');
+          const keep=structuredClone(s.getState().project); const p=structuredClone(keep); p.video={...p.video, width:64, height:36, background:'#000000'};
+          const tr=(id)=>({...p.tracks[0], id, name:'', hidden:false, locked:false, muted:false});
+          const sh=(id,t,start,duration,x,scene)=>({id, type:'shape', trackId:t, start, duration, shape:'rect', width:6, height:6, fill:'#FFFFFF', stroke:'', strokeWidth:0, transform:{x, y:0, scale:1, opacity:1}, scene});
+          p.tracks=[tr('V1'), tr('V2')]; p.characters=[];
+          p.scenes=[{id:'sc', name:'s', tracks:[tr('S1')], clips:[sh('s1','S1',0,20,-10), sh('s2','S1',20,100,10)]}];
+          p.clips=[{...sh('it','V2',30,60,5,'sc'), width:64, height:36}];
+          const e=m.withScenes(p);
+          const ids=e.tracks.map(t=>t.id); const s2=e.clips.find(c=>c.id==='s2@it');
+          const row=async(ph)=>{s.setState({project:p, playhead:ph, selectedClipId:null}); await new Promise(r=>setTimeout(r,250)); const c=document.querySelector('.vx-preview canvas'); const g=c.getContext('2d'); const k=c.width/64; const out=[]; for (let X=0;X<64;X++) out.push(g.getImageData(Math.floor((X+0.5)*k), Math.floor(18.5*k),1,1).data[0]); return out};
+          const a=await row(36), b=await row(60), z=await row(15);
+          // シーンを開いて戻す（保存はいつもメイン）
+          const o=m.switchScene(p,'sc'); const back=m.canonicalProject(o);
+          s.setState({project:keep, playhead:0});
+          return {ids, s2:[s2.start, s2.duration], a, b, zmax:Math.max(...z), open:[o.tracks[0].id, o.sceneId], back:[back.tracks.map(t=>t.id).join(','), back.sceneId===undefined, back.scenes.length]}}""")
+        check("シーン：展開したレイヤー（書き出しの with_scenes と同じ）", r['ids'] == ['V1', 'S1@it', 'V2'] and r['s2'] == [50, 40], str(r))
+        check("シーン：アイテムの頭から再生して、アイテムの位置に置く（6 フレーム目は x = 24〜29）", r['a'][26] > 200 and r['a'][36] < 30, str(r['a']))
+        check("シーン：30 フレーム目は x = 44〜49", r['b'][46] > 200 and r['b'][26] < 30, str(r['b']))
+        check("シーン：アイテムの前は何も出ない", r['zmax'] < 30, str(r))
+        check("シーンを開く・メインに戻す（保存するのはいつもメイン）", r['open'] == ['S1', 'sc'] and r['back'] == ['V1,V2', True, 1], str(r))
+        # ── 音声の波形・スペクトラム（プレビューの目安）
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const c={id:'z', type:'shape', trackId:'V1', start:0, duration:90, shape:'rect', width:120, height:40, fill:'#FF0000', stroke:'', strokeWidth:0, transform:{x:0,y:0,scale:1,opacity:1}};
+          const cnt=(img)=>{const d=img.getContext('2d').getImageData(0,0,img.width,img.height).data; let n=0, red=true; for (let i=0;i<d.length;i+=4) if (d[i+3]>100) { n++; if (d[i+1]>60) red=false; } return [n, red]};
+          return [cnt(v.vizImage({...c, viz:'bars'}, 0, 1)), cnt(v.vizImage({...c, viz:'bars'}, 1, 1)), cnt(v.vizImage({...c, viz:'wave'}, 1, 1)), v.vizImage({...c, viz:'wave'}, 1, 1).width]}""")
+        check("音声のスペクトラム：音がなければ描かず、音があれば塗りの色で描く", r[0][0] == 0 and r[1][0] > 200 and r[1][1], str(r))
+        check("音声の波形：図形の大きさで描く", r[2][0] > 50 and r[3] == 120, str(r))
+        # ── プラグイン（core/src/plugin.rs の fills_and_rejects と同じ）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts'); const ipc=await import('/src/ipc.ts');
+          const a=await ipc.api; const l=await a.listPlugins(); const pl=l.plugins[0].plugin; const e=m.pluginEffect(pl, pl.effects[0]);
+          const st=v.visualAt({x:0,y:0,scale:1,opacity:1}, {rotation:0, fadeIn:0, fadeOut:0, effects:[e]}, 0, 30, 30, 0, [64,36]);
+          return [m.fillTemplate('hue=h={deg}:s={k}', {deg:90, k:0.25}), m.fillTemplate('hue=h={x}', {deg:90}), m.fillTemplate('null[a];[a]hue', {}), e.values, st.filter]}""")
+        check("プラグイン：{名前} に数を入れる（書き出しと同じ）、壊れる式は使わない", r[0] == 'hue=h=90:s=0.25' and r[1] is None and r[2] is None, str(r))
+        check("プラグイン：見本のエフェクトを最初の値で入れ、プレビューにも掛かる", r[3] == {'deg': 90} and r[4] == 'hue-rotate(90deg)', str(r))
+        # ── 新しいアイテムのプロパティを開いても、画面にエラーが出ない
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const keep=structuredClone(s.getState().project); const out=[];
+          const wait=()=>new Promise(r=>setTimeout(r,300));
+          for (const id of [s.addControl('group'), s.addControl('camera'), s.addControl('adjust'), s.addAudioViz('wave'), s.addAudioViz('bars')]) { s.setState({selectedClipId:id}); await wait(); out.push(document.querySelector('.vx-inspector, [class*=inspector]')?.textContent?.slice(0,40) ?? ''); }
+          const sc=s.addScene(); await wait(); const inScene=s.getState().project.sceneId===sc; s.addVisualItem('text'); s.openScene(null); await wait();
+          const it=s.addSceneItem(sc); s.setState({selectedClipId:it}); await wait(); out.push(document.body.textContent.includes('置くシーン'));
+          const tx=s.addVisualItem('text'); s.updateClip(tx, {charAnim:{kind:'pop', interval:2, length:6}, vertical:true}); s.setState({selectedClipId:tx, playhead:s.getState().playhead+3}); await wait();
+          out.push(document.body.textContent.includes('1 文字ずつ出す'));
+          s.setState({project:keep, selectedClipId:null, playhead:0}); return [out, inScene]}""")
+        check("グループ制御・カメラ・調整レイヤー・波形・シーン・1 文字ずつのプロパティが開ける", r[1] and r[0][5] is True and r[0][6] is True, str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
