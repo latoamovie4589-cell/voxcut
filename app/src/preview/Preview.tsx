@@ -30,7 +30,7 @@ import {
   proxyKey,
   matteKey,
 } from '../model';
-import {distort, drawVisual, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
+import {distort, drawVisual, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
 import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
@@ -408,9 +408,11 @@ export function Preview() {
     const ro = new ResizeObserver(bump);
     ro.observe(wrap);
     const off = onPeaks(bump);
+    const offLut = onLutReady(bump);
     return () => {
       ro.disconnect();
       off();
+      offLut();
     };
   }, []);
 

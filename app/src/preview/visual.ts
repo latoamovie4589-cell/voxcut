@@ -2,8 +2,9 @@
 // 書き出し（core/src/render.rs の visual_filters）と同じ計算になるようにそろえる。
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
-import type {Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {animStateAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
+import type {BlendMode, Effect, Look, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
+import {BLEND_CANVAS, animStateAt, chromaWeights, colorGrade, cropKeep, lineOfSubtitle, maskAlpha, type MediaClip} from '../model';
+import {api, type LutFit} from '../ipc';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
 
 export interface VisualState {
@@ -15,6 +16,8 @@ export interface VisualState {
   filter: string;
   /** ぼかしの半径（書き出しの画面 px） */
   blur: number;
+  /** 合成モード */
+  blend?: BlendMode | null;
 }
 
 /**
@@ -61,6 +64,9 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
     else if (fx.kind === 'grade' || fx.kind === 'temperature') {
       const f = gradeFilter(fx);
       if (f) filters.push(f);
+    } else if (fx.kind === 'lut') {
+      const f = lutFilter(fx.path, fx.strength);
+      if (f) filters.push(f);
     } else if (fx.kind === 'blur') blur += Math.max(0, fx.radius);
     else if (fx.kind === 'wave' || fx.kind === 'swirl')
       continue; // distort で
@@ -69,7 +75,7 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
       tr.y += fx.amount * Math.cos(2 * Math.PI * fx.speed * abs * 1.37);
     }
   }
-  return {transform: tr, rotation, alpha, filter: filters.join(' '), blur};
+  return {transform: tr, rotation, alpha, filter: filters.join(' '), blur, blend: l?.blend ?? null};
 }
 
 /**
@@ -198,6 +204,49 @@ export function gradeFilter(fx: Effect): string | null {
   );
 }
 
+const lutFits = new Map<string, LutFit | 'loading' | 'error'>();
+const lutWaiters = new Set<() => void>();
+/** LUT を読み終えたら呼ぶ（プレビューを描き直す） */
+export function onLutReady(f: () => void): () => void {
+  lutWaiters.add(f);
+  return () => void lutWaiters.delete(f);
+}
+
+/**
+ * LUT の SVG フィルター（近い形：行列 → 色ごとの曲線 → 強さの分だけ元と混ぜる）。読み終わるまでは null
+ * 書き出しは ffmpeg の lut3d で .cube のとおりに変える
+ */
+export function lutFilter(path: string, strength: number): string | null {
+  const k = Math.max(0, Math.min(1, strength));
+  if (!path || k <= 0) return null;
+  const fit = lutFits.get(path);
+  if (!fit) {
+    lutFits.set(path, 'loading');
+    void api
+      .then(a => a.lutFit(path))
+      .then(
+        f => lutFits.set(path, f),
+        () => lutFits.set(path, 'error'),
+      )
+      .then(() => lutWaiters.forEach(w => w()));
+    return null;
+  }
+  if (fit === 'loading' || fit === 'error') return null;
+  const m = fit.matrix;
+  const id = `vx-lut-${[...m, ...fit.tables.flat(), k]
+    .map(v => v.toFixed(4))
+    .join('_')
+    .replace(/\./g, 'p')
+    .replace(/-/g, 'm')}`;
+  const fn = (t: string, tb: number[]) => `<feFunc${t} type="table" tableValues="${tb.map(v => v.toFixed(4)).join(' ')}"/>`;
+  return svgFilter(
+    id,
+    `<feColorMatrix in="SourceGraphic" type="matrix" values="${m[0]} ${m[1]} ${m[2]} 0 ${m[3]}  ${m[4]} ${m[5]} ${m[6]} 0 ${m[7]}  ${m[8]} ${m[9]} ${m[10]} 0 ${m[11]}  0 0 0 1 0" result="m"/>` +
+      `<feComponentTransfer in="m" result="c">${fn('R', fit.tables[0])}${fn('G', fit.tables[1])}${fn('B', fit.tables[2])}</feComponentTransfer>` +
+      (k < 0.999 ? `<feComposite in="c" in2="SourceGraphic" operator="arithmetic" k1="0" k2="${k}" k3="${1 - k}" k4="0"/>` : ''),
+  );
+}
+
 /** 色を抜く SVG フィルター（Canvas の filter に url() で渡す。画素を読み出さないので、別のオリジンの動画にも使える） */
 function chromaFilter(c: NonNullable<MediaClip['chroma']>): string | null {
   const wts = chromaWeights(c.color);
@@ -301,6 +350,7 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
   const cy = h / 2 + st.transform.y * viewScale;
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, st.alpha));
+  if (st.blend) ctx.globalCompositeOperation = BLEND_CANVAS[st.blend];
   const f = [st.filter, st.blur > 0 ? `blur(${st.blur * viewScale}px)` : ''].filter(Boolean).join(' ');
   if (f) ctx.filter = f;
   ctx.translate(cx, cy);
