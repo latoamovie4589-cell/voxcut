@@ -469,41 +469,6 @@ pub struct VoiceClip {
     /// 声の聞こえ方（左右・フェード・エコー・音声エフェクト・再生開始位置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_fx: Option<Box<LineAudio>>,
-    /// 字幕で色を変える言葉（あとに書いたものが優先）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub highlights: Vec<Highlight>,
-}
-
-/// 字幕で色を変える言葉
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Highlight {
-    pub word: String,
-    pub color: String,
-}
-
-/// 文（改行は数えない）の 1 文字ごとの色（色を変えない文字は None）。言葉ごとに、左から重ならないように探す。画面と同じ
-pub fn highlight_mask(text: &str, highlights: &[Highlight]) -> Vec<Option<String>> {
-    let chars: Vec<char> = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
-    let mut out = vec![None; chars.len()];
-    for h in highlights {
-        let w: Vec<char> = h.word.chars().collect();
-        if w.is_empty() || h.color.is_empty() {
-            continue;
-        }
-        let mut i = 0;
-        while i + w.len() <= chars.len() {
-            if chars[i..i + w.len()] == w[..] {
-                for o in out.iter_mut().skip(i).take(w.len()) {
-                    *o = Some(h.color.clone());
-                }
-                i += w.len();
-            } else {
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 /// セリフの声の聞こえ方。画面（preview/playback.ts）と書き出し（render.rs）で同じ効き方にする
@@ -1875,7 +1840,6 @@ impl Project {
                     subtitle_custom: None,
                     portrait: None,
                     audio_fx: None,
-                    highlights: vec![],
                 }),
             });
         }

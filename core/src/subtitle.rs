@@ -134,30 +134,6 @@ pub fn wipe_bounds(text: &str, font_size: u32, width: u32, duration: Frame, fps:
     ((c - half).floor() as i64, (c + half).ceil() as i64, ms.max(1))
 }
 
-/// 言葉の色を変えた ASS（mask は改行を数えない 1 文字ごとの色。変えたあとは base の色に戻す）
-fn colored_ass(text: &str, mask: &[Option<String>], base: &str) -> String {
-    let mut out = String::new();
-    let mut cur: Option<&str> = None;
-    let mut i = 0;
-    for ch in text.chars() {
-        if ch == '\r' {
-            continue;
-        }
-        if ch == '\n' {
-            out.push_str("\\N");
-            continue;
-        }
-        let want = mask.get(i).and_then(|c| c.as_deref());
-        if want != cur {
-            out.push_str(&format!("{{\\1c{}&}}", ass_color(want.unwrap_or(base))));
-            cur = want;
-        }
-        out.push_str(&escape_text(&ch.to_string()));
-        i += 1;
-    }
-    out
-}
-
 /// カラオケで、ゆっくり塗らない文字（句読点・記号・空白）
 fn karaoke_light(ch: char) -> bool {
     ch.is_whitespace() || "、。，．,.!?！？…‥・「」『』（）()〜~－-：:；;\"'”“’‘".contains(ch)
@@ -435,13 +411,10 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             .unwrap_or_default();
         let ms = (p.video.frames_to_secs(anim_frames(p.video.fps)) * 1000.0).round() as u32;
         // ルビがあれば、ルビの行を足した文にする（ないときは今までどおり）
-        // 色を変える言葉（ルビ・1 文字ずつ・カラオケのときは変えない）
-        let hl = crate::model::highlight_mask(text, &v.highlights);
-        let plain = || if hl.iter().any(|c| c.is_some()) { colored_ass(text, &hl, &kara_from) } else { escape_text(text) };
         let body = |pop: Option<u32>, count: usize| match &rows {
             Some(r) => ruby_ass(r, font_size, pop, count),
-            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", plain()),
-            None if count == usize::MAX => plain(),
+            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", escape_text(text)),
+            None if count == usize::MAX => escape_text(text),
             None => reveal_text(text, count),
         };
         match anim {
@@ -583,25 +556,6 @@ mod tests {
         let s = build_ass(&p);
         assert!(s.contains(",ch_a,,0,0,0,,{\\fad(200,200)}こんにちは。"), "{s}");
         assert!(s.contains(",ch_b,,0,0,0,,{\\fscx85\\fscy85\\t(0,200,0.5,\\fscx100\\fscy100)}セリフ"));
-    }
-
-    #[test]
-    fn highlighted_words() {
-        use crate::model::Highlight;
-        let h = vec![Highlight { word: "カニ".into(), color: "#FF0000".into() }, Highlight { word: "漁".into(), color: "#0000FF".into() }];
-        let m = crate::model::highlight_mask("今日はカ\nニ漁", &h);
-        assert_eq!(m.iter().map(|c| c.as_deref().unwrap_or("-")).collect::<Vec<_>>(), vec!["-", "-", "-", "#FF0000", "#FF0000", "#0000FF"]);
-        let s = colored_ass("今日はカ\nニ漁", &m, "#FFFFFF");
-        assert_eq!(s, "今日は{\\1c&H000000FF&}カ\\Nニ{\\1c&H00FF0000&}漁");
-        let mut p = Project::sample();
-        if let Some(v) = p.clips.iter_mut().find_map(|c| match &mut c.body {
-            crate::model::ClipBody::Voice(v) if v.text.starts_with("こんにちは。") => Some(v),
-            _ => None,
-        }) {
-            v.highlights = vec![Highlight { word: "にち".into(), color: "#FF0000".into() }];
-        }
-        let s = build_ass(&p);
-        assert!(s.contains("こん{\\1c&H000000FF&}にち{\\1c&H00FFFFFF&}は。"), "{s}");
     }
 
     #[test]
