@@ -77,9 +77,15 @@ export interface AiModel {
 }
 
 export interface AiProgress {
-  stage: 'download' | 'transcribe' | 'matte';
+  stage: 'download' | 'transcribe' | 'matte' | 'track';
   id: string;
   ratio: number;
+}
+
+/** LUT の画面用の近い形：3 行 × 4 の行列（重みと足す量）と、色ごとの曲線（0〜1 を 16 等分した 17 点） */
+export interface LutFit {
+  matrix: number[];
+  tables: number[][];
 }
 
 /** 文字起こしの 1 まとまり（秒は素材の頭から） */
@@ -119,7 +125,7 @@ export interface Api {
   onSynthProgress(cb: (p: SynthProgress) => void): Promise<Unlisten>;
   onExportProgress(cb: (p: ExportProgress) => void): Promise<Unlisten>;
   pickOpenPath(): Promise<string | null>;
-  pickSavePath(kind: 'project' | 'video' | 'audio' | 'subtitle' | 'image', suggested: string): Promise<string | null>;
+  pickSavePath(kind: 'project' | 'video' | 'gif' | 'audio' | 'subtitle' | 'image', suggested: string): Promise<string | null>;
   /** 素材・立ち絵のファイルを選ぶ */
   pickMedia(kind: 'media' | 'image', multiple: boolean): Promise<string[]>;
   /** 実行ファイル（.exe）を選ぶ */
@@ -137,6 +143,10 @@ export interface Api {
   detectScenes(src: string, projectPath: string | null, threshold: number): Promise<number[]>;
   /** テンプレートのファイル（.voxtpl）を選ぶ */
   pickTemplatePath(mode: 'save' | 'open'): Promise<string | null>;
+  /** LUT（.cube）のファイルを選ぶ */
+  pickLutPath(): Promise<string | null>;
+  /** LUT を画面用の近い形（行列＋色ごとの曲線）にする */
+  lutFit(path: string): Promise<LutFit>;
   writeTextFile(path: string, text: string): Promise<void>;
   readTextFile(path: string): Promise<string>;
   /** 素材の音を加工した WAV（プレビュー用）の URL */
@@ -155,6 +165,10 @@ export interface Api {
   /** 背景を消す型（白が残すところ）の URL。画像なら PNG、動画なら MP4 */
   makeMatte(src: string, projectPath: string | null, model: string, still: boolean, durationMs: number): Promise<string>;
   onAiProgress(cb: (p: AiProgress) => void): Promise<Unlisten>;
+  /** 被写体の位置（素材の t 秒目に、重心が 0〜1 の x・y）。背景を消す型を作って調べる */
+  /** 動画の中の 1 点を追う（素材の from〜to 秒。x・y・size は 0〜1） */
+  trackMotion(src: string, projectPath: string | null, from: number, to: number, x: number, y: number, size: number): Promise<{t: number; x: number; y: number; score: number}[]>;
+  subjectTrack(src: string, projectPath: string | null, model: string, still: boolean, durationMs: number): Promise<{t: number; x: number; y: number}[]>;
   /** この PC で使える書き出しの方法（先頭は CPU） */
   videoEncoders(): Promise<Encoder[]>;
   addRecent(path: string): Promise<string[]>;
@@ -265,9 +279,11 @@ async function tauriApi(): Promise<Api> {
               ? {name: 'WAV（音声）', extensions: ['wav']}
               : kind === 'subtitle'
                 ? {name: 'SRT（字幕）', extensions: ['srt']}
-                : kind === 'image'
-                  ? {name: '画像（PNG・JPEG）', extensions: ['png', 'jpg']}
-                  : {name: 'MP4', extensions: ['mp4']},
+                : kind === 'gif'
+                  ? {name: 'GIF（動く画像）', extensions: ['gif']}
+                  : kind === 'image'
+                    ? {name: '画像（PNG・JPEG）', extensions: ['png', 'jpg']}
+                    : {name: 'MP4', extensions: ['mp4']},
         ],
       });
       if (r) lastSaveDir[kind === 'project' ? 'project' : 'video'] = r.replace(/[\\/][^\\/]*$/, '');
@@ -321,6 +337,11 @@ async function tauriApi(): Promise<Api> {
     makeProxy: async (src, projectPath, durationMs, stabilize) => convertFileSrc(await invoke<string>('make_proxy', {src: resolvePath(src, projectPath), durationMs, stabilize: !!stabilize})),
     makeSfx: name => invoke('make_sfx', {name}),
     detectScenes: (src, projectPath, threshold) => invoke('detect_scenes', {src: resolvePath(src, projectPath), threshold}),
+    pickLutPath: async () => {
+      const r = await dialog.open({filters: [{name: 'LUT（.cube）', extensions: ['cube', 'CUBE']}]});
+      return typeof r === 'string' ? r : null;
+    },
+    lutFit: path => invoke('lut_fit', {path}),
     pickTemplatePath: async mode => {
       const filters = [{name: 'VoxCut テンプレート', extensions: ['voxtpl']}];
       if (mode === 'save') {
@@ -341,6 +362,8 @@ async function tauriApi(): Promise<Api> {
     transcribe: (src, projectPath, model, inS, dur) => invoke('transcribe', {src: resolvePath(src, projectPath), model, inS, dur}),
     makeMatte: async (src, projectPath, model, still, durationMs) => convertFileSrc(await invoke<string>('make_matte', {src: resolvePath(src, projectPath), model, still, durationMs})),
     onAiProgress: cb => listen<AiProgress>('ai-progress', e => cb(e.payload)),
+    trackMotion: (src, projectPath, from, to, x, y, size) => invoke('track_motion', {src: resolvePath(src, projectPath), from, to, x, y, size}),
+    subjectTrack: (src, projectPath, model, still, durationMs) => invoke('subject_track', {src: resolvePath(src, projectPath), model, still, durationMs}),
     videoEncoders: () => invoke('video_encoders'),
     addRecent: path => invoke('add_recent', {path}),
     removeRecent: path => invoke('remove_recent', {path}),
@@ -618,6 +641,13 @@ function mockApi(): Api {
     allowPaths: async () => {},
     makeSfx: async name => `/sfx/${name}.wav`,
     detectScenes: async () => (globalThis as {__mockScenes?: number[]}).__mockScenes ?? [1, 2.5],
+    pickLutPath: async () => (globalThis as {__mockLut?: string}).__mockLut ?? null,
+    // 試験用：R と G を入れ替える LUT
+    lutFit: async path => {
+      if (!path.endsWith('.cube')) throw new Error('LUT を読めません');
+      const id = Array.from({length: 17}, (_, i) => i / 16);
+      return {matrix: [0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0], tables: [id, id, id]};
+    },
     pickTemplatePath: async mode => (mode === 'save' ? '/tmp/t.voxtpl' : (globalThis as {__mockTemplateFile?: string}).__mockTemplateFile ? '/tmp/t.voxtpl' : null),
     writeTextFile: async (_path, text) => {
       (globalThis as {__mockTemplateFile?: string}).__mockTemplateFile = text;
@@ -663,6 +693,17 @@ function mockApi(): Api {
       g.fillStyle = '#fff';
       g.fillRect(0, 0, 32, 36);
       return c.toDataURL('image/png');
+    },
+    // 試験用：追う点は 1 秒に横へ 0.1 ずつ動く
+    trackMotion: async (src, _p, from, to, x, y) => {
+      aiListeners.forEach(cb => cb({stage: 'track', id: src, ratio: 1}));
+      const n = Math.max(2, Math.round((to - from) * 15) + 1);
+      return Array.from({length: n}, (_, i) => ({t: from + i / 15, x: x + (0.1 * i) / 15, y, score: 1}));
+    },
+    // 試験用：被写体が 0 秒で左（0.3）から 4 秒で右（0.7）へ動く
+    subjectTrack: async (_src, _p, model) => {
+      if (!mockModels.find(x => x.id === model)?.ready) throw new Error('モデルがまだダウンロードされていません');
+      return Array.from({length: 17}, (_, i) => ({t: i / 4, x: 0.3 + (0.4 * i) / 16, y: 0.5}));
     },
     onAiProgress: async cb => {
       aiListeners.add(cb);

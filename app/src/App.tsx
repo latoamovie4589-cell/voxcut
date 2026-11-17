@@ -32,7 +32,7 @@ import {
   undo,
   useStore,
 } from './store';
-import {boot, cancelSynthesis, exportStill, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
+import {boot, cancelSynthesis, exportStill, importSubtitleFile, newProjectAction, openProject, refreshEngines, saveProject, setClearNotice, setNotify, synthesize, type Notify} from './actions';
 import {CharacterDialog} from './panels/CharacterDialog';
 import {closeFloating, startHost} from './sync';
 import {ExportDialog} from './panels/ExportDialog';
@@ -333,6 +333,24 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="キャラクターの編集…" onClick={() => setState(s => ({characterDialogOpen: true, dialogCharacterId: s.selectedCharacterId}))} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="台本読み込み…" description="txt・csv・tsv の台本からセリフを追加" onClick={() => setState({pasteOpen: true})} />
+        <DropdownMenuItem
+          label="字幕ファイルの読み込み…"
+          description="srt・vtt の字幕を、テキストとして時間どおりに並べる"
+          onClick={() => {
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = '.srt,.vtt';
+            inp.onchange = () => {
+              const f = inp.files?.[0];
+              if (f)
+                void importSubtitleFile(f).then(
+                  n => notify(n ? `字幕を ${n} 個読み込みました（新しいレイヤー「字幕」）` : '字幕が見つかりませんでした', n ? 'info' : 'error'),
+                  e => notify(`読み込めませんでした：${String(e)}`, 'error'),
+                );
+            };
+            inp.click();
+          }}
+        />
         <DropdownMenuItem label="単語の読み（辞書）…" onClick={() => setState({dictionaryOpen: true})} />
         <DropdownMenuItem label="テンプレート…" description="アイテム・字幕の見た目・立ち絵の配置を使い回す" onClick={() => setState({templatesOpen: true})} />
         <DropdownMenuDivider />
