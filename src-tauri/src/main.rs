@@ -82,6 +82,7 @@ fn main() {
             commands::lut_fit,
             commands::subject_track,
             commands::track_motion,
+            commands::detect_silence,
         ])
         .run(tauri::generate_context!())
         .expect("VoxCut を起動できませんでした");

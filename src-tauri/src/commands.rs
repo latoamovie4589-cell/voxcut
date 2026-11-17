@@ -1024,3 +1024,10 @@ pub async fn track_motion(app: AppHandle, state: State<'_, AppState>, src: PathB
     })
     .await
 }
+
+/// 静かなところ（秒、素材の頭から）。無音カットに使う
+#[tauri::command]
+pub async fn detect_silence(state: State<'_, AppState>, src: PathBuf, threshold_db: f64, min_len: f64) -> CmdResult<Vec<(f64, f64)>> {
+    let ffmpeg = state.ffmpeg();
+    blocking(move || voxcut_core::audiofx::detect_silence(&ffmpeg, &src, threshold_db, min_len).map_err(err)).await
+}
