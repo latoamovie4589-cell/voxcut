@@ -124,6 +124,40 @@ fn ass_color_alpha(hex: &str, opacity: f64) -> String {
     format!("&H{a:02X}{}", &ass_color(hex)[4..])
 }
 
+/// クリッピング解除で見せる横の範囲（画面の px。文字の幅は全角 1・半角 0.55 で見積もり、縁の分を足す）と、かける長さ（ミリ秒）。
+/// 画面（subtitleAnim.ts の wipeBounds）と同じ式
+pub fn wipe_bounds(text: &str, font_size: u32, width: u32, duration: Frame, fps: u32) -> (i64, i64, u32) {
+    let em = text.split('\n').map(|l| l.chars().map(char_em).sum::<f64>()).fold(0.0, f64::max);
+    let half = em * font_size as f64 / 2.0 + font_size as f64 * 0.15 + 8.0;
+    let c = width as f64 / 2.0;
+    let ms = (duration as f64 / fps.max(1) as f64 * 1000.0 * 0.6).min(500.0).round() as u32;
+    ((c - half).floor() as i64, (c + half).ceil() as i64, ms.max(1))
+}
+
+/// 言葉の色を変えた ASS（mask は改行を数えない 1 文字ごとの色。変えたあとは base の色に戻す）
+fn colored_ass(text: &str, mask: &[Option<String>], base: &str) -> String {
+    let mut out = String::new();
+    let mut cur: Option<&str> = None;
+    let mut i = 0;
+    for ch in text.chars() {
+        if ch == '\r' {
+            continue;
+        }
+        if ch == '\n' {
+            out.push_str("\\N");
+            continue;
+        }
+        let want = mask.get(i).and_then(|c| c.as_deref());
+        if want != cur {
+            out.push_str(&format!("{{\\1c{}&}}", ass_color(want.unwrap_or(base))));
+            cur = want;
+        }
+        out.push_str(&escape_text(&ch.to_string()));
+        i += 1;
+    }
+    out
+}
+
 /// カラオケで、ゆっくり塗らない文字（句読点・記号・空白）
 fn karaoke_light(ch: char) -> bool {
     ch.is_whitespace() || "、。，．,.!?！？…‥・「」『』（）()〜~－-：:；;\"'”“’‘".contains(ch)
@@ -401,16 +435,24 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             .unwrap_or_default();
         let ms = (p.video.frames_to_secs(anim_frames(p.video.fps)) * 1000.0).round() as u32;
         // ルビがあれば、ルビの行を足した文にする（ないときは今までどおり）
+        // 色を変える言葉（ルビ・1 文字ずつ・カラオケのときは変えない）
+        let hl = crate::model::highlight_mask(text, &v.highlights);
+        let plain = || if hl.iter().any(|c| c.is_some()) { colored_ass(text, &hl, &kara_from) } else { escape_text(text) };
         let body = |pop: Option<u32>, count: usize| match &rows {
             Some(r) => ruby_ass(r, font_size, pop, count),
-            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", escape_text(text)),
-            None if count == usize::MAX => escape_text(text),
+            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", plain()),
+            None if count == usize::MAX => plain(),
             None => reveal_text(text, count),
         };
         match anim {
             SubtitleAnimation::None => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
             SubtitleAnimation::Fade => dialogue(&mut out, p, c.start, c.end(), &style, &format!("{{\\fad({ms},{ms})}}{}", body(None, usize::MAX))),
             SubtitleAnimation::Pop => dialogue(&mut out, p, c.start, c.end(), &style, &body(Some(ms), usize::MAX)),
+            SubtitleAnimation::Wipe => {
+                let (x1, x2, wms) = wipe_bounds(text, font_size, p.video.width, c.duration, p.video.fps);
+                let h = p.video.height;
+                dialogue(&mut out, p, c.start, c.end(), &style, &format!("{{\\clip({x1},0,{x1},{h})\\t(0,{wms},\\clip({x1},0,{x2},{h}))}}{}", body(None, usize::MAX)))
+            }
             // ルビのある字幕は塗らない（ふつうに出す）
             SubtitleAnimation::Karaoke if rows.is_some() => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
             SubtitleAnimation::Karaoke => dialogue(&mut out, p, c.start, c.end(), &style, &karaoke_ass(text, c.duration, p.video.fps, &kara_from, &kara_to)),
@@ -541,6 +583,61 @@ mod tests {
         let s = build_ass(&p);
         assert!(s.contains(",ch_a,,0,0,0,,{\\fad(200,200)}こんにちは。"), "{s}");
         assert!(s.contains(",ch_b,,0,0,0,,{\\fscx85\\fscy85\\t(0,200,0.5,\\fscx100\\fscy100)}セリフ"));
+    }
+
+    #[test]
+    fn highlighted_words() {
+        use crate::model::Highlight;
+        let h = vec![Highlight { word: "カニ".into(), color: "#FF0000".into() }, Highlight { word: "漁".into(), color: "#0000FF".into() }];
+        let m = crate::model::highlight_mask("今日はカ\nニ漁", &h);
+        assert_eq!(m.iter().map(|c| c.as_deref().unwrap_or("-")).collect::<Vec<_>>(), vec!["-", "-", "-", "#FF0000", "#FF0000", "#0000FF"]);
+        let s = colored_ass("今日はカ\nニ漁", &m, "#FFFFFF");
+        assert_eq!(s, "今日は{\\1c&H000000FF&}カ\\Nニ{\\1c&H00FF0000&}漁");
+        let mut p = Project::sample();
+        if let Some(v) = p.clips.iter_mut().find_map(|c| match &mut c.body {
+            crate::model::ClipBody::Voice(v) if v.text.starts_with("こんにちは。") => Some(v),
+            _ => None,
+        }) {
+            v.highlights = vec![Highlight { word: "にち".into(), color: "#FF0000".into() }];
+        }
+        let s = build_ass(&p);
+        assert!(s.contains("こん{\\1c&H000000FF&}にち{\\1c&H00FFFFFF&}は。"), "{s}");
+    }
+
+    #[test]
+    fn wipe_tags() {
+        // 「あいう」56px：幅 168 の半分 84 + 縁 8.4 + 8 → 画面 1920 の真ん中 960 から ±100.4
+        assert_eq!(wipe_bounds("あいう", 56, 1920, 90, 30), (859, 1061, 500));
+        assert_eq!(wipe_bounds("ab\nあいう", 56, 1920, 15, 30).2, 300);
+        let mut p = Project::sample();
+        p.characters[0].subtitle.animation = SubtitleAnimation::Wipe;
+        let s = build_ass(&p);
+        assert!(s.contains(",ch_a,,0,0,0,,{\\clip("), "{s}");
+        assert!(s.contains("\\t(0,500,\\clip("), "{s}");
+    }
+
+    /// libass で描くと、途中では左だけ見えている
+    #[test]
+    fn wipe_reveals_left_first() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (x1, x2, ms) = wipe_bounds("WWWW", 60, 320, 60, 30);
+        let body = format!("{{\\clip({x1},0,{x1},120)\\t(0,{ms},\\clip({x1},0,{x2},120))}}WWWW");
+        std::fs::write(d.path().join("w.ass"), format!("[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 120\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: a,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,a,,0,0,0,,{body}\n")).unwrap();
+        let shot = |at: &str| {
+            let o = std::process::Command::new("ffmpeg").current_dir(d.path()).args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x120:d=2", "-vf", "subtitles=w.ass", "-ss", at, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let img = o.stdout;
+            (0..320).filter(|&x| (20..100).any(|y| img[y * 320 + x] > 128)).collect::<Vec<_>>()
+        };
+        let done = shot("1.5");
+        let mid = shot("0.25");
+        assert!(done.len() > 40, "全部出ている");
+        let cut = x1 as f64 + (x2 - x1) as f64 * 0.25 / (ms as f64 / 1000.0);
+        assert!(!mid.is_empty() && mid.iter().all(|&x| (x as f64) < cut + 2.0), "途中は左だけ {mid:?} / {cut}");
+        assert!(mid.len() < done.len() * 3 / 4);
     }
 
     #[test]
