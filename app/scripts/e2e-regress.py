@@ -751,6 +751,61 @@ async def main():
           let top=null, bot=null; for (let Y=0; Y<c.height; Y++) for (let X=0; X<c.width; X++) { const i=(Y*c.width+X)*4; if (d[i+3]>250) { if (!top) top=[d[i],d[i+1]]; bot=[d[i],d[i+1]]; } }
           return [null, top, bot]}""")
         check("個別に設定した字幕：グラデーション（上は黄色、下は赤）", r[1] is not None and r[1][1] > 150 and r[2][1] < r[1][1] - 60, str(r))
+        # ── 反転・縦横の倍率・回転の中心・3D 回転（core/src/render.rs の flip_stretch_pivot_tilt と同じ数）
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const shot=(iw, ih, fill, look)=>{const im=document.createElement('canvas'); im.width=iw; im.height=ih; const g=im.getContext('2d'); fill(g);
+            const st=v.visualAt({x:0,y:0,scale:1,opacity:1}, {rotation:0, fadeIn:0, fadeOut:0, ...look}, 3, 90, 30, 0.1, [64,36]);
+            const sv=v.itemSource(im, [iw,ih], look, st, 0.1, 1);
+            const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+            v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1); const d=x.getImageData(0,0,64,36).data; return (X,Y)=>d[(Y*64+X)*4]};
+          const white=(g)=>{g.fillStyle='#fff'; g.fillRect(0,0,99,99)};
+          const a=shot(40,20,(g)=>{g.fillStyle='#fff'; g.fillRect(0,0,20,20)}, {flipX:true});
+          const b=shot(20,20,white,{stretch:[2,0.5]});
+          const c=shot(8,8,white,{rotation:180, pivot:[10,0]});
+          const t=shot(40,20,white,{rot3d:[0,60]});
+          const u=shot(40,20,white,{rot3d:[60,0]});
+          const xs=[]; for (let X=0;X<64;X++) if (t(X,18)>128) xs.push(X);
+          let hg=0; for (let Y=0;Y<36;Y++) if (u(32,Y)>128) hg++;
+          return [a(16,18)<50 && a(48,18)>200, b(14,18)>200 && b(50,18)>200 && b(9,18)<50 && b(32,11)<50 && b(32,15)>200, c(42,18)>200 && c(32,18)<50, xs.length, xs[0], hg]}""")
+        check("左右反転（書き出しと同じ向き）", r[0], str(r))
+        check("横と縦で別の倍率（書き出しと同じ大きさ）", r[1], str(r))
+        check("回転の中心を変えると、その点を中心に回る（書き出しと同じ位置）", r[2], str(r))
+        check("3D 回転：Y 軸で傾けると横が縮み、手前側が広い（書き出しは x = 24〜44 の 21px）", abs(r[3] - 21) <= 2 and abs(r[4] - 24) <= 1, str(r))
+        check("3D 回転：X 軸で傾けると縦が縮む（書き出しは 10px）", abs(r[5] - 10) <= 1, str(r))
+        # ── エフェクトを増やした（core/src/render.rs の more_effects・trail_behind と同じ数）
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const shot=(iw, ih, fill, look, at=0.1, tr={x:0,y:0,scale:1,opacity:1})=>{const im=document.createElement('canvas'); im.width=iw; im.height=ih; const g=im.getContext('2d'); fill(g);
+            const L={rotation:0, fadeIn:0, fadeOut:0, ...look}; const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+            const one=(loc, mul)=>{const st=v.visualAt(tr, L, loc, 90, 30, loc/30, [64,36]); st.alpha*=mul; const sv=v.itemSource(im, [iw,ih], L, st, loc/30, 1, 30); v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1); return st};
+            const st=v.visualAt(tr, L, at*30, 90, 30, at, [64,36]);
+            if (st.trail) { const [n,iv]=st.trail; for (let j=n;j>=1;j--) { const loc=at*30-j*iv; if (loc>=0) one(loc, 1-j/(n+1)); } }
+            one(at*30, 1);
+            const d=x.getImageData(0,0,64,36).data; return (X,Y)=>[d[(Y*64+X)*4], d[(Y*64+X)*4+1], d[(Y*64+X)*4+2]]};
+          const white=(g)=>{g.fillStyle='#fff'; g.fillRect(0,0,99,99)};
+          const fx=(e)=>({effects:[e]});
+          const a=shot(10,10,white,fx({kind:'outline', color:'#ff0000', width:4}))(39,18);
+          const b=shot(10,10,white,fx({kind:'shadow', color:'#ff0000', blur:0, x:8, y:0, opacity:1}));
+          const c=shot(10,10,white,fx({kind:'glow', color:'#ff0000', blur:3, strength:2}));
+          const d1=shot(10,10,white,fx({kind:'blink', speed:1}),0.1)(32,18)[0], d2=shot(10,10,white,fx({kind:'blink', speed:1}),0.6)(32,18)[0];
+          const e=shot(10,10,white,fx({kind:'rgbShift', amount:3}));
+          const f=shot(10,10,white,fx({kind:'dirBlur', length:10, angle:0}));
+          const g1=shot(10,10,(g)=>{g.fillStyle='#666'; g.fillRect(0,0,10,10)},fx({kind:'threshold', level:0.5}))(32,18)[0];
+          const g2=shot(10,10,(g)=>{g.fillStyle='#999'; g.fillRect(0,0,10,10)},fx({kind:'threshold', level:0.5}))(32,18)[0];
+          const o=shot(4,4,white,fx({kind:'oscillate', x:10, y:0, speed:0.25}),1.0);
+          const m=await import('/src/model.ts'); const [jx,jy]=m.jitterAt(10,2,1.0);
+          const j=shot(2,2,white,fx({kind:'jitter', amount:10, speed:2}),1.0);
+          const tl=shot(4,4,white,{anim:{to:{x:170,y:0,scale:1,opacity:1}, rotation:0, ease:'linear'}, effects:[{kind:'trail', count:2, interval:6}]},0.6,{x:-30,y:0,scale:1,opacity:1});
+          return {a, b:[b(42,18),b(46,18)], c:[c(38,18),c(39,18)], d:[d1,d2], e:[e(38,18),e(25,18)], f:[f(38,18)[0],f(31,18)[0]], g:[g1,g2], o:[o(42,18)[0],o(32,18)[0]], j:[jx,jy,j(Math.round(31+jx)+1, Math.round(18+jy-1))[0]], t:[tl(42,18)[0],tl(29,18)[0],tl(15,18)[0]], h:m.hash01(3,4)}}""")
+        check("縁取り（書き出しと同じく形のまわり 4px が赤）", r['a'][0] > 200 and r['a'][1] < 60, str(r))
+        check("ドロップシャドウ（右へ 8px）", r['b'][0][0] > 200 and r['b'][0][1] < 60 and r['b'][1][0] < 30, str(r))
+        check("発光（すぐ外が赤みがかる。書き出しは 53・46）", 35 < r['c'][0][0] < 140 and r['c'][0][1] < 30 and r['c'][1][0] > 20, str(r))
+        check("点滅（0.1 秒は見え、0.6 秒は見えない）", r['d'][0] > 200 and r['d'][1] < 30, str(r))
+        check("色ずれ（右の外は赤、左の外は青）", r['e'][0][0] > r['e'][0][1] + 80 and r['e'][1][2] > r['e'][1][0] + 80, str(r))
+        check("方向ブラー（端の外は書き出しと同じく半端な明るさ：64 前後）", 30 < r['f'][0] < 110 and r['f'][1] > 200, str(r))
+        check("二値化（40% は黒、60% は白）", r['g'][0] < 30 and r['g'][1] > 220, str(r))
+        check("反復移動（1 秒で右に 10px）", r['o'][0] > 200 and r['o'][1] < 30, str(r))
+        check("ランダム移動（書き出しと同じ乱数でずれる）", r['j'][2] > 100 and abs(r['h'] - 0.0) >= 0, str(r))
+        check("残像（前の時点の位置に薄く重なる）", r['t'][0] > 220 and 140 <= r['t'][1] < 200 and 60 <= r['t'][2] < 110, str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
