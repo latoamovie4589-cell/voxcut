@@ -18,6 +18,8 @@ export interface VisualState {
   blur: number;
   /** 合成モード */
   blend?: BlendMode | null;
+  /** クリッピング解除で隠すところ（アイテムの幅・高さに対する割合。左・上・右・下） */
+  wipe?: [number, number, number, number];
 }
 
 /**
@@ -38,10 +40,17 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
   if (l?.fadeOut) alpha *= Math.min(1, Math.max(0, (d - sec) / (l.fadeOut / fps)));
   // 登場（残り 1 → 0。だんだん遅く）と退場（進み 0 → 1。だんだん速く）
   const [fw, fh] = frame ?? [1920, 1080];
-  const apply = (m: Look['enter'], k: (len: number) => number) => {
+  const wipe: [number, number, number, number] = [0, 0, 0, 0];
+  const apply = (m: Look['enter'], k: (len: number) => number, isEnter = false) => {
     if (!m || m.frames <= 0) return;
     const len = Math.min(m.frames / fps, Math.max(1e-3, d));
     const v = k(len);
+    // クリッピング解除：登場は残り v を、向きの先の側から隠す。退場は進み v を、向きの元の側から隠す（書き出しと同じ）
+    if (m.kind.startsWith('wipe')) {
+      const side = {wipeRight: [2, 0], wipeLeft: [0, 2], wipeDown: [3, 1], wipeUp: [1, 3]}[m.kind as 'wipeRight'][isEnter ? 0 : 1];
+      wipe[side] = Math.max(wipe[side], v);
+      return;
+    }
     if (m.kind === 'slideLeft') tr.x -= fw * v;
     else if (m.kind === 'slideRight') tr.x += fw * v;
     else if (m.kind === 'slideUp') tr.y -= fh * v;
@@ -50,7 +59,7 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
   };
   // なめらか（押し出し）は 3p²−2p³（出ていく側と入る側の和がいつも 1）。書き出しと同じ式
   const smooth = (p: number) => p * p * (3 - 2 * p);
-  apply(l?.enter, len => (l?.enter?.smooth ? 1 - smooth(c01(sec / len)) : (1 - c01(sec / len)) ** 2));
+  apply(l?.enter, len => (l?.enter?.smooth ? 1 - smooth(c01(sec / len)) : (1 - c01(sec / len)) ** 2), true);
   apply(l?.exit, len => (l?.exit?.smooth ? smooth(c01((sec - Math.max(0, d - len)) / len)) : c01((sec - Math.max(0, d - len)) / len) ** 2));
   const filters: string[] = [];
   let blur = 0;
@@ -75,7 +84,7 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
       tr.y += fx.amount * Math.cos(2 * Math.PI * fx.speed * abs * 1.37);
     }
   }
-  return {transform: tr, rotation, alpha, filter: filters.join(' '), blur, blend: l?.blend ?? null};
+  return {transform: tr, rotation, alpha, filter: filters.join(' '), blur, blend: l?.blend ?? null, wipe: wipe.some(v => v > 0) ? wipe : undefined};
 }
 
 /**
@@ -355,6 +364,15 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
   if (f) ctx.filter = f;
   ctx.translate(cx, cy);
   if (st.rotation) ctx.rotate((st.rotation * Math.PI) / 180);
+  if (st.wipe) {
+    // クリッピング解除：見えるところだけ（回す前の向きで）
+    const [l, t, r, b] = st.wipe;
+    const W = size[0] * s;
+    const H = size[1] * s;
+    ctx.beginPath();
+    ctx.rect(-W / 2 + W * l, -H / 2 + H * t, Math.max(0, W * (1 - l - r)), Math.max(0, H * (1 - t - b)));
+    ctx.clip();
+  }
   ctx.drawImage(img, (-size[0] * s) / 2, (-size[1] * s) / 2, size[0] * s, size[1] * s);
   ctx.restore();
   return {x: cx - (bw * s) / 2, y: cy - (bh * s) / 2, w: bw * s, h: bh * s};
@@ -829,6 +847,9 @@ export function subtitleTextClip(v: VoiceClip, sc: SubtitleCustom): TextClip {
     align: sc.align,
     transform: sc.transform,
     look: sc.look,
+    gradientColor: sc.gradientColor || undefined,
+    outline2Color: sc.outline2Color || undefined,
+    outline2Width: sc.outline2Width || undefined,
   } as TextClip;
 }
 
