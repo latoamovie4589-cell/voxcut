@@ -44,7 +44,7 @@ import {
 } from '../model';
 import {LineTuning, PresetManager, VoiceTuner} from './VoiceTuning';
 import {LinePsdLayers, PsdPortraitEditor, pickPsdPortrait} from './PsdPortraitEditor';
-import {ColorRow, EffectsEditor, LookEditor, LookFields, ShapeInspector, TextInspector, TextStyleFields, TransformFields} from './VisualInspector';
+import {ColorRow, EffectsEditor, PORTRAIT_FX, LookEditor, LookFields, ShapeInspector, TextInspector, TextStyleFields, TransformFields} from './VisualInspector';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
 import {ANIMATION_LABEL, KARAOKE_COLOR, type SubtitleAnimation} from '../subtitleAnim';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
@@ -737,6 +737,7 @@ function LinePortraitSettings({clip}: {clip: VoiceClip}) {
           effects={lp.effects ?? []}
           onChange={effects => setLp({effects})}
           headingLevel={4}
+          kinds={PORTRAIT_FX}
         />
       </VStack>
     </>

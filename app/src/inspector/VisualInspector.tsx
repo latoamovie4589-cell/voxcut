@@ -58,23 +58,55 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   grade: 'フィルター',
   temperature: '色温度',
   lut: 'LUT（.cube）',
+  outline: '縁取り',
+  shadow: 'ドロップシャドウ',
+  glow: '発光',
+  blink: '点滅',
+  trail: '残像',
+  rgbShift: '色ずれ',
+  glitch: 'グリッチ',
+  noise: 'ノイズ',
+  radialBlur: '放射ブラー',
+  dirBlur: '方向ブラー',
+  threshold: '二値化',
+  jitter: 'ランダム移動',
+  oscillate: '反復移動',
+};
+/** 立ち絵のセリフごとのエフェクトで使えるもの（書き出しの timed_effects と同じ） */
+export const PORTRAIT_FX: Effect['kind'][] = ['blur', 'shake', 'color', 'mono', 'invert', 'wave', 'swirl', 'grade', 'temperature', 'lut'];
+const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
+  outline: {kind: 'outline', color: '#FFFFFF', width: 6},
+  shadow: {kind: 'shadow', color: '#000000', blur: 6, x: 8, y: 8, opacity: 0.6},
+  glow: {kind: 'glow', color: '#FFF07A', blur: 12, strength: 2},
+  blink: {kind: 'blink', speed: 2},
+  trail: {kind: 'trail', count: 4, interval: 3},
+  rgbShift: {kind: 'rgbShift', amount: 6},
+  glitch: {kind: 'glitch', amount: 30, band: 16, speed: 12},
+  noise: {kind: 'noise', amount: 0.25},
+  radialBlur: {kind: 'radialBlur', amount: 0.3},
+  dirBlur: {kind: 'dirBlur', length: 40, angle: 0},
+  threshold: {kind: 'threshold', level: 0.5},
+  jitter: {kind: 'jitter', amount: 10, speed: 8},
+  oscillate: {kind: 'oscillate', x: 0, y: 20, speed: 1},
 };
 const newEffect = (k: Effect['kind']): Effect =>
-  k === 'blur'
-    ? {kind: 'blur', radius: 6}
-    : k === 'wave'
-      ? {kind: 'wave', amount: 12, length: 160, speed: 1}
-      : k === 'swirl'
-        ? {kind: 'swirl', angle: 180}
-        : k === 'shake'
-          ? {kind: 'shake', amount: 8, speed: 6}
-          : k === 'color'
-            ? {kind: 'color', brightness: 1, contrast: 1, saturation: 1}
-            : k === 'grade'
-              ? {kind: 'grade', name: 'film', strength: 1}
-              : k === 'temperature'
-                ? {kind: 'temperature', warm: 0.3, tint: 0}
-                : ({kind: k} as Effect);
+  NEW_FX[k]
+    ? structuredClone(NEW_FX[k]!)
+    : k === 'blur'
+      ? {kind: 'blur', radius: 6}
+      : k === 'wave'
+        ? {kind: 'wave', amount: 12, length: 160, speed: 1}
+        : k === 'swirl'
+          ? {kind: 'swirl', angle: 180}
+          : k === 'shake'
+            ? {kind: 'shake', amount: 8, speed: 6}
+            : k === 'color'
+              ? {kind: 'color', brightness: 1, contrast: 1, saturation: 1}
+              : k === 'grade'
+                ? {kind: 'grade', name: 'film', strength: 1}
+                : k === 'temperature'
+                  ? {kind: 'temperature', warm: 0.3, tint: 0}
+                  : ({kind: k} as Effect);
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
@@ -89,6 +121,78 @@ export function TransformFields({value, onChange}: {value: Transform; onChange: 
       <Slider label="大きさ" value={value.scale} min={0.1} max={3} step={0.01} valueDisplay="text" formatValue={pct} onChange={(scale: number) => onChange({...value, scale})} />
       <Slider label="不透明度" value={value.opacity} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(opacity: number) => onChange({...value, opacity})} />
     </VStack>
+  );
+}
+
+/** 反転・縦横の倍率・回転の中心・3D 回転 */
+function ShapeFields({look, set}: {look: Look; set: (p: Partial<Look>) => void}) {
+  const st = look.stretch ?? [1, 1];
+  const pv = look.pivot ?? [0, 0];
+  const r3 = look.rot3d ?? [0, 0];
+  const open = !!(look.flipX || look.flipY || look.stretch || look.pivot || look.rot3d);
+  const pair = (v: [number, number], i: number, x: number): [number, number] => (i ? [v[0], x] : [x, v[1]]);
+  const isZero = (v: [number, number]) => !v[0] && !v[1];
+  return (
+    <Collapsible defaultIsOpen={open} trigger={<Text type="label">反転・縦横・中心・3D 回転</Text>}>
+      <VStack gap={3} paddingBlockStart={2}>
+        <HStack gap={4}>
+          <Switch label="左右反転" value={!!look.flipX} onChange={flipX => set({flipX: flipX || undefined})} />
+          <Switch label="上下反転" value={!!look.flipY} onChange={flipY => set({flipY: flipY || undefined})} />
+        </HStack>
+        <HStack gap={2}>
+          {[0, 1].map(i => (
+            <Slider
+              key={i}
+              label={i ? '縦の倍率' : '横の倍率'}
+              value={st[i]}
+              min={0.1}
+              max={3}
+              step={0.01}
+              valueDisplay="text"
+              formatValue={pct}
+              onChange={(v: number) => {
+                const n = pair(st, i, v);
+                set({stretch: n[0] === 1 && n[1] === 1 ? null : n});
+              }}
+            />
+          ))}
+        </HStack>
+        <HStack gap={2}>
+          {[0, 1].map(i => (
+            <NumberInput
+              key={i}
+              label={i ? '中心の縦' : '中心の横'}
+              description={i ? '' : '回転・拡大の中心。真ん中が 0'}
+              units="px"
+              value={pv[i]}
+              step={10}
+              onChange={v => {
+                const n = pair(pv, i, v);
+                set({pivot: isZero(n) ? null : n});
+              }}
+            />
+          ))}
+        </HStack>
+        <HStack gap={2}>
+          {[0, 1].map(i => (
+            <Slider
+              key={i}
+              label={i ? 'Y 軸回転' : 'X 軸回転'}
+              value={r3[i]}
+              min={-180}
+              max={180}
+              step={1}
+              valueDisplay="text"
+              formatValue={v => `${Math.round(v)}°`}
+              onChange={(v: number) => {
+                const n = pair(r3, i, v);
+                set({rot3d: isZero(n) ? null : n});
+              }}
+            />
+          ))}
+        </HStack>
+      </VStack>
+    </Collapsible>
   );
 }
 
@@ -139,6 +243,7 @@ export function LookFields({
         <Hint>{anim ? 'アニメーションの始まりの値です。' : 'プレビューでドラッグしても動かせます。'}</Hint>
         <TransformFields value={transform} onChange={onTransform} />
         <Slider label="回転" value={look.rotation} min={-180} max={180} step={1} valueDisplay="text" formatValue={v => `${Math.round(v)}°`} onChange={(rotation: number) => set({rotation})} />
+        <ShapeFields look={look} set={set} />
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
@@ -170,8 +275,29 @@ export function LookFields({
               formatValue={v => `${Math.round(v)}°`}
               onChange={(rotation: number) => set({anim: {...anim, rotation}})}
             />
+            {(look.rot3d || anim.rot3d) && (
+              <HStack gap={2}>
+                {[0, 1].map(i => (
+                  <Slider
+                    key={i}
+                    label={i ? '終わりの Y 軸回転' : '終わりの X 軸回転'}
+                    value={(anim.rot3d ?? look.rot3d ?? [0, 0])[i]}
+                    min={-360}
+                    max={360}
+                    step={1}
+                    valueDisplay="text"
+                    formatValue={v => `${Math.round(v)}°`}
+                    onChange={(v: number) => {
+                      const r: [number, number] = [...(anim.rot3d ?? look.rot3d ?? [0, 0])];
+                      r[i] = v;
+                      set({anim: {...anim, rot3d: r}});
+                    }}
+                  />
+                ))}
+              </HStack>
+            )}
             <div>
-              <Button label="始まりと同じにする" size="sm" variant="ghost" onClick={() => set({anim: {...anim, to: {...transform}, rotation: look.rotation}})} />
+              <Button label="始まりと同じにする" size="sm" variant="ghost" onClick={() => set({anim: {...anim, to: {...transform}, rotation: look.rotation, rot3d: null}})} />
             </div>
             <Switch
               label="途中の状態を通る"
@@ -315,14 +441,17 @@ export function EffectsEditor({
   effects,
   onChange,
   title = '映像エフェクト',
-  empty = 'ぼかし・揺れ・色調整・白黒・色の反転・波・渦巻きを付けられます。',
+  empty = 'ぼかし・揺れ・色調整・縁取り・影・発光・点滅・残像・グリッチなどを付けられます。',
   headingLevel = 3,
+  kinds,
 }: {
   effects: Effect[];
   onChange: (e: Effect[]) => void;
   title?: string;
   empty?: string;
   headingLevel?: 3 | 4;
+  /** 追加できる種類（なければ全部） */
+  kinds?: Effect['kind'][];
 }) {
   const setFx = (i: number, fx: Effect | null) => onChange(fx ? effects.map((e, j) => (j === i ? fx : e)) : effects.filter((_, j) => j !== i));
   return (
@@ -330,7 +459,7 @@ export function EffectsEditor({
       <HStack hAlign="between" vAlign="center">
         <Heading level={headingLevel}>{title}</Heading>
         <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={160}>
-          {(Object.keys(EFFECT_LABEL) as Effect['kind'][]).map(k => (
+          {(kinds ?? (Object.keys(EFFECT_LABEL) as Effect['kind'][])).map(k => (
             <DropdownMenuItem
               key={k}
               label={EFFECT_LABEL[k] + (k === 'lut' ? '…' : '')}
@@ -407,6 +536,85 @@ export function EffectsEditor({
                 formatValue={v => `${Math.round(v * 100)}`}
                 onChange={(tint: number) => setFx(i, {...fx, tint})}
               />
+            </VStack>
+          )}
+          {fx.kind === 'outline' && (
+            <VStack gap={2}>
+              <ColorRow label="色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider label="太さ" value={fx.width} min={1} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(width: number) => setFx(i, {...fx, width})} />
+            </VStack>
+          )}
+          {fx.kind === 'shadow' && (
+            <VStack gap={2}>
+              <ColorRow label="色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider label="ぼかし" value={fx.blur} min={0} max={40} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(blur: number) => setFx(i, {...fx, blur})} />
+              <Slider label="横のずれ" value={fx.x} min={-80} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(x: number) => setFx(i, {...fx, x})} />
+              <Slider label="縦のずれ" value={fx.y} min={-80} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(y: number) => setFx(i, {...fx, y})} />
+              <Slider label="濃さ" value={fx.opacity} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(opacity: number) => setFx(i, {...fx, opacity})} />
+            </VStack>
+          )}
+          {fx.kind === 'glow' && (
+            <VStack gap={2}>
+              <ColorRow label="色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider label="広がり" value={fx.blur} min={1} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(blur: number) => setFx(i, {...fx, blur})} />
+              <Slider label="強さ" value={fx.strength} min={1} max={5} step={1} valueDisplay="text" formatValue={v => `${v} 回`} onChange={(strength: number) => setFx(i, {...fx, strength})} />
+            </VStack>
+          )}
+          {fx.kind === 'blink' && (
+            <VStack gap={2}>
+              <Slider label="速さ" value={fx.speed} min={0.25} max={20} step={0.25} valueDisplay="text" formatValue={v => `${v} 回/秒`} onChange={(speed: number) => setFx(i, {...fx, speed})} />
+            </VStack>
+          )}
+          {fx.kind === 'trail' && (
+            <VStack gap={2}>
+              <Slider label="数" value={fx.count} min={1} max={8} step={1} valueDisplay="text" formatValue={v => `${v}`} onChange={(count: number) => setFx(i, {...fx, count})} />
+              <Slider label="間隔" value={fx.interval} min={1} max={30} step={1} valueDisplay="text" formatValue={v => `${v} フレーム`} onChange={(interval: number) => setFx(i, {...fx, interval})} />
+            </VStack>
+          )}
+          {fx.kind === 'rgbShift' && (
+            <VStack gap={2}>
+              <Slider label="ずれ" value={fx.amount} min={-40} max={40} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'glitch' && (
+            <VStack gap={2}>
+              <Slider label="ずれ" value={fx.amount} min={0} max={200} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Slider label="帯の高さ" value={fx.band} min={2} max={200} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(band: number) => setFx(i, {...fx, band})} />
+              <Slider label="速さ" value={fx.speed} min={1} max={30} step={1} valueDisplay="text" formatValue={v => `${v} 回/秒`} onChange={(speed: number) => setFx(i, {...fx, speed})} />
+            </VStack>
+          )}
+          {fx.kind === 'noise' && (
+            <VStack gap={2}>
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'radialBlur' && (
+            <VStack gap={2}>
+              <Slider label="強さ" value={fx.amount} min={0} max={0.9} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'dirBlur' && (
+            <VStack gap={2}>
+              <Slider label="長さ" value={fx.length} min={1} max={300} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(length: number) => setFx(i, {...fx, length})} />
+              <Slider label="角度" value={fx.angle} min={-180} max={180} step={1} valueDisplay="text" formatValue={v => `${v}°`} onChange={(angle: number) => setFx(i, {...fx, angle})} />
+            </VStack>
+          )}
+          {fx.kind === 'threshold' && (
+            <VStack gap={2}>
+              <Slider label="しきい値" value={fx.level} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(level: number) => setFx(i, {...fx, level})} />
+            </VStack>
+          )}
+          {fx.kind === 'jitter' && (
+            <VStack gap={2}>
+              <Slider label="振れ幅" value={fx.amount} min={0} max={200} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Slider label="速さ" value={fx.speed} min={1} max={30} step={1} valueDisplay="text" formatValue={v => `${v} 回/秒`} onChange={(speed: number) => setFx(i, {...fx, speed})} />
+            </VStack>
+          )}
+          {fx.kind === 'oscillate' && (
+            <VStack gap={2}>
+              <Slider label="横の振れ幅" value={fx.x} min={-400} max={400} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(x: number) => setFx(i, {...fx, x})} />
+              <Slider label="縦の振れ幅" value={fx.y} min={-400} max={400} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(y: number) => setFx(i, {...fx, y})} />
+              <Slider label="速さ" value={fx.speed} min={0.1} max={10} step={0.1} valueDisplay="text" formatValue={v => `${v} 回/秒`} onChange={(speed: number) => setFx(i, {...fx, speed})} />
             </VStack>
           )}
           {fx.kind === 'color' && (
