@@ -894,7 +894,51 @@ export type Effect =
   /** ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数） */
   | {kind: 'jitter'; amount: number; speed: number}
   /** 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数） */
-  | {kind: 'oscillate'; x: number; y: number; speed: number};
+  | {kind: 'oscillate'; x: number; y: number; speed: number}
+  /** プラグインのエフェクト（書き出しの FFmpeg のフィルターと画面の Canvas の filter の式。{名前} に values の数を入れる） */
+  | {kind: 'plugin'; name: string; ffmpeg: string; canvas: string; values: Record<string, number>; params?: PluginParam[]};
+
+/** プラグインのファイル（core/src/plugin.rs と同じ形） */
+export interface Plugin {
+  name: string;
+  effects: PluginEffect[];
+}
+export interface PluginEffect {
+  id: string;
+  label: string;
+  params: PluginParam[];
+  ffmpeg: string;
+  canvas: string;
+}
+export interface PluginParam {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+}
+
+/** {名前} に数を入れる。; [ ] があるか入れ残しがあれば null（core/src/plugin.rs の fill と同じ） */
+export function fillTemplate(template: string, values: Record<string, number>): string | null {
+  let out = template;
+  for (const [k, v] of Object.entries(values)) {
+    const r = Math.round(v * 1e6) / 1e6;
+    out = out.split(`{${k}}`).join(String(r));
+  }
+  if (!out.trim() || /[{};[\]]/.test(out)) return null;
+  return out;
+}
+
+/** プラグインのエフェクトを、プロジェクトに入れる形にする（つまみは最初の値で） */
+export const pluginEffect = (pl: Plugin, e: PluginEffect): Effect => ({
+  kind: 'plugin',
+  name: `${pl.name}：${e.label}`,
+  ffmpeg: e.ffmpeg,
+  canvas: e.canvas ?? '',
+  values: Object.fromEntries((e.params ?? []).map(p => [p.key, p.default])),
+  params: e.params ?? [],
+});
 
 /** 決まった乱数（0〜1）。書き出しの model.rs の hash01 と同じ式 */
 export function hash01(a: number, b: number): number {
@@ -1023,6 +1067,29 @@ export interface TextClip extends ClipBase {
   boxRadius?: number;
   /** 下へ向かうグラデーションの色（上は color） */
   gradientColor?: string;
+  /** 縦書き */
+  vertical?: boolean;
+  /** 1 文字ずつ出す（書き出しはコマごとの画像を並べる） */
+  charAnim?: CharAnim | null;
+}
+
+/** テキストの 1 文字ずつの登場（core/src/model.rs の CharAnim と同じ） */
+export interface CharAnim {
+  /** type：そのまま出る／fade：ふわっと／pop：はねる／slideUp：下から */
+  kind: 'type' | 'fade' | 'pop' | 'slideUp';
+  /** 次の文字が出るまでのフレーム */
+  interval: number;
+  /** 1 文字が出きるまでのフレーム */
+  length: number;
+}
+export const CHAR_ANIM_LABEL: Record<CharAnim['kind'], string> = {type: 'そのまま', fade: 'ふわっと', pop: 'はねる', slideUp: '下から'};
+/** 全部の文字が出きるまでのフレーム（model.rs の CharAnim::frames と同じ） */
+export const charAnimFrames = (a: CharAnim, n: number) => (Math.max(1, n) - 1) * Math.max(0, a.interval) + Math.max(1, a.length);
+/** i 文字目の出かた（0〜1）。f はアイテムの頭からのフレーム */
+export function charProgress(a: CharAnim, i: number, f: number): number {
+  const p = (f - i * Math.max(0, a.interval)) / Math.max(1, a.length);
+  if (a.kind === 'type') return f >= i * Math.max(0, a.interval) ? 1 : 0;
+  return Math.min(1, Math.max(0, p));
 }
 
 export type ShapeKind =
@@ -1092,6 +1159,71 @@ export interface ShapeClip extends ClipBase {
   look?: Look;
   /** モザイク・ぼかし範囲：図形の形の中だけ、下の絵をモザイク・ぼかしにする（図形の色は使わない） */
   region?: Region | null;
+  /** グループ制御・カメラ・調整レイヤー（図形そのものは描かず、下のレイヤーに効く） */
+  control?: Control | null;
+  /** シーンアイテム：このシーン（id）を、アイテムの頭から再生して置く */
+  scene?: string | null;
+  /** 音声の波形・スペクトラム：動画の音を、図形の大きさ・塗りの色で描く（wave ＝波形、bars ＝周波数の棒） */
+  viz?: 'wave' | 'bars' | null;
+}
+
+/** グループ制御・カメラ・調整レイヤー（core/src/model.rs の Control と同じ） */
+export interface Control {
+  /** group：すぐ下のレイヤーをまとめて動かす／camera：下の全部をカメラを動かしたように／adjust：下の全部にエフェクトを掛ける */
+  kind: 'group' | 'camera' | 'adjust';
+  /** グループ制御で、すぐ下の何レイヤーをまとめるか */
+  layers: number;
+}
+export const CONTROL_LABEL: Record<Control['kind'], string> = {group: 'グループ制御', camera: 'カメラ', adjust: '調整レイヤー'};
+
+/** まとめるレイヤーの数（下のレイヤーの数 below まで。model.rs の Control::covers と同じ） */
+export const controlCovers = (k: Control, below: number) => (k.kind === 'group' ? Math.min(Math.max(0, Math.floor(k.layers)), below) : k.kind === 'camera' ? below : 0);
+
+/** カメラの動きを、まとめた絵の動きにする（model.rs の camera_view と同じ） */
+export function cameraView(t: Transform, look: Look | undefined): [Transform, Look | undefined] {
+  const flip = (t: Transform): Transform => ({...t, x: -t.x, y: -t.y});
+  if (!look) return [flip(t), look];
+  const neg = (v?: [number, number] | null) => (v ? ([-v[0], -v[1]] as [number, number]) : v);
+  const an = look.anim;
+  return [
+    flip(t),
+    {
+      ...look,
+      rotation: -look.rotation,
+      rot3d: neg(look.rot3d),
+      anim: an
+        ? {
+            ...an,
+            to: flip(an.to),
+            rotation: -an.rotation,
+            rot3d: neg(an.rot3d),
+            mid: an.mid ? {...an.mid, transform: flip(an.mid.transform), rotation: -an.mid.rotation} : an.mid,
+            keys: an.keys?.map(k => ({...k, transform: flip(k.transform), rotation: -k.rotation})),
+          }
+        : an,
+    },
+  ];
+}
+
+/**
+ * グループ制御・カメラ：まとめるレイヤーの範囲（from 番目から at 番目の 1 つ下まで）と、そのアイテム（at 番目のレイヤーにある）。
+ * 書き出しの render.rs の group_ranges と同じ（範囲は入れ子になるようにそろえる）
+ */
+export function groupRanges(p: Project): {from: number; at: number; clips: ShapeClip[]}[] {
+  const out: {from: number; at: number; clips: ShapeClip[]}[] = [];
+  p.tracks.forEach((t, gi) => {
+    if (t.hidden) return;
+    const cs = p.clips.filter((c): c is ShapeClip => c.trackId === t.id && c.type === 'shape' && !!c.control && controlCovers(c.control, gi) > 0);
+    if (!cs.length) return;
+    const n = Math.max(...cs.map(c => controlCovers(c.control!, gi)));
+    out.push({from: gi - n, at: gi, clips: cs});
+  });
+  for (let i = 0; i < out.length; i++)
+    for (let j = i + 1; j < out.length; j++) {
+      const [a, b] = [out[i], out[j]];
+      if (a.from < b.from && a.at > b.from && a.at < b.at) a.from = b.from;
+    }
+  return out;
 }
 
 /** モザイク・ぼかし範囲。strength はモザイクのマスの大きさ・ぼかしの強さ（書き出しの画面の px） */
@@ -1307,6 +1439,99 @@ export interface Project {
   clips: Clip[];
   /** マーカー（時刻に付ける目印。YouTube のチャプターにも使う） */
   markers?: Marker[];
+  /** シーン（別のタイムライン）。メインは tracks・clips */
+  scenes?: Scene[];
+  /**
+   * 今編集しているシーンの id（画面だけ。保存・書き出しのときは canonicalProject でメインに戻す）。
+   * そのあいだ tracks・clips はそのシーンのもので、メインは scenes の MAIN_SCENE に入っている
+   */
+  sceneId?: string | null;
+}
+
+/** シーン（メインとは別のレイヤーとアイテム） */
+export interface Scene {
+  id: string;
+  name: string;
+  tracks: Track[];
+  clips: Clip[];
+}
+/** シーンを編集しているあいだ、メインのタイムラインをしまっておく id */
+export const MAIN_SCENE = '__main__';
+
+/** 保存・書き出し用：編集中のシーンをしまい、メインのタイムラインに戻した写し */
+export function canonicalProject(p: Project): Project {
+  if (!p.sceneId) return p;
+  const main = p.scenes?.find(s => s.id === MAIN_SCENE);
+  if (!main) return {...p, sceneId: null};
+  const scenes = (p.scenes ?? []).filter(s => s.id !== MAIN_SCENE).map(s => (s.id === p.sceneId ? {...s, tracks: p.tracks, clips: p.clips} : s));
+  const {sceneId: _drop, ...rest} = p;
+  return {...rest, tracks: main.tracks, clips: main.clips, scenes};
+}
+
+/** シーンを開く（null ならメイン）。今のタイムラインをしまい、開くシーンのタイムラインを tracks・clips にする */
+export function switchScene(p0: Project, id: string | null): Project {
+  const p = canonicalProject(p0);
+  if (!id) return p;
+  const sc = p.scenes?.find(s => s.id === id);
+  if (!sc) return p;
+  return {...p, tracks: sc.tracks, clips: sc.clips, sceneId: id, scenes: [...(p.scenes ?? []), {id: MAIN_SCENE, name: 'メイン', tracks: p.tracks, clips: p.clips}]};
+}
+
+/** 今のシーンの一覧（メインを含む、編集中のシーンは今のタイムラインで） */
+export function sceneOf(p: Project, id: string): Scene | undefined {
+  if (id === p.sceneId) return {id, name: p.scenes?.find(s => s.id === id)?.name ?? '', tracks: p.tracks, clips: p.clips};
+  return p.scenes?.find(s => s.id === id);
+}
+
+/**
+ * シーンアイテムを、シーンのレイヤーとアイテム（アイテムの頭からの時刻にずらし、終わりで切る）と、それをまとめるグループ制御に置き換えた写し（4 段まで）。
+ * 書き出しの model.rs の with_scenes と同じ（id は「元の id@シーンアイテムの id」）
+ */
+export function withScenes(p0: Project): Project {
+  let p = p0;
+  const src = (id: string) => sceneOf(p0, id);
+  for (let depth = 0; depth < 4; depth++) {
+    const items = p.clips.filter((c): c is ShapeClip => c.type === 'shape' && !!c.scene);
+    if (!items.length) break;
+    const tracks: Track[] = [];
+    const add: Clip[] = [];
+    const layers = new Map<string, number>();
+    for (const t of p.tracks) {
+      const here = items.filter(c => c.trackId === t.id).sort((a, b) => a.start - b.start);
+      let n = 0;
+      for (const item of here) {
+        const sc = src(item.scene!);
+        if (!sc) continue;
+        const tag = (id: string) => `${id}@${item.id}`;
+        for (const st of sc.tracks) {
+          tracks.push({...st, id: tag(st.id)});
+          n++;
+        }
+        for (const c of sc.clips) {
+          if (c.start >= item.duration) continue;
+          add.push({
+            ...c,
+            id: tag(c.id),
+            trackId: tag(c.trackId),
+            linkId: c.linkId ? tag(c.linkId) : c.linkId,
+            start: item.start + c.start,
+            duration: Math.min(c.duration, item.duration - c.start),
+          } as Clip);
+        }
+      }
+      if (n > 0) layers.set(t.id, n);
+      tracks.push(t);
+    }
+    const clips = p.clips.map(c => {
+      if (c.type !== 'shape' || !c.scene) return c;
+      const n = layers.get(c.trackId) ?? 0;
+      return n > 0
+        ? {...c, scene: null, control: {kind: 'group' as const, layers: n}}
+        : {...c, scene: null, control: {kind: 'adjust' as const, layers: 1}, look: {...(c.look ?? plainLook()), effects: []}};
+    });
+    p = {...p, tracks, clips: [...clips, ...add]};
+  }
+  return p;
 }
 
 export interface Marker {
