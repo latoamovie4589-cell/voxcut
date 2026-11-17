@@ -981,6 +981,7 @@ impl Project {
                             stroke_width: 0.0,
                             transform: Transform::default(),
                             look,
+                            region: None,
                         }),
                     };
                     extra.push(cover(format!("{}~cover1", b.id), cut - out_f, out_f, Look { fade_in: out_f, ..Default::default() }));
@@ -1223,6 +1224,25 @@ pub struct ShapeClip {
     pub transform: Transform,
     #[serde(default, skip_serializing_if = "Look::is_plain")]
     pub look: Look,
+    /// モザイク・ぼかし範囲：図形の形の中だけ、下の絵をモザイク・ぼかしにする（図形の色は使わない）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+}
+
+/// モザイク・ぼかし範囲
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Region {
+    pub kind: RegionKind,
+    /// モザイクのマスの大きさ・ぼかしの強さ（書き出しの画面の px）
+    pub strength: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RegionKind {
+    Mosaic,
+    Blur,
 }
 
 fn one() -> f64 {

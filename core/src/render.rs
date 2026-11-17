@@ -544,6 +544,33 @@ pub fn build_args(
                 }
                 // 字幕・立ち絵はトラックの最後にまとめて重ねる
                 ClipBody::Caption(_) | ClipBody::Portrait(_) => {}
+                ClipBody::Shape(ShapeClip { transform, look, region: Some(rg), .. }) => {
+                    // モザイク・ぼかし範囲：図形を透明な画面に置いて形を取り、その形の中だけ、下の絵を加工したものに替える
+                    let Some(img) = opt.item_images.get(&c.id) else {
+                        return Err(Error::Other(format!("アイテム {} の画像が用意されていません", c.id)));
+                    };
+                    push_input(
+                        &mut args,
+                        vec!["-loop".into(), "1".into(), "-framerate".into(), v.fps.to_string(), "-t".into(), format!("{dur:.3}")],
+                        img.to_string_lossy().into_owned(),
+                    );
+                    fc.push(format!("[{last_v}]split[rgb{idx}][rgc{idx}]"));
+                    fc.push(format!("[rgc{idx}]format=rgba,drawbox=c=black@0:t=fill:replace=1[rgt{idx}]"));
+                    let plain_look = Look { blend: None, ..look.clone() };
+                    let lay = visual_filters(&mut fc, idx, &format!("{idx}:v"), &format!("rgt{idx}"), v.fps, transform, &plain_look, start, dur);
+                    fc.push(format!("[{lay}]format=rgba,alphaextract[rga{idx}]"));
+                    fc.push(format!("[rgb{idx}]split[rg1{idx}][rg2{idx}]"));
+                    let k = rg.strength.max(1.0);
+                    let fx = match rg.kind {
+                        crate::model::RegionKind::Mosaic => format!("pixelize=w={b}:h={b}", b = k.round().max(2.0) as u32),
+                        crate::model::RegionKind::Blur => format!("gblur=sigma={k:.2}"),
+                    };
+                    fc.push(format!("[rg2{idx}]{fx},format=rgba[rgf{idx}]"));
+                    fc.push(format!("[rgf{idx}][rga{idx}]alphamerge[rgm{idx}]"));
+                    fc.push(format!("[rg1{idx}][rgm{idx}]overlay=format=rgb[rgo{idx}]"));
+                    last_v = format!("rgo{idx}");
+                    idx += 1;
+                }
                 ClipBody::Text(TextClip { transform, look, .. }) | ClipBody::Shape(ShapeClip { transform, look, .. }) => {
                     // テキスト・図形は画面側で描いた画像を、静止画と同じように重ねる
                     let Some(img) = opt.item_images.get(&c.id) else {
@@ -1713,6 +1740,7 @@ mod tests {
                 stroke_width: 0.0,
                 transform: Transform::default(),
                 look: Look::default(),
+                region: None,
             }),
         });
         let mut opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
@@ -1815,7 +1843,7 @@ mod tests {
             start,
             duration: 30,
             link_id: None,
-            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 320.0, height: 180.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look }),
+            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 320.0, height: 180.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look, region: None }),
         };
         p.clips.push(shape("a", 0, Look { exit: Some(Motion { kind: MotionKind::SlideLeft, frames: 10, smooth: true }), ..Default::default() }));
         p.clips.push(shape("b", 30, Look { enter: Some(Motion { kind: MotionKind::SlideRight, frames: 10, smooth: true }), ..Default::default() }));
@@ -1958,6 +1986,43 @@ mod tests {
         // 右半分を切ると、左半分（緑と赤の左側）が真ん中に寄る
         let c = px(SourceFx { crop: Some(Crop { right: 0.5, ..Default::default() }), ..Default::default() });
         assert_eq!((at(&c, 20, 18), at(&c, 40, 18), at(&c, 60, 18)), ('G', 'R', 'K'));
+    }
+
+    /// モザイク・ぼかし範囲：図形の中だけ下の絵がモザイク・ぼかしになり、外は変わらない
+    #[test]
+    fn region_mosaic_and_blur() {
+        use crate::model::{Clip, Region, RegionKind};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        // 下の絵：1px ごとの白黒の縞
+        let src = d.path().join("st.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "nullsrc=s=64x36,geq=lum='if(mod(X,2),235,16)':cb=128:cr=128", "-frames:v", "1"]).arg(&src).status().unwrap().success());
+        // 範囲の形（左半分の四角。色は使わない）
+        let shape = d.path().join("sh.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x36", "-frames:v", "1"]).arg(&shape).status().unwrap().success());
+        for kind in [RegionKind::Mosaic, RegionKind::Blur] {
+            let mut p = Project::sample();
+            (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
+            p.clips.clear();
+            p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: Default::default() }) });
+            let v2 = p.tracks.iter().find(|t| t.kind == crate::model::TrackKind::Video && t.id != "V1").map(|t| t.id.clone()).unwrap_or_else(|| "V2".into());
+            p.clips.push(Clip { id: "r".into(), track_id: v2, start: 0, duration: 10, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 32.0, height: 36.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { x: -16.0, ..Default::default() }, look: Look::default(), region: Some(Region { kind, strength: 4.0 }) }) });
+            let out = d.path().join("o.png");
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.still_at = Some(0.1);
+            opt.item_images.insert("r".into(), shape.clone());
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-f", "rawvideo", "-pix_fmt", "gray", "-"]).output().unwrap().stdout;
+            let row = |x0: usize, x1: usize| (x0..x1).map(|x| img[18 * 64 + x] as i32).collect::<Vec<_>>();
+            let spread = |v: &[i32]| v.iter().max().unwrap() - v.iter().min().unwrap();
+            assert!(spread(&row(4, 28)) < 40, "{kind:?} 範囲の中は縞が消える {:?}", row(4, 28));
+            assert!(spread(&row(40, 60)) > 150, "{kind:?} 外は縞のまま {:?}", row(40, 60));
+            assert!(img.iter().any(|&v| v > 200) && !row(4, 28).iter().any(|&v| v > 200), "{kind:?} 図形の色（赤）は出ない");
+        }
     }
 
     /// なめらかスロー：4 分の 1 の速さでも、コマごとに絵が動く（くり返しにならない）

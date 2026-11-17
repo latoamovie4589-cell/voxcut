@@ -176,9 +176,67 @@ pub fn detect_beats(ffmpeg: &Path, src: &Path) -> Result<Vec<f64>> {
     Ok(beats_from_samples(&samples, rate))
 }
 
+/// 静かなところ（秒、素材の頭から。[始め, 終わり]）。threshold_db より小さい音が min_len 秒以上続くところ
+pub fn detect_silence(ffmpeg: &Path, src: &Path, threshold_db: f64, min_len: f64) -> Result<Vec<(f64, f64)>> {
+    let out = crate::tts::hidden_command(ffmpeg)
+        .args(["-hide_banner", "-nostats", "-i"])
+        .arg(src)
+        .args(["-vn", "-af", &format!("silencedetect=noise={threshold_db:.1}dB:d={min_len:.3}"), "-f", "null", "-"])
+        .output()?;
+    if !out.status.success() {
+        return Err(crate::Error::Other(format!("音を読めません: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or(""))));
+    }
+    Ok(parse_silence(&String::from_utf8_lossy(&out.stderr)))
+}
+
+/// silencedetect の出力を読む（最後まで静かなら、終わりは素材の終わりまで＝大きな値）
+pub fn parse_silence(log: &str) -> Vec<(f64, f64)> {
+    let num = |l: &str, key: &str| l.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|v| v.trim_end_matches('|').parse::<f64>().ok());
+    let mut out = vec![];
+    let mut open: Option<f64> = None;
+    for l in log.lines() {
+        if let Some(v) = num(l, "silence_start:") {
+            open = Some(v.max(0.0));
+        } else if let Some(v) = num(l, "silence_end:") {
+            if let Some(a) = open.take() {
+                out.push((a, v));
+            }
+        }
+    }
+    if let Some(a) = open {
+        out.push((a, f64::MAX));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silence_log() {
+        let log = "[silencedetect @ 0x1] silence_start: -0.002\n[silencedetect @ 0x1] silence_end: 1.25 | silence_duration: 1.25\nfoo\n[silencedetect @ 0x1] silence_start: 3.5\n";
+        assert_eq!(parse_silence(log), vec![(0.0, 1.25), (3.5, f64::MAX)]);
+    }
+
+    #[test]
+    fn silence_in_a_real_file() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("s.wav");
+        // 1 秒鳴って、1 秒静か、1 秒鳴る
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc='if(between(t,1,2),0,0.5*sin(2*PI*440*t))':s=16000:d=3"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let s = detect_silence(Path::new("ffmpeg"), &src, -40.0, 0.3).unwrap();
+        assert_eq!(s.len(), 1, "{s:?}");
+        assert!((s[0].0 - 1.0).abs() < 0.05 && (s[0].1 - 2.0).abs() < 0.05, "{s:?}");
+    }
 
     #[test]
     fn chain_and_gain() {
