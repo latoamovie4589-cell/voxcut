@@ -51,12 +51,15 @@ import {
   Sun,
   Sticker,
   Music2,
+  Clapperboard,
 } from 'lucide-react';
 import type {Clip, MediaClip, Project, Track} from '../model';
 import {
   BASIC_SHAPES,
   SFX_LIST,
   SHAPE_LABEL,
+  CONTROL_LABEL,
+  MAIN_SCENE,
   STICKERS,
   type ShapeKind,
   isVisual,
@@ -94,6 +97,12 @@ import {
   addVisualItem,
   addSticker,
   addRegion,
+  addAudioViz,
+  addControl,
+  addScene,
+  addSceneItem,
+  deleteScene,
+  openScene,
   updateClip,
   selectOnly,
   setLinkedSelection,
@@ -215,7 +224,7 @@ export function describeClip(p: Project, c: Clip, synthErrors: Record<string, st
   }
   if (c.type === 'portrait') return `立ち絵、${p.characters.find(x => x.id === c.characterId)?.name ?? '?'}、${where}`;
   if (c.type === 'text') return `テキスト「${c.text}」、${where}`;
-  if (c.type === 'shape') return `図形（${SHAPE_LABEL[c.shape]}）、${where}`;
+  if (c.type === 'shape') return c.control ? `${CONTROL_LABEL[c.control.kind]}、${where}` : `図形（${SHAPE_LABEL[c.shape]}）、${where}`;
   const kind = c.mediaKind === 'image' ? '画像' : c.mediaKind === 'video' ? '動画' : '音声';
   return `${kind}、${c.src.split(/[\\/]/).pop()}、${where}`;
 }
@@ -948,7 +957,13 @@ export function Timeline() {
               : c.type === 'text'
                 ? `T  ${c.text.replace(/\n/g, ' ')}`
                 : c.type === 'shape'
-                  ? `◆  ${SHAPE_LABEL[c.shape]}`
+                  ? c.viz
+                    ? `♪  ${c.viz === 'bars' ? '音声のスペクトラム' : '音声の波形'}`
+                    : c.scene
+                      ? `◎  ${p.scenes?.find(x => x.id === c.scene)?.name ?? 'シーン'}`
+                      : c.control
+                        ? `▣  ${CONTROL_LABEL[c.control.kind]}`
+                        : `◆  ${SHAPE_LABEL[c.shape]}`
                   : c.type === 'portrait'
                     ? `立ち絵  ${p.characters.find(x2 => x2.id === c.characterId)?.name ?? '?'}`
                     : `${mediaBadge(c)}${c.src.split(/[\\/]/).pop() ?? c.src}`;
@@ -1891,6 +1906,16 @@ export function Timeline() {
             ...BASIC_SHAPES.map(k => ({label: SHAPE_LABEL[k], onClick: () => addVisualItem('shape', k)})),
             {label: 'モザイク範囲', onClick: () => addRegion('mosaic')},
             {label: 'ぼかし範囲', onClick: () => addRegion('blur')},
+            {label: '音声の波形', onClick: () => addAudioViz('wave')},
+            {label: '音声のスペクトラム', onClick: () => addAudioViz('bars')},
+          ],
+        },
+        {
+          label: '制御を追加',
+          items: [
+            {label: 'グループ制御', onClick: () => addControl('group')},
+            {label: 'カメラ', onClick: () => addControl('camera')},
+            {label: '調整レイヤー', onClick: () => addControl('adjust')},
           ],
         },
         {label: 'スタンプを追加', items: STICKERS.map(st => ({label: SHAPE_LABEL[st.kind], onClick: () => addSticker(st.kind)}))},
@@ -1951,12 +1976,41 @@ export function Timeline() {
             />
           ))}
         </DropdownMenu>
+        <DropdownMenu
+          button={{
+            label: project?.sceneId ? (project.scenes?.find(x => x.id === project.sceneId)?.name ?? 'シーン') : 'メイン',
+            size: 'sm',
+            variant: 'ghost',
+            icon: <Icon icon={Clapperboard} />,
+            isIconOnly: compact,
+            tooltip: 'シーン（別のタイムライン）を開く・置く',
+          }}
+          menuWidth={220}>
+          <DropdownMenuItem label="メイン" description={!project?.sceneId ? '開いています' : undefined} onClick={() => openScene(null)} />
+          {(project?.scenes ?? [])
+            .filter(x => x.id !== MAIN_SCENE)
+            .map(x => (
+              <DropdownMenuItem key={x.id} label={x.name} description={x.id === project?.sceneId ? '開いています' : undefined} onClick={() => openScene(x.id)} />
+            ))}
+          <DropdownMenuItem label="新しいシーン" description="別のタイムラインを作って開く" onClick={() => addScene()} />
+          {(project?.scenes ?? [])
+            .filter(x => x.id !== MAIN_SCENE && x.id !== project?.sceneId)
+            .map(x => (
+              <DropdownMenuItem key={`put-${x.id}`} label={`「${x.name}」を置く`} description="再生位置に、このシーンを 1 つのアイテムとして置く" onClick={() => addSceneItem(x.id)} />
+            ))}
+          {project?.sceneId && <DropdownMenuItem label="このシーンを消す" description="置いたシーンアイテムも消えます" onClick={() => deleteScene(project.sceneId!)} />}
+        </DropdownMenu>
         <DropdownMenu button={{label: '図形', size: 'sm', variant: 'ghost', icon: <Icon icon={Shapes} />, isIconOnly: compact, tooltip: '図形を再生位置に追加'}} menuWidth={160}>
           {BASIC_SHAPES.map(k => (
             <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
           ))}
           <DropdownMenuItem label="モザイク範囲" description="形の中の下の絵をモザイクに（顔を隠すなど）" onClick={() => addRegion('mosaic')} />
           <DropdownMenuItem label="ぼかし範囲" description="形の中の下の絵をぼかす" onClick={() => addRegion('blur')} />
+          <DropdownMenuItem label="音声の波形" description="動画の音を波の形で出す" onClick={() => addAudioViz('wave')} />
+          <DropdownMenuItem label="音声のスペクトラム" description="動画の音を高さごとの棒で出す" onClick={() => addAudioViz('bars')} />
+          <DropdownMenuItem label="グループ制御" description="すぐ下のレイヤーをまとめて動かす" onClick={() => addControl('group')} />
+          <DropdownMenuItem label="カメラ" description="下の全部をカメラで撮ったように動かす" onClick={() => addControl('camera')} />
+          <DropdownMenuItem label="調整レイヤー" description="下の全部にエフェクトを掛ける" onClick={() => addControl('adjust')} />
         </DropdownMenu>
         <DropdownMenu button={{label: '効果音', size: 'sm', variant: 'ghost', icon: <Icon icon={Music2} />, isIconOnly: compact, tooltip: '効果音を再生位置に追加'}} menuWidth={160}>
           {SFX_LIST.map(sx => (
