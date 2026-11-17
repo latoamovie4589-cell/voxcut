@@ -46,7 +46,7 @@ import {LineTuning, PresetManager, VoiceTuner} from './VoiceTuning';
 import {LinePsdLayers, PsdPortraitEditor, pickPsdPortrait} from './PsdPortraitEditor';
 import {ColorRow, EffectsEditor, LookEditor, LookFields, ShapeInspector, TextInspector, TextStyleFields, TransformFields} from './VisualInspector';
 import {SegmentedControl, SegmentedControlItem} from '@astryxdesign/core/SegmentedControl';
-import {ANIMATION_LABEL, type SubtitleAnimation} from '../subtitleAnim';
+import {ANIMATION_LABEL, KARAOKE_COLOR, type SubtitleAnimation} from '../subtitleAnim';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {
   canMerge,
@@ -1126,6 +1126,9 @@ export function CharacterSubtitleTab({character}: {character: Character}) {
         }
         width="100%"
       />
+      {character.subtitle.animation === 'karaoke' && (
+        <ColorRow label="カラオケで塗る色" value={character.subtitle.karaokeColor || KARAOKE_COLOR} onChange={karaokeColor => update({subtitle: {...character.subtitle, karaokeColor}})} />
+      )}
       <Selector
         label="フォント"
         description="書き出した動画でも同じフォントを使います（この PC に入っているもの）"
