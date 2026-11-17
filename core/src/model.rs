@@ -810,6 +810,20 @@ pub struct Look {
     /// 合成モード（下の絵との重ね方）。なしはふつうに重ねる
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend: Option<BlendMode>,
+    /// 左右反転・上下反転（エフェクトより前に、素材そのものを裏返す）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_x: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_y: bool,
+    /// 画面の横・縦の倍率（大きさに掛ける。回したあとに掛ける。なしは 1・1）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<[f64; 2]>,
+    /// 回転・拡大の中心（アイテムの真ん中からのずれ。元の大きさの px。右・下がプラス）。位置はこの点の位置になる
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot: Option<[f64; 2]>,
+    /// 3D 回転（X 軸・Y 軸の度。奥行きのある見え方で傾ける）。アニメーションの終わりの値は anim.rot3d
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rot3d: Option<[f64; 2]>,
 }
 
 /// 合成モード（画面は canvas の globalCompositeOperation、書き出しは ffmpeg の blend。どちらも同じ式）
@@ -1067,6 +1081,9 @@ pub struct Anim {
     /// そのほかの途中の状態（キーフレーム。何点でも）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<AnimMid>,
+    /// 終わりの 3D 回転（なしは始まりと同じ。途中の状態は通らず、始まりから終わりへ ease で動く）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rot3d: Option<[f64; 2]>,
 }
 
 impl Anim {
@@ -1132,6 +1149,49 @@ pub enum Effect {
         #[serde(default = "one")]
         strength: f64,
     },
+    /// 縁取り（色・太さ px）。形のまわりに色を付ける
+    Outline { color: String, width: f64 },
+    /// ドロップシャドウ（色・ぼかし px・ずれ px・濃さ 0〜1）
+    Shadow { color: String, blur: f64, x: f64, y: f64, opacity: f64 },
+    /// 発光（色・広がり px・重ねる回数 1〜5）。ぼかした形を後ろに重ねる
+    Glow { color: String, blur: f64, strength: f64 },
+    /// 点滅（1 秒あたりの回数。半分の時間ずつ見える・見えない）
+    Blink { speed: f64 },
+    /// 残像（数・間隔フレーム）。前の時点の姿を薄く重ねる
+    Trail { count: u32, interval: u32 },
+    /// 色ずれ（赤を右・青を左へずらす px）
+    RgbShift { amount: f64 },
+    /// グリッチ（横のずれ px・帯の高さ px・1 秒あたりに変わる回数）
+    Glitch { amount: f64, band: f64, speed: f64 },
+    /// ノイズ（強さ 0〜1。コマごとに変わる）
+    Noise { amount: f64 },
+    /// 放射ブラー（強さ 0〜0.9。真ん中から外へ流れる）
+    RadialBlur { amount: f64 },
+    /// 方向ブラー（長さ px・角度、度）
+    DirBlur { length: f64, angle: f64 },
+    /// 二値化（しきい値 0〜1。明るいところは白、暗いところは黒）
+    Threshold { level: f64 },
+    /// ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数）
+    Jitter { amount: f64, speed: f64 },
+    /// 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数）
+    Oscillate { x: f64, y: f64, speed: f64 },
+}
+
+/// 決まった乱数（0〜1）。画面の model.ts の hash01 と同じ式（sin の小数部分）
+pub fn hash01(a: f64, b: f64) -> f64 {
+    let v = (a * 12.9898 + b * 78.233).sin() * 43758.5453;
+    v - v.floor()
+}
+
+/// hash01 の FFmpeg の式
+pub fn hash01_expr(a: &str, b: &str) -> String {
+    format!("(sin(({a})*12.9898+({b})*78.233)*43758.5453-floor(sin(({a})*12.9898+({b})*78.233)*43758.5453))")
+}
+
+/// ランダム移動のずれ（ローカルの秒 t で）
+pub fn jitter_at(amount: f64, speed: f64, t: f64) -> (f64, f64) {
+    let n = (t * speed).floor();
+    (amount * (hash01(n, 1.0) * 2.0 - 1.0), amount * (hash01(n, 2.0) * 2.0 - 1.0))
 }
 
 /// フィルターの中身：色の混ぜ方（3×3、行ごとに R・G・B の出どころ）と、色ごとの明るさの曲線（倍率・指数・足す量）。
