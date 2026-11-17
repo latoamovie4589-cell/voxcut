@@ -20,7 +20,7 @@ import {useEngineProblems} from './Sidebar';
 
 type Phase = {kind: 'setup'} | {kind: 'running'; progress: ExportProgress | null} | {kind: 'done'; out: string; what: ExportKind} | {kind: 'error'; message: string} | {kind: 'cancelled'};
 
-const KIND_LABEL: Record<ExportKind, string> = {video: '動画', audio: '音声だけ', subtitle: '字幕だけ'};
+const KIND_LABEL: Record<ExportKind, string> = {video: '動画', gif: 'GIF', audio: '音声だけ', subtitle: '字幕だけ'};
 
 /** その行を選んで、タイムラインとプロパティで見せる（書き出す前の確認から） */
 function goToLine(id: string) {
@@ -121,7 +121,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   if (!project) return null;
   const v = project.video;
   const pending = project.clips.filter(c => c.type === 'voice' && !c.audio && c.text.trim()).length;
-  const heights = [v.height, 1080, 720, 480].filter((h, i, a) => h <= v.height && a.indexOf(h) === i);
+  const heights = [v.height, 1080, 720, 480, ...(what === 'gif' ? [360, 240] : [])].filter((h, i, a) => h <= v.height && a.indexOf(h) === i);
   const sizeLabel = (h: number) => `${Math.round((v.width * h) / v.height / 2) * 2}×${h}`;
   const running = phase.kind === 'running';
 
@@ -169,7 +169,15 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
             <>
               <VStack gap={1}>
                 <Text type="label">書き出すもの</Text>
-                <SegmentedControl label="書き出すもの" layout="fill" value={what} onChange={k => setWhat(k as ExportKind)}>
+                <SegmentedControl
+                  label="書き出すもの"
+                  layout="fill"
+                  value={what}
+                  onChange={k => {
+                    setWhat(k as ExportKind);
+                    // GIF は重くなりやすいので、はじめは小さめ
+                    setHeight(k === 'gif' && v.height > 480 ? '480' : 'same');
+                  }}>
                   {(Object.keys(KIND_LABEL) as ExportKind[]).map(k => (
                     <SegmentedControlItem key={k} value={k} label={KIND_LABEL[k]} />
                   ))}
@@ -197,7 +205,13 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                   {range ? `${framesToTimecode(range[1] - range[0], v.fps)}（${framesToTimecode(range[0], v.fps)} から）` : framesToTimecode(total, v.fps)}
                 </MetadataListItem>
                 <MetadataListItem label="形式">
-                  {what === 'video' ? `MP4（H.264 / AAC）・${v.width}×${v.height}・${v.fps} fps` : what === 'audio' ? 'WAV（PCM 16bit）' : 'SRT（字幕の文と時刻だけ。見た目は付きません）'}
+                  {what === 'video'
+                    ? `MP4（H.264 / AAC）・${v.width}×${v.height}・${v.fps} fps`
+                    : what === 'gif'
+                      ? `GIF（音なし・繰り返し再生・${Math.min(v.fps, 15)} fps）。長いと大きなファイルになるので、範囲を短く選ぶのがおすすめです`
+                      : what === 'audio'
+                        ? 'WAV（PCM 16bit）'
+                        : 'SRT（字幕の文と時刻だけ。見た目は付きません）'}
                 </MetadataListItem>
               </MetadataList>
               {/* 書き出す前の確認（直せるものは、その場で直しに行ける） */}
@@ -241,6 +255,15 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                       }}
                     />
                   }
+                />
+              )}
+              {what === 'gif' && (
+                <Selector
+                  label="大きさ"
+                  value={height}
+                  options={heights.map(h => ({value: h === v.height ? 'same' : String(h), label: h === v.height ? `${sizeLabel(h)}（プロジェクトのまま）` : sizeLabel(h)}))}
+                  onChange={setHeight}
+                  width="100%"
                 />
               )}
               {what === 'video' && (
@@ -307,7 +330,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
               <HStack gap={2} hAlign="end">
                 <Button label="閉じる" variant="ghost" onClick={() => close(false)} />
                 <Button label="フォルダを開く" variant={phase.what === 'subtitle' ? 'primary' : 'secondary'} onClick={() => void revealInFolder(phase.out)} />
-                {phase.what !== 'subtitle' && <Button label={phase.what === 'video' ? '再生する' : '聞く'} variant="primary" onClick={() => void openFile(phase.out)} />}
+                {phase.what !== 'subtitle' && <Button label={phase.what === 'audio' ? '聞く' : '再生する'} variant="primary" onClick={() => void openFile(phase.out)} />}
               </HStack>
             </>
           )}
