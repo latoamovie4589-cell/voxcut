@@ -143,6 +143,8 @@ export interface Api {
   detectScenes(src: string, projectPath: string | null, threshold: number): Promise<number[]>;
   /** テンプレートのファイル（.voxtpl）を選ぶ */
   pickTemplatePath(mode: 'save' | 'open'): Promise<string | null>;
+  /** 静かなところ（秒、素材の頭から） */
+  detectSilence(src: string, projectPath: string | null, thresholdDb: number, minLen: number): Promise<[number, number][]>;
   /** LUT（.cube）のファイルを選ぶ */
   pickLutPath(): Promise<string | null>;
   /** LUT を画面用の近い形（行列＋色ごとの曲線）にする */
@@ -342,6 +344,7 @@ async function tauriApi(): Promise<Api> {
       return typeof r === 'string' ? r : null;
     },
     lutFit: path => invoke('lut_fit', {path}),
+    detectSilence: (src, projectPath, thresholdDb, minLen) => invoke('detect_silence', {src: resolvePath(src, projectPath), thresholdDb, minLen}),
     pickTemplatePath: async mode => {
       const filters = [{name: 'VoxCut テンプレート', extensions: ['voxtpl']}];
       if (mode === 'save') {
@@ -641,6 +644,7 @@ function mockApi(): Api {
     allowPaths: async () => {},
     makeSfx: async name => `/sfx/${name}.wav`,
     detectScenes: async () => (globalThis as {__mockScenes?: number[]}).__mockScenes ?? [1, 2.5],
+    detectSilence: async () => (globalThis as {__mockSilence?: [number, number][]}).__mockSilence ?? [[1, 2]],
     pickLutPath: async () => (globalThis as {__mockLut?: string}).__mockLut ?? null,
     // 試験用：R と G を入れ替える LUT
     lutFit: async path => {

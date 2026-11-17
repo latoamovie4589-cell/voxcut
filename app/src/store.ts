@@ -1230,6 +1230,24 @@ export function revealSelection() {
   setState(s => ({revealSeq: s.revealSeq + 1}));
 }
 
+/** モザイク・ぼかし範囲を再生位置に置く（顔を隠すくらいの楕円） */
+export function addRegion(kind: 'mosaic' | 'blur'): string | null {
+  const id = addVisualItem('shape', 'ellipse');
+  const p = state.project;
+  if (id && p) {
+    const sz = Math.round(Math.min(p.video.width, p.video.height) * 0.3);
+    updateClip(id, {
+      width: sz,
+      height: Math.round(sz * 1.2),
+      fill: '#808080',
+      stroke: '',
+      strokeWidth: 0,
+      region: {kind, strength: kind === 'mosaic' ? Math.max(8, Math.round(p.video.height / 40)) : Math.max(6, Math.round(p.video.height / 60))},
+    } as Partial<Clip>);
+  }
+  return id;
+}
+
 /** スタンプを再生位置に置く（大きさと色はスタンプごとの決まり） */
 export function addSticker(kind: ShapeKind): string | null {
   const st = STICKERS.find(x => x.kind === kind);
@@ -1304,6 +1322,55 @@ export function freezeFrame(id: string, at: number, seconds = 3): boolean {
   });
   setState({selectedClipId: stillId, selectedClipIds: [stillId]});
   return true;
+}
+
+/**
+ * 素材（とリンクした相手）の、タイムラインの ranges（[始め, 終わり] フレーム）を切り取って詰める（無音カット）。
+ * 残ったところは間を空けずに並べ、ほかのアイテムも、前で切り取った分だけ前へ詰める（ロックしたレイヤーは動かさない）。
+ * 切り取った長さ（フレーム）を返す
+ */
+export function cutRanges(id: string, ranges: [number, number][]): number {
+  const p = state.project;
+  const c = p?.clips.find(x => x.id === id);
+  if (!p || !c || c.type !== 'media') return 0;
+  const end = c.start + c.duration;
+  // 素材の中に収め、重なりをまとめる
+  const rs = ranges
+    .map(([a, b]) => [Math.max(c.start, Math.round(a)), Math.min(end, Math.round(b))] as [number, number])
+    .filter(([a, b]) => b - a >= 1)
+    .sort((x, y) => x[0] - y[0])
+    .reduce<[number, number][]>((acc, r) => {
+      const last = acc[acc.length - 1];
+      if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+      else acc.push([...r]);
+      return acc;
+    }, []);
+  const total = rs.reduce((a, [x, y]) => a + y - x, 0);
+  if (!total || total >= c.duration) return 0;
+  // t より前で切り取った長さ
+  const before = (t: number) => rs.reduce((a, [x, y]) => a + Math.max(0, Math.min(t, y) - x), 0);
+  const targets = new Set(p.clips.filter(x => x.id === id || (c.linkId && x.linkId === c.linkId && x.type === 'media' && x.start === c.start && x.duration === c.duration)).map(x => x.id));
+  // 残すところ
+  const keep: [number, number][] = [];
+  let at = c.start;
+  for (const [a, b] of rs) {
+    if (a > at) keep.push([at, a]);
+    at = b;
+  }
+  if (at < end) keep.push([at, end]);
+  const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+  const pieceLinks = keep.map(() => (targets.size > 1 ? newId('lk') : null));
+  commit(pr => ({
+    ...pr,
+    clips: pr.clips.flatMap(x => {
+      if (targets.has(x.id) && x.type === 'media') {
+        return keep.map(([a, b], i) => ({...retime(x, a, b - a), id: i === 0 ? x.id : newId('m'), start: a - before(a), linkId: pieceLinks[i]}) as MediaClip);
+      }
+      if (locked.has(x.trackId) || x.start < c.start) return [x];
+      return [{...x, start: x.start - before(x.start)}];
+    }),
+  }));
+  return total;
 }
 
 /** 素材を再生位置で 2 つに分ける。リンクした映像と音声は一緒に分け、右側どうしも新しいリンクでつなぐ */

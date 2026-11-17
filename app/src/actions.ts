@@ -17,13 +17,15 @@ import {
   srcFrameAt,
   canvasToSource,
   followTrack,
+  fitToCell,
+  SPLIT_LAYOUTS,
   type MediaClip,
   type VisualClip,
   reflowAll,
   synthKey,
   timelineFrameOf,
 } from './model';
-import {addCaptionClips, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
+import {addCaptionClips, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -167,6 +169,58 @@ export async function trackItem(itemId: string, size = 0.06): Promise<number> {
   const next = followTrack(cur as VisualClip, video, pts, [info.width, info.height], fps);
   commit(pr => ({...pr, clips: pr.clips.map(x => (x.id === itemId ? next : x))}));
   return pts.length ? pts[pts.length - 1].t - pts[0].t : 0;
+}
+
+/**
+ * 無音カット：素材の静かなところ（threshold_db より小さい音が minLen 秒以上）を切り取って詰める。
+ * 話の前後を pad 秒だけ残す。切り取った秒数を返す
+ */
+export async function cutSilence(clipId: string, opt: {thresholdDb: number; minLen: number; pad: number}): Promise<number> {
+  const s0 = getState();
+  const p = s0.project;
+  const c = p?.clips.find(x => x.id === clipId);
+  if (!p || !c || c.type !== 'media' || c.mediaKind === 'image' || c.freeze) return 0;
+  if (c.mediaKind === 'video' && !c.hasAudio) throw new Error('この動画には音がありません');
+  const fps = p.video.fps;
+  const sil = await (await api).detectSilence(c.src, s0.projectPath, opt.thresholdDb, opt.minLen);
+  const cur = getState().project?.clips.find(x => x.id === clipId);
+  if (!cur || cur.type !== 'media') return 0;
+  const inS = cur.inPoint / fps;
+  const outS = inS + srcSpan(cur) / fps;
+  const ranges = sil.flatMap(([a, b]) => {
+    // 話の頭と終わりは pad 秒残す（素材の頭・終わりにかかる静かなところは、そこまで切る）
+    const x = Math.max(inS, a <= inS + 1e-3 ? a : a + opt.pad);
+    const y = Math.min(outS, b >= outS - 1e-3 ? b : b - opt.pad);
+    if (y - x < opt.minLen / 2) return [];
+    const fa = timelineFrameOf(cur, x, fps);
+    const fb = timelineFrameOf(cur, y, fps);
+    if (fa === null || fb === null) return [];
+    return [[Math.min(fa, fb), Math.max(fa, fb)] as [number, number]];
+  });
+  return cutRanges(clipId, ranges) / fps;
+}
+
+/** 分割画面：選んだ動画・画像を、並べ方のマスに順に置く（時間はそのまま。選んだ順＝レイヤーの上から）。置いた数を返す */
+export async function applySplitLayout(ids: string[], layoutId: string, gap = 0): Promise<number> {
+  const s0 = getState();
+  const p = s0.project;
+  const lay = SPLIT_LAYOUTS.find(l => l.id === layoutId);
+  if (!p || !lay) return 0;
+  const order = p.tracks.map(t => t.id);
+  const items = p.clips
+    .filter((c): c is MediaClip => ids.includes(c.id) && c.type === 'media' && c.mediaKind !== 'audio')
+    .sort((a, b) => order.indexOf(a.trackId) - order.indexOf(b.trackId) || a.start - b.start)
+    .slice(0, lay.cells.length);
+  const a = await api;
+  const next = new Map<string, MediaClip>();
+  for (const [i, m] of items.entries()) {
+    const info = getState().media[m.src] ?? (await a.probeMedia(m.src, s0.projectPath));
+    if (!info.width || !info.height) continue;
+    next.set(m.id, fitToCell(m, [info.width, info.height], lay.cells[i], [p.video.width, p.video.height], gap));
+  }
+  if (!next.size) return 0;
+  commit(pr => ({...pr, clips: pr.clips.map(c => next.get(c.id) ?? c)}));
+  return next.size;
 }
 
 /** 自動で位置合わせ：素材を画面いっぱいにして、被写体が真ん中に来るように位置（動画は時刻ごとのキーフレーム）を決める */

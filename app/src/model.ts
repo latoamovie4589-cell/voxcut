@@ -706,6 +706,85 @@ export function reframeClip(m: MediaClip, pts: {t: number; x: number; y: number}
   return {...base, transform: first, look: {...base.look, anim: {to: last, rotation: base.look.rotation, ease: 'linear', keys}}};
 }
 
+/** 分割画面の並べ方。マスの位置と大きさは画面に対する割合 [左, 上, 幅, 高さ] */
+export const SPLIT_LAYOUTS: {id: string; label: string; cells: [number, number, number, number][]}[] = [
+  {
+    id: 'lr',
+    label: '左右 2 分割',
+    cells: [
+      [0, 0, 0.5, 1],
+      [0.5, 0, 0.5, 1],
+    ],
+  },
+  {
+    id: 'tb',
+    label: '上下 2 分割',
+    cells: [
+      [0, 0, 1, 0.5],
+      [0, 0.5, 1, 0.5],
+    ],
+  },
+  {
+    id: 'l1r2',
+    label: '左 1・右 2',
+    cells: [
+      [0, 0, 0.5, 1],
+      [0.5, 0, 0.5, 0.5],
+      [0.5, 0.5, 0.5, 0.5],
+    ],
+  },
+  {
+    id: 'h3',
+    label: '横に 3 つ',
+    cells: [
+      [0, 0, 1 / 3, 1],
+      [1 / 3, 0, 1 / 3, 1],
+      [2 / 3, 0, 1 / 3, 1],
+    ],
+  },
+  {
+    id: 'v3',
+    label: '縦に 3 つ',
+    cells: [
+      [0, 0, 1, 1 / 3],
+      [0, 1 / 3, 1, 1 / 3],
+      [0, 2 / 3, 1, 1 / 3],
+    ],
+  },
+  {
+    id: 'g4',
+    label: '2×2',
+    cells: [
+      [0, 0, 0.5, 0.5],
+      [0.5, 0, 0.5, 0.5],
+      [0, 0.5, 0.5, 0.5],
+      [0.5, 0.5, 0.5, 0.5],
+    ],
+  },
+];
+
+/**
+ * 素材をマスいっぱいに置く（はみ出すところは切り抜く。真ん中を残す）。gap はマスの間のすき間（px）。
+ * 動き（キーフレーム）は外す
+ */
+export function fitToCell(m: MediaClip, size: [number, number], cell: [number, number, number, number], canvas: [number, number], gap = 0): MediaClip {
+  const [W, H] = canvas;
+  const [sw, sh] = size;
+  const cw = Math.max(2, cell[2] * W - gap);
+  const ch = Math.max(2, cell[3] * H - gap);
+  const s = Math.max(cw / sw, ch / sh);
+  const ox = Math.max(0, 1 - cw / (sw * s)) / 2;
+  const oy = Math.max(0, 1 - ch / (sh * s)) / 2;
+  const r = (v: number) => Math.round(v * 10000) / 10000;
+  return {
+    ...m,
+    crop: ox > 1e-4 || oy > 1e-4 ? {left: r(ox), right: r(ox), top: r(oy), bottom: r(oy)} : undefined,
+    mask: undefined,
+    transform: {x: Math.round((cell[0] + cell[2] / 2) * W - W / 2), y: Math.round((cell[1] + cell[3] / 2) * H - H / 2), scale: Math.round(s * 10000) / 10000, opacity: m.transform.opacity},
+    look: {...plainLook(), ...m.look, anim: null},
+  };
+}
+
 /** 動画の素材の位置（0〜1）が、画面のどこ（transform と同じ、真ん中からの px）に出るか。動画の始まりの置き方で計算する */
 export function sourceToCanvas(video: MediaClip, size: [number, number], u: number, v: number): [number, number] {
   const s = video.transform.scale;
@@ -955,6 +1034,14 @@ export interface ShapeClip extends ClipBase {
   strokeWidth: number;
   transform: Transform;
   look?: Look;
+  /** モザイク・ぼかし範囲：図形の形の中だけ、下の絵をモザイク・ぼかしにする（図形の色は使わない） */
+  region?: Region | null;
+}
+
+/** モザイク・ぼかし範囲。strength はモザイクのマスの大きさ・ぼかしの強さ（書き出しの画面の px） */
+export interface Region {
+  kind: 'mosaic' | 'blur';
+  strength: number;
 }
 
 /** セリフの字幕（映像トラックに置く。文と見た目はセリフとキャラクターの設定を使う） */
