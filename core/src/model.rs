@@ -152,7 +152,13 @@ pub struct SubtitleStyle {
     /// 1 行に入れる文字数の上限（全角を 1、半角を 0.55 と数える）。0 なら画面の幅で決める
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub max_chars: u32,
+    /// カラオケで塗っていく色（空なら黄色）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub karaoke_color: String,
 }
+
+/// カラオケの塗りの色の決まり
+pub const KARAOKE_COLOR: &str = "#FFD400";
 
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
@@ -186,6 +192,8 @@ pub enum SubtitleAnimation {
     Pop,
     /// 1 文字ずつ出る（長さの 6 割か、1 文字 2 フレームの短いほう）
     Typewriter,
+    /// カラオケ：文字が左から順に塗られていく（長さの 9 割で塗り終わる）
+    Karaoke,
 }
 
 impl Default for SubtitleStyle {
@@ -206,6 +214,7 @@ impl Default for SubtitleStyle {
             box_opacity: 1.0,
             box_padding: 12,
             max_chars: 0,
+            karaoke_color: String::new(),
         }
     }
 }

@@ -1,6 +1,6 @@
 //! セリフから ASS 字幕を作る（FFmpeg の ass フィルタで焼き込む）。
 
-use crate::model::{Clip, Frame, Project, SubtitleAnimation, SubtitlePosition, SubtitleStyle};
+use crate::model::{Clip, Frame, Project, SubtitleAnimation, SubtitlePosition, SubtitleStyle, KARAOKE_COLOR};
 use crate::text::{parse_ruby, RubySeg};
 use std::fmt::Write;
 
@@ -122,6 +122,46 @@ fn style_line(name: &str, s: &SubtitleStyle) -> String {
 fn ass_color_alpha(hex: &str, opacity: f64) -> String {
     let a = ((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8;
     format!("&H{a:02X}{}", &ass_color(hex)[4..])
+}
+
+/// カラオケで、ゆっくり塗らない文字（句読点・記号・空白）
+fn karaoke_light(ch: char) -> bool {
+    ch.is_whitespace() || "、。，．,.!?！？…‥・「」『』（）()〜~－-：:；;\"'”“’‘".contains(ch)
+}
+
+/// カラオケの区切り（センチ秒。文字ごとの塗り始め、最後は塗り終わり。改行は数えない）。
+/// 句読点・記号は 0.3 文字ぶん。長さの 9 割で塗り終わる。画面（subtitleAnim.ts）と同じ式
+pub fn karaoke_bounds(chars: &[char], duration: Frame, fps: u32) -> Vec<u32> {
+    let w: Vec<f64> = chars.iter().map(|&c| if karaoke_light(c) { 0.3 } else { 1.0 }).collect();
+    let total: f64 = w.iter().sum::<f64>().max(1e-9);
+    let span = duration as f64 * 0.9 / fps.max(1) as f64 * 100.0;
+    let mut out = vec![0u32];
+    let mut acc = 0.0;
+    for x in &w {
+        acc += x;
+        out.push((acc / total * span).round() as u32);
+    }
+    out
+}
+
+/// カラオケの ASS（1 文字ずつ \kf。塗る色を主の色、塗る前を副の色にする）
+fn karaoke_ass(text: &str, duration: Frame, fps: u32, color: &str, kara: &str) -> String {
+    let chars: Vec<char> = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    let b = karaoke_bounds(&chars, duration, fps);
+    let mut out = format!("{{\\1c{}&\\2c{}&}}", ass_color(kara), ass_color(color));
+    let mut i = 0;
+    for ch in text.chars() {
+        if ch == '\r' {
+            continue;
+        }
+        if ch == '\n' {
+            out.push_str("\\N");
+            continue;
+        }
+        out.push_str(&format!("{{\\kf{}}}{}", b[i + 1] - b[i], escape_text(&ch.to_string())));
+        i += 1;
+    }
+    out
 }
 
 /// アニメーションにかけるフレーム数（0.2 秒）
@@ -339,6 +379,10 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             Some(ov) => ov.apply(&ch.subtitle),
             None => ch.subtitle.clone(),
         });
+        // カラオケの色（塗る前は文字の色）
+        let (kara_from, kara_to) = eff.as_ref().map_or(("#FFFFFF".to_string(), KARAOKE_COLOR.to_string()), |st| {
+            (st.color.clone(), if st.karaoke_color.is_empty() { KARAOKE_COLOR.to_string() } else { st.karaoke_color.clone() })
+        });
         // ルビの書き方を外した文で改行する
         let segs = parse_ruby(text);
         let base: String = segs.iter().map(|s| s.base.as_str()).collect();
@@ -367,6 +411,9 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             SubtitleAnimation::None => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
             SubtitleAnimation::Fade => dialogue(&mut out, p, c.start, c.end(), &style, &format!("{{\\fad({ms},{ms})}}{}", body(None, usize::MAX))),
             SubtitleAnimation::Pop => dialogue(&mut out, p, c.start, c.end(), &style, &body(Some(ms), usize::MAX)),
+            // ルビのある字幕は塗らない（ふつうに出す）
+            SubtitleAnimation::Karaoke if rows.is_some() => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
+            SubtitleAnimation::Karaoke => dialogue(&mut out, p, c.start, c.end(), &style, &karaoke_ass(text, c.duration, p.video.fps, &kara_from, &kara_to)),
             SubtitleAnimation::Typewriter => {
                 // 表示文字数が変わるフレームごとに 1 行。文字の位置は全文で決まるので、出ていない文字は透明にしておく
                 let chars = text.chars().filter(|ch| *ch != '\n' && *ch != '\r').count();
@@ -494,6 +541,43 @@ mod tests {
         let s = build_ass(&p);
         assert!(s.contains(",ch_a,,0,0,0,,{\\fad(200,200)}こんにちは。"), "{s}");
         assert!(s.contains(",ch_b,,0,0,0,,{\\fscx85\\fscy85\\t(0,200,0.5,\\fscx100\\fscy100)}セリフ"));
+    }
+
+    #[test]
+    fn karaoke_timing_and_tags() {
+        let b = karaoke_bounds(&"あい、う".chars().collect::<Vec<_>>(), 100, 30);
+        // 全部で 3.3 文字ぶん、長さの 9 割（3 秒）で塗り終わる
+        assert_eq!(b, vec![0, 91, 182, 209, 300]);
+        let s = karaoke_ass("あい\nう", 30, 30, "#FFFFFF", "#FFD400");
+        assert!(s.starts_with("{\\1c&H0000D4FF&\\2c&H00FFFFFF&}{\\kf30}あ{\\kf30}い\\N{\\kf30}う"), "{s}");
+    }
+
+    /// 本当に ffmpeg（libass）で描くと、時間の分だけ左から塗られている
+    #[test]
+    fn karaoke_fills_left_to_right() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let ass = d.path().join("k.ass");
+        // 60 フレーム（2 秒）、9 割（1.8 秒）で 4 文字を塗る → 0.9 秒で半分
+        let body = karaoke_ass("WWWW", 60, 30, "#FFFFFF", "#FFD400");
+        std::fs::write(&ass, format!("[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 120\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: a,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,a,,0,0,0,,{body}\n")).unwrap();
+        let o = std::process::Command::new("ffmpeg")
+            .current_dir(d.path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x120:d=2", "-vf", "subtitles=k.ass", "-ss", "0.9", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let img = o.stdout;
+        // 横の位置ごとに、明るい画素が黄色（青が少ない）か白か
+        let cols: Vec<bool> = (0..320)
+            .filter_map(|x| (20..100).map(|y| &img[(y * 320 + x) * 3..(y * 320 + x) * 3 + 3]).find(|p| p.iter().map(|&v| v as u32).sum::<u32>() > 400).map(|p| p[2] < 120))
+            .collect();
+        assert!(cols.len() > 40, "文字が描かれていない");
+        let yellow = cols.iter().filter(|&&y| y).count() as f64 / cols.len() as f64;
+        assert!((yellow - 0.5).abs() < 0.12, "半分ほど塗られている {yellow}");
+        assert!(cols[..cols.len() / 4].iter().all(|&y| y) && cols[cols.len() * 3 / 4..].iter().all(|&y| !y), "左から塗る");
     }
 
     #[test]
