@@ -29,11 +29,14 @@ import {
   hasAudioFx,
   proxyKey,
   matteKey,
+  cameraView,
+  groupRanges,
+  sceneOf,
 } from '../model';
-import {distort, drawRegion, drawVisual, itemSource, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
+import {distort, drawRegion, drawVisual, itemSource, vizImage, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
 import {duckGain, voiceIntervals} from '../ducking';
-import {blinkStarts, eyesAt, mouthAt} from '../lipsync';
+import {PEAKS_PER_SEC, blinkStarts, eyesAt, mouthAt} from '../lipsync';
 import {getPeaks, onPeaks} from '../peaks';
 import {commit, getState, revertMerge, setState, useStore} from '../store';
 import {pauseExcept, syncVideo, videoFor} from './video';
@@ -475,7 +478,8 @@ export function Preview() {
     }
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
-    const ctx = canvas.getContext('2d')!;
+    // グループ制御・カメラでまとめるレイヤーは、別の透明な画面に描いてからまとめて置く（ctx を差し替える）
+    let ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingQuality = 'high';
     const scale = w / p.video.width;
@@ -493,7 +497,6 @@ export function Preview() {
     const audible = audibleTracks(p);
     const activeVideos = new Set<HTMLVideoElement>();
     const total = projectDuration(p);
-    const vt = videoTracks(p);
 
     // 立ち絵（口パク・目パチ）
     // 立ち絵アイテム（PSD 立ち絵だけ。口パク・目パチ・表情）
@@ -544,90 +547,148 @@ export function Preview() {
       if (!locked.has(item.trackId)) targets.push({key, kind: 'media', id: item.id, rect, transform: tf(key, item.transform)});
     };
 
-    // レイヤー（YMM4 と同じくレイヤー 1 から描く＝番号の大きいレイヤーが手前）
-    for (const t of vt) {
-      if (t.hidden) continue;
-      for (const c of p.clips) {
-        if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
-        // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
-        // キーフレームのあるアイテムは、ドラッグ中も確定した値（点を動かした結果）で描く
-        const lookAt = (key: string, tr: Transform, local: number) =>
-          visualAt(c.look?.anim ? tr : tf(key, tr), c.look, local, c.duration, fps, (c.start + local) / fps, [p.video.width, p.video.height]);
-        const look = (key: string, tr: Transform) => lookAt(key, tr, playhead - c.start);
-        // 反転・波・渦巻き・3D 回転（元の大きさで掛ける。時刻はアイテムの頭から）して置く
-        const put = (img: CanvasImageSource, size: [number, number], key: string, tr: Transform) => {
-          const k = 1 / Math.max(0.01, c.transform.scale);
-          const st = look(key, tr);
-          // 残像：古いものから、前の時点の姿と位置で薄く重ねる（書き出しと同じ）
-          if (st.trail) {
-            const [n, iv] = st.trail;
-            for (let j = n; j >= 1; j--) {
-              const loc = playhead - c.start - j * iv;
-              if (loc < 0) continue;
-              const s2 = lookAt(key, tr, loc);
-              s2.alpha *= 1 - j / (n + 1);
-              const tv = itemSource(img, size, c.look, s2, loc / fps, k, fps);
-              drawVisual(ctx, tv.img, tv.size, {...tv.st, blend: null}, w, h, scale);
-            }
+    // レイヤーを描く（シーンアイテムは、シーンのレイヤーを別の画面に描いてから置く。sink があれば、ふつうの字幕はそこへ渡して外側で描く）
+    const drawLayers = (p: Project, playhead: number, targets: Target[], depth: number, sink?: (f: () => void) => void): void => {
+      const at = (c: {start: number; duration: number}) => playhead >= c.start && playhead < c.start + c.duration;
+      const vt = videoTracks(p);
+      // グループ制御・カメラ（書き出しの group_ranges と同じ範囲）
+      const groups = groupRanges(p);
+      const saved: CanvasRenderingContext2D[] = [];
+      // まとめている間の字幕は、まとめた絵を置いたあとに描く（書き出しと同じ）
+      let deferred: (() => void)[] = [];
+      // レイヤー（YMM4 と同じくレイヤー 1 から描く＝番号の大きいレイヤーが手前）
+      for (const [ti, t] of vt.entries()) {
+        const grp = groups.find(g => g.at === ti);
+        if (grp && saved.length) {
+          const layer = ctx.canvas;
+          ctx = saved.pop()!;
+          const active = grp.clips.filter(at);
+          if (!active.length) {
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.drawImage(layer, 0, 0);
+            ctx.restore();
           }
-          const sv = itemSource(img, size, c.look, st, (playhead - c.start) / fps, k, fps);
-          return c.type === 'shape' && c.region ? drawRegion(ctx, sv.img, sv.size, sv.st, w, h, scale, c.region) : drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
-        };
-        if (c.type === 'text' || c.type === 'shape') {
-          const img = itemImage(c)!;
-          const key = `m:${c.id}`;
-          const rect = put(img, [img.width, img.height], key, c.transform);
-          if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
-          continue;
+          for (const g of active) {
+            const [tr, lk] = g.control!.kind === 'camera' ? cameraView(g.transform, g.look) : [g.transform, g.look];
+            const st = visualAt(tr, lk, playhead - g.start, g.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+            const sv = itemSource(layer, [p.video.width, p.video.height], lk, st, (playhead - g.start) / fps, 1, fps);
+            drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+          }
+          if (!saved.length) {
+            deferred.forEach(f => f());
+            deferred = [];
+          }
         }
-        const m = c as MediaClip;
-        // 背景を消す型（作ってあれば）。画像は PNG、動画は同じ素材の時刻に合わせた白黒の動画
-        const matteUrl = m.matte ? proxies[matteKey(m.src, m.matte)]?.url : null;
-        if (m.mediaKind === 'image') {
-          const img = image(m.src, projectPath, bump);
-          const matte = matteUrl ? urlImage(matteUrl, bump) : null;
-          const key = `m:${m.id}`;
-          if (img) {
-            // 切り抜き・色抜き・形の切り抜き（書き出しと同じく、大きさを変える前に）
-            const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src, matte);
-            if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
-            const rect = put(sv.img, sv.size, key, m.transform);
-            if (!locked.has(m.trackId))
-              targets.push({
-                key,
-                kind: 'media',
-                id: m.id,
-                rect,
-                transform: tf(key, m.transform),
-              });
-          }
-        } else if (m.mediaKind === 'video') {
-          // 手ぶれ補正を付けた動画は、補正したプロキシ（できるまでは元のプロキシ）
-          const px = (m.stabilize && proxies[proxyKey(m)]?.url ? proxies[proxyKey(m)] : null) ?? proxies[m.src];
-          const info = media[m.src];
-          if (px?.url && info?.width && info.height) {
-            const v = videoFor(px.url, bump);
-            // 映像と音が 1 つの動画は、ここで音も鳴らす（分離した動画の音は音声トラックのクリップで鳴らす）。
-            // 「セリフ中は下げる」トラックは書き出しと同じ動きで下げる
-            const duck = t.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
-            // 切り替えで映像だけを延ばした部分は音を出さない
-            const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
-            // 音を加工した動画は、加工した音を別に鳴らす（下の <audio>）ので、動画の音は出さない
-            const vol = m.hasAudio && audible.has(t.id) && voiced && !hasAudioFx(m) ? m.volume * duck : 0;
-            // 速さ・逆再生・静止（書き出しと同じ対応。逆再生と静止は止めたままコマを合わせ、音は出さない）
-            const sp = speedAt(m, playhead - m.start);
-            if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
-              const key = `m:${m.id}`;
-              let matte: CanvasImageSource | null = null;
-              if (matteUrl) {
-                if (/\.png($|\?)|^data:image/.test(matteUrl)) matte = urlImage(matteUrl, bump);
-                else {
-                  const mv = videoFor(matteUrl, bump);
-                  if (syncVideo(mv, srcFrameAt(m, playhead - m.start) / fps, isPlaying, 0, playRate * sp)) matte = mv;
-                  activeVideos.add(mv);
-                }
+        for (const _g of groups.filter(g => g.from === ti)) {
+          saved.push(ctx);
+          const cv = document.createElement('canvas');
+          cv.width = canvas.width;
+          cv.height = canvas.height;
+          ctx = cv.getContext('2d')!;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.imageSmoothingQuality = 'high';
+        }
+        if (t.hidden) continue;
+        for (const c of p.clips) {
+          if (c.trackId !== t.id || !isVisual(c) || !at(c)) continue;
+          // 動き・フェード・エフェクト（書き出しと同じ計算。preview/visual.ts）
+          // キーフレームのあるアイテムは、ドラッグ中も確定した値（点を動かした結果）で描く
+          const lookAt = (key: string, tr: Transform, local: number) =>
+            visualAt(c.look?.anim ? tr : tf(key, tr), c.look, local, c.duration, fps, (c.start + local) / fps, [p.video.width, p.video.height]);
+          const look = (key: string, tr: Transform) => lookAt(key, tr, playhead - c.start);
+          // 反転・波・渦巻き・3D 回転（元の大きさで掛ける。時刻はアイテムの頭から）して置く
+          const put = (img: CanvasImageSource, size: [number, number], key: string, tr: Transform) => {
+            const k = 1 / Math.max(0.01, c.transform.scale);
+            const st = look(key, tr);
+            // 残像：古いものから、前の時点の姿と位置で薄く重ねる（書き出しと同じ）
+            if (st.trail) {
+              const [n, iv] = st.trail;
+              for (let j = n; j >= 1; j--) {
+                const loc = playhead - c.start - j * iv;
+                if (loc < 0) continue;
+                const s2 = lookAt(key, tr, loc);
+                s2.alpha *= 1 - j / (n + 1);
+                const tv = itemSource(img, size, c.look, s2, loc / fps, k, fps);
+                drawVisual(ctx, tv.img, tv.size, {...tv.st, blend: null}, w, h, scale);
               }
-              const sv = sourceView(v, [info.width, info.height], m, false, '', matte);
+            }
+            const sv = itemSource(img, size, c.look, st, (playhead - c.start) / fps, k, fps);
+            return c.type === 'shape' && c.region ? drawRegion(ctx, sv.img, sv.size, sv.st, w, h, scale, c.region) : drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+          };
+          if (c.type === 'shape' && c.scene) {
+            // シーンアイテム：シーンのレイヤーを、アイテムの頭からの時刻で別の画面に描き、アイテムの動き・エフェクトで置く（書き出しの with_scenes と同じ）
+            const sc = depth < 4 ? sceneOf(p0, c.scene) : undefined;
+            if (sc) {
+              const outer = ctx;
+              const cv = document.createElement('canvas');
+              cv.width = canvas.width;
+              cv.height = canvas.height;
+              ctx = cv.getContext('2d')!;
+              ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+              ctx.imageSmoothingQuality = 'high';
+              const subs: (() => void)[] = [];
+              drawLayers(transitionsOf({...p, tracks: sc.tracks, clips: sc.clips}), playhead - c.start, [], depth + 1, f => subs.push(f));
+              ctx = outer;
+              const key = `m:${c.id}`;
+              const st = visualAt(c.look?.anim ? c.transform : tf(key, c.transform), c.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+              const sv = itemSource(cv, [p.video.width, p.video.height], c.look, st, (playhead - c.start) / fps, 1, fps);
+              const rect = drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+              if (!locked.has(c.trackId)) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
+              // シーンのふつうの字幕は動かさずに上に出す（書き出しと同じ）
+              for (const f of subs) {
+                if (sink) sink(f);
+                else if (saved.length) deferred.push(f);
+                else f();
+              }
+            }
+            continue;
+          }
+          if (c.type === 'shape' && c.viz) {
+            // 音声の波形・スペクトラム（プレビューはセリフの音の大きさからの目安。書き出しは動画の音そのものから描く）
+            let lv = 0;
+            for (const v of p.clips) {
+              if (v.type !== 'voice' || !v.audio || !audible.has(v.trackId) || !at(v)) continue;
+              const pk = getPeaks(v.audio.cacheKey);
+              if (!pk?.max) continue;
+              const i = Math.floor(((playhead - v.start + startOffsetOf(v)) / fps) * PEAKS_PER_SEC);
+              for (let j = Math.max(0, i - 2); j <= i + 2 && j * 2 + 1 < pk.data.length; j++) lv = Math.max(lv, Math.max(Math.abs(pk.data[j * 2]), Math.abs(pk.data[j * 2 + 1])) / 127);
+            }
+            const img = vizImage(c, Math.sqrt(lv), playhead / fps);
+            put(img, [img.width, img.height], `m:${c.id}`, c.transform);
+            continue;
+          }
+          if (c.type === 'shape' && c.control) {
+            // 調整レイヤー：それまでに描いた絵に、エフェクト・不透明度・フェードを掛けて重ねる（グループ制御・カメラはここでは描かない）
+            if (c.control.kind === 'adjust') {
+              const snap = document.createElement('canvas');
+              snap.width = ctx.canvas.width;
+              snap.height = ctx.canvas.height;
+              snap.getContext('2d')!.drawImage(ctx.canvas, 0, 0);
+              const lk = {...plainLook(), effects: c.look?.effects ?? [], fadeIn: c.look?.fadeIn ?? 0, fadeOut: c.look?.fadeOut ?? 0, blend: c.look?.blend ?? null};
+              const st = visualAt({x: 0, y: 0, scale: 1, opacity: c.transform.opacity}, lk, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+              const sv = itemSource(snap, [p.video.width, p.video.height], lk, st, (playhead - c.start) / fps, 1, fps);
+              drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+            }
+            continue;
+          }
+          if (c.type === 'text' || c.type === 'shape') {
+            const img = itemImage(c, playhead - c.start)!;
+            const key = `m:${c.id}`;
+            const rect = put(img, [img.width, img.height], key, c.transform);
+            if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
+            continue;
+          }
+          const m = c as MediaClip;
+          // 背景を消す型（作ってあれば）。画像は PNG、動画は同じ素材の時刻に合わせた白黒の動画
+          const matteUrl = m.matte ? proxies[matteKey(m.src, m.matte)]?.url : null;
+          if (m.mediaKind === 'image') {
+            const img = image(m.src, projectPath, bump);
+            const matte = matteUrl ? urlImage(matteUrl, bump) : null;
+            const key = `m:${m.id}`;
+            if (img) {
+              // 切り抜き・色抜き・形の切り抜き（書き出しと同じく、大きさを変える前に）
+              const sv = sourceView(img, [img.naturalWidth, img.naturalHeight], m, true, m.src, matte);
               if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
               const rect = put(sv.img, sv.size, key, m.transform);
               if (!locked.has(m.trackId))
@@ -639,48 +700,92 @@ export function Preview() {
                   transform: tf(key, m.transform),
                 });
             }
-            activeVideos.add(v);
-          } else {
-            // プロキシを作っている間は進み具合を出す
-            ctx.fillStyle = 'rgba(142,142,147,0.35)';
-            ctx.fillRect(w * 0.1, h * 0.1, w * 0.8, h * 0.8);
-            ctx.fillStyle = '#fff';
-            ctx.font = `${Math.max(12, 20 * scale)}px system-ui, sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            const msg = px?.error ? 'プレビューを用意できませんでした' : `プレビューを用意しています ${Math.round((px?.ratio ?? 0) * 100)}%`;
-            ctx.fillText(msg, w / 2, h / 2);
+          } else if (m.mediaKind === 'video') {
+            // 手ぶれ補正を付けた動画は、補正したプロキシ（できるまでは元のプロキシ）
+            const px = (m.stabilize && proxies[proxyKey(m)]?.url ? proxies[proxyKey(m)] : null) ?? proxies[m.src];
+            const info = media[m.src];
+            if (px?.url && info?.width && info.height) {
+              const v = videoFor(px.url, bump);
+              // 映像と音が 1 つの動画は、ここで音も鳴らす（分離した動画の音は音声トラックのクリップで鳴らす）。
+              // 「セリフ中は下げる」トラックは書き出しと同じ動きで下げる
+              const duck = t.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
+              // 切り替えで映像だけを延ばした部分は音を出さない
+              const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
+              // 音を加工した動画は、加工した音を別に鳴らす（下の <audio>）ので、動画の音は出さない
+              const vol = m.hasAudio && audible.has(t.id) && voiced && !hasAudioFx(m) ? m.volume * duck : 0;
+              // 速さ・逆再生・静止（書き出しと同じ対応。逆再生と静止は止めたままコマを合わせ、音は出さない）
+              const sp = speedAt(m, playhead - m.start);
+              if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
+                const key = `m:${m.id}`;
+                let matte: CanvasImageSource | null = null;
+                if (matteUrl) {
+                  if (/\.png($|\?)|^data:image/.test(matteUrl)) matte = urlImage(matteUrl, bump);
+                  else {
+                    const mv = videoFor(matteUrl, bump);
+                    if (syncVideo(mv, srcFrameAt(m, playhead - m.start) / fps, isPlaying, 0, playRate * sp)) matte = mv;
+                    activeVideos.add(mv);
+                  }
+                }
+                const sv = sourceView(v, [info.width, info.height], m, false, '', matte);
+                if (m.fillBlur) drawFillBlur(ctx, sv.img, sv.size, w, h, scale, m.fillBlur);
+                const rect = put(sv.img, sv.size, key, m.transform);
+                if (!locked.has(m.trackId))
+                  targets.push({
+                    key,
+                    kind: 'media',
+                    id: m.id,
+                    rect,
+                    transform: tf(key, m.transform),
+                  });
+              }
+              activeVideos.add(v);
+            } else {
+              // プロキシを作っている間は進み具合を出す
+              ctx.fillStyle = 'rgba(142,142,147,0.35)';
+              ctx.fillRect(w * 0.1, h * 0.1, w * 0.8, h * 0.8);
+              ctx.fillStyle = '#fff';
+              ctx.font = `${Math.max(12, 20 * scale)}px system-ui, sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              const msg = px?.error ? 'プレビューを用意できませんでした' : `プレビューを用意しています ${Math.round((px?.ratio ?? 0) * 100)}%`;
+              ctx.fillText(msg, w / 2, h / 2);
+            }
           }
         }
-      }
-      // このトラックの立ち絵と字幕（字幕は立ち絵より手前）
-      for (const c of p.clips) if (c.type === 'portrait' && c.trackId === t.id && at(c)) drawPortrait(c);
-      for (const c of p.clips) {
-        if (c.trackId !== t.id || !at(c) || (c.type !== 'caption' && c.type !== 'voice')) continue;
-        // 分離した字幕はそのセリフの文、字幕と声が 1 つのセリフはそれ自身の文（分離した声は字幕を出さない）
-        const v = lineOfSubtitle(p, c);
-        if (!v) continue;
-        // 「個別に設定」した字幕は、テキストアイテムと同じように画像にして置く（書き出しも同じ画像）
-        const sc = v.subtitleCustom;
-        if (sc) {
-          const text = v.subtitle ?? v.text;
-          if (!text.trim()) continue;
-          // 1 文字ずつ出す字幕は、その時点の文字数の画像（書き出しも同じ画像を順に出す）
-          const img = subtitleImage(v, sc, visibleChars(sc, text, playhead - c.start));
-          const key = `s:${v.id}`;
-          const tr = tf(key, sc.transform);
-          const st = visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
-          const sv = itemSource(img, [img.width, img.height], sc.look, st, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
-          const rect = drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
-          if (!locked.has(c.trackId)) targets.push({key, kind: 'subtitle', id: v.id, selectId: c.id, rect, transform: tr});
-          continue;
+        // このトラックの立ち絵と字幕（字幕は立ち絵より手前）
+        for (const c of p.clips) if (c.type === 'portrait' && c.trackId === t.id && at(c)) drawPortrait(c);
+        for (const c of p.clips) {
+          if (c.trackId !== t.id || !at(c) || (c.type !== 'caption' && c.type !== 'voice')) continue;
+          // 分離した字幕はそのセリフの文、字幕と声が 1 つのセリフはそれ自身の文（分離した声は字幕を出さない）
+          const v = lineOfSubtitle(p, c);
+          if (!v) continue;
+          // 「個別に設定」した字幕は、テキストアイテムと同じように画像にして置く（書き出しも同じ画像）
+          const sc = v.subtitleCustom;
+          if (sc) {
+            const text = v.subtitle ?? v.text;
+            if (!text.trim()) continue;
+            // 1 文字ずつ出す字幕は、その時点の文字数の画像（書き出しも同じ画像を順に出す）
+            const img = subtitleImage(v, sc, visibleChars(sc, text, playhead - c.start));
+            const key = `s:${v.id}`;
+            const tr = tf(key, sc.transform);
+            const st = visualAt(tr, sc.look, playhead - c.start, c.duration, fps, playhead / fps, [p.video.width, p.video.height]);
+            const sv = itemSource(img, [img.width, img.height], sc.look, st, (playhead - c.start) / fps, 1 / Math.max(0.01, sc.transform.scale));
+            const rect = drawVisual(ctx, sv.img, sv.size, sv.st, w, h, scale);
+            if (!locked.has(c.trackId)) targets.push({key, kind: 'subtitle', id: v.id, selectId: c.id, rect, transform: tr});
+            continue;
+          }
+          // 分離した字幕で見た目を上書きしていれば、それを当てる（書き出しと同じ）
+          const chr = p.characters.find(ch => ch.id === v.characterId);
+          const ov = c.type === 'caption' ? c.style : null;
+          const draw = () => drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
+          if (sink) sink(draw);
+          else if (saved.length) deferred.push(draw);
+          else draw();
         }
-        // 分離した字幕で見た目を上書きしていれば、それを当てる（書き出しと同じ）
-        const chr = p.characters.find(ch => ch.id === v.characterId);
-        const ov = c.type === 'caption' ? c.style : null;
-        drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
       }
-    }
+    };
+    drawLayers(p, playhead, targets, 0);
+
     // 速さを変えた音声素材・音を加工した素材は <audio> で鳴らす（速さを変えても音の高さが変わらない。加工した音は書き出しと同じ WAV）。
     // そのほかの音声素材は playback.ts の Web Audio
     if (isPlaying)
