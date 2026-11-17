@@ -715,6 +715,15 @@ async def main():
         ok = 18 <= cut <= 24 and len(r[1]) == 2 and r[1][0][0] == 0 and r[1][1][0] == r[1][0][1] and r[1][0][1] + r[1][1][1] == 120 - cut and r[1][1][2] == r[1][0][1] + cut and r[2] == 100 - cut
         check("無音カット：静かなところ（前後を少し残す）を切り取って詰め、後ろのアイテムも詰まる", ok, str(r))
         check("無音カット：音のある素材に「静かなところを詰める」が出る", await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({selectedClipId:'tl', selectedClipIds:['tl']}); await new Promise(r=>setTimeout(r,300)); return [...document.querySelectorAll('button')].some(b=>b.textContent.includes('静かなところを詰める'))}"))
+        r = await q.evaluate("""async()=>{const pv=await import('/src/preview/Preview.tsx'); const sa=await import('/src/subtitleAnim.ts'); const s=await import('/src/store.ts');
+          const p=s.getState().project; const ch={...p.characters[0], subtitle:{...p.characters[0].subtitle, animation:'karaoke', color:'#FFFFFF', outlineWidth:0, shadowColor:'', boxColor:'', fontSize:120, position:'middle'}};
+          const c=document.createElement('canvas'); c.width=p.video.width/2; c.height=p.video.height/2; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,c.width,c.height);
+          pv.drawSubtitle(x, 'WWWW', ch, p, 0.5, 27, 60);
+          const d=x.getImageData(0,0,c.width,c.height).data; const cols=[];
+          for (let X=0; X<c.width; X++) { for (let Y=0; Y<c.height; Y++) { const i=(Y*c.width+X)*4; if (d[i]+d[i+1]+d[i+2]>400) { cols.push(d[i+2]<120); break; } } }
+          const yl=cols.filter(v=>v).length/cols.length;
+          return [sa.karaokeBounds([...'あい、う'], 100, 30), cols.length, Math.round(yl*100), cols.slice(0, cols.length/4|0).every(v=>v), cols.slice(cols.length*3/4|0).every(v=>!v)]}""")
+        check("カラオケ字幕：書き出しと同じ区切りで、時間の分だけ左から塗る", r[0] == [0, 91, 182, 209, 300] and r[1] > 40 and abs(r[2] - 50) <= 12 and r[3] and r[4], str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
