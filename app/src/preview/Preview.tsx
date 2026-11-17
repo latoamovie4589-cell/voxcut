@@ -7,7 +7,7 @@ import type {Api} from '../ipc';
 import {api} from '../ipc';
 import {wrapSubtitle} from '../subtitleWrap';
 import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
-import type {Character, Clip, Effect, Highlight, MediaClip, PortraitClip, Project, Transform, VisualClip} from '../model';
+import type {Character, Clip, Effect, MediaClip, PortraitClip, Project, Transform, VisualClip} from '../model';
 import {
   audibleTracks,
   lineOfSubtitle,
@@ -29,7 +29,6 @@ import {
   hasAudioFx,
   proxyKey,
   matteKey,
-  highlightMask,
 } from '../model';
 import {distort, drawRegion, drawVisual, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -223,7 +222,7 @@ export function commitTransform(t: Target, transform: Transform, mergeKey?: stri
  * アニメーションは subtitleAnim.ts（書き出しの ASS と同じ式）。
  * 1 文字ずつのときは全文で位置を決め、まだ出ていない文字を描かない（書き出しと同じく文字が動かない）。
  */
-export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character | undefined, p: Project, scale: number, f: number, duration: number, highlights?: Highlight[]) {
+export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Character | undefined, p: Project, scale: number, f: number, duration: number) {
   const st = ch?.subtitle;
   const fps = p.video.fps;
   const anim = st?.animation ?? 'none';
@@ -279,7 +278,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const total = [...text.replace(/\n/g, '')].length;
   const count = anim === 'typewriter' ? typewriterCount(total, duration, f) : Infinity;
   // 文字を 1 かたまり描く（帯・縁・影も）。px は文字の大きさ、sx は横の縮め
-  const run = (s: string, x: number, y: number, px: number, sx = 1, textColor?: string, fillOnly = false) => {
+  const run = (s: string, x: number, y: number, px: number, sx = 1, textColor?: string) => {
     if (!s) return;
     ctx.save();
     ctx.font = fontAt(px);
@@ -291,13 +290,13 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     const pad = (st?.boxPadding ?? 12) * scale * k;
     const top = pos === 'middle' ? -px * 0.5 : -px * 0.88;
     const body = (dx: number, dy: number, color?: string) => {
-      if (boxed && !fillOnly) {
+      if (boxed) {
         ctx.save();
         ctx.fillStyle = color ?? st!.boxColor!;
         if (!color) ctx.globalAlpha *= Math.max(0, Math.min(1, st?.boxOpacity ?? 1));
         ctx.fillRect(-pad + dx, top - pad + dy, ctx.measureText(s).width + pad * 2, px * (pos === 'middle' ? 1 : 1.12) + pad * 2);
         ctx.restore();
-      } else if (st?.outlineWidth && !fillOnly) {
+      } else if (st?.outlineWidth) {
         ctx.lineWidth = st.outlineWidth * 2 * scale * k;
         ctx.strokeStyle = color ?? st.outlineColor;
         ctx.strokeText(s, dx, dy);
@@ -306,7 +305,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
       ctx.fillText(s, dx, dy);
     };
     // 影は、縁（帯）まで含めた形をずらして落とす
-    if (st?.shadowColor && !fillOnly) {
+    if (st?.shadowColor) {
       const o = (st.shadowOffset ?? 4) * scale * k;
       body(o, o, st.shadowColor);
     }
@@ -322,8 +321,6 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     ctx.rect(x1 * scale, 0, (x2 - x1) * k * scale, h);
     ctx.clip();
   }
-  // 色を変える言葉（ルビ・1 文字ずつ・カラオケのときは変えない。書き出しと同じ）
-  const hl = !rows && anim !== 'typewriter' && anim !== 'karaoke' && highlights?.length ? highlightMask(plain, highlights) : null;
   // カラオケ：今の時刻までに塗る文字（書き出しの ASS の \kf と同じく、文字ごとに左から）
   const kara = anim === 'karaoke' && !rows ? karaokeBounds([...text.replace(/\n/g, '')], duration, fps) : null;
   const now = (f / fps) * 100;
@@ -337,17 +334,6 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     ctx.font = fontAt(size);
     const x0 = w / 2 - ctx.measureText(line).width / 2;
     run(shown, x0, y, size);
-    if (hl) {
-      // 色を変える文字だけ、文字の塗りを上から描き直す（縁はそのまま）
-      ctx.font = fontAt(size);
-      for (let j = 0; j < chars.length;) {
-        const col = hl[seen - chars.length + j];
-        let k = j + 1;
-        while (k < chars.length && hl[seen - chars.length + k] === col) k++;
-        if (col) run(chars.slice(j, k).join(''), x0 + ctx.measureText(chars.slice(0, j).join('')).width, y, size, 1, col, true);
-        j = k;
-      }
-    }
     if (kara) {
       // この行で塗る幅
       ctx.font = fontAt(size);
@@ -675,7 +661,7 @@ export function Preview() {
         // 分離した字幕で見た目を上書きしていれば、それを当てる（書き出しと同じ）
         const chr = p.characters.find(ch => ch.id === v.characterId);
         const ov = c.type === 'caption' ? c.style : null;
-        drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration, v.highlights);
+        drawSubtitle(ctx, v.subtitle ?? v.text, chr && ov ? {...chr, subtitle: {...chr.subtitle, ...ov}} : chr, p, scale, playhead - c.start, c.duration);
       }
     }
     // 速さを変えた音声素材・音を加工した素材は <audio> で鳴らす（速さを変えても音の高さが変わらない。加工した音は書き出しと同じ WAV）。
