@@ -26,6 +26,20 @@ pub struct Project {
     /// マーカー（時刻に付ける目印。YouTube のチャプターにも使う）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// シーン（別のタイムライン。シーンアイテムで入れ子にして置ける）。メインのタイムラインは tracks・clips
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenes: Vec<Scene>,
+}
+
+/// シーン（メインとは別のレイヤーとアイテム）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Scene {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub tracks: Vec<Track>,
+    pub clips: Vec<Clip>,
 }
 
 /// タイムラインの目印
@@ -948,6 +962,75 @@ impl Project {
             .map(|(i, _)| i)
     }
 
+    /// シーンアイテムを、シーンのレイヤーとアイテム（アイテムの頭からの時刻にずらし、終わりで切る）と、
+    /// それをまとめるグループ制御に置き換えた写し（入れ子は 4 段まで）。書き出しはこれを描く。画面側の model.ts の withScenes と同じ。
+    /// シーンのレイヤー・アイテムの id は「元の id@シーンアイテムの id」
+    pub fn with_scenes(&self) -> Project {
+        let mut p = self.clone();
+        for _ in 0..4 {
+            let items: Vec<(usize, String)> = p
+                .clips
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| match &c.body {
+                    ClipBody::Shape(ShapeClip { scene: Some(s), .. }) => Some((i, s.clone())),
+                    _ => None,
+                })
+                .collect();
+            if items.is_empty() {
+                break;
+            }
+            let mut tracks: Vec<Track> = vec![];
+            let mut add: Vec<Clip> = vec![];
+            let mut layers: std::collections::HashMap<String, u32> = Default::default();
+            for t in &p.tracks {
+                // このレイヤーのシーンアイテムのシーンを、すぐ下に入れる（頭の早いアイテムほど下）
+                let mut here: Vec<&(usize, String)> = items.iter().filter(|(i, _)| p.clips[*i].track_id == t.id).collect();
+                here.sort_by_key(|(i, _)| p.clips[*i].start);
+                let mut n = 0u32;
+                for (i, sid) in here {
+                    let item = &p.clips[*i];
+                    let Some(sc) = self.scenes.iter().find(|s| &s.id == sid) else { continue };
+                    let tag = |id: &str| format!("{id}@{}", item.id);
+                    for st in &sc.tracks {
+                        tracks.push(Track { id: tag(&st.id), ..st.clone() });
+                        n += 1;
+                    }
+                    for c in &sc.clips {
+                        if c.start >= item.duration {
+                            continue;
+                        }
+                        let mut c2 = c.clone();
+                        c2.id = tag(&c.id);
+                        c2.track_id = tag(&c.track_id);
+                        c2.link_id = c.link_id.as_deref().map(tag);
+                        c2.start = item.start + c.start;
+                        c2.duration = c.duration.min(item.duration - c.start);
+                        add.push(c2);
+                    }
+                }
+                if n > 0 {
+                    layers.insert(t.id.clone(), n);
+                }
+                tracks.push(t.clone());
+            }
+            for (i, _) in &items {
+                let n = layers.get(&p.clips[*i].track_id).copied().unwrap_or(0);
+                if let ClipBody::Shape(sh) = &mut p.clips[*i].body {
+                    sh.scene = None;
+                    // 入れたレイヤーがなければ、何も描かない調整レイヤー（エフェクトなし）にしておく
+                    sh.control = Some(if n > 0 { Control { kind: ControlKind::Group, layers: n } } else { Control { kind: ControlKind::Adjust, layers: 1 } });
+                    if n == 0 {
+                        sh.look.effects.clear();
+                    }
+                }
+            }
+            p.tracks = tracks;
+            p.clips.extend(add);
+        }
+        p
+    }
+
     /// 切り替えを、前後のアイテムの登場・退場・フェード（と、暗転・白は画面を覆う図形）に置き換えた写し。
     /// 書き出しはこれを描く。画面側の model.ts の withTransitions と同じ結果になる
     pub fn with_transitions(&self) -> Project {
@@ -1024,6 +1107,9 @@ impl Project {
                             transform: Transform::default(),
                             look,
                             region: None,
+                            control: None,
+                            scene: None,
+                            viz: None,
                         }),
                     };
                     extra.push(cover(format!("{}~cover1", b.id), cut - out_f, out_f, Look { fade_in: out_f, ..Default::default() }));
@@ -1175,6 +1261,18 @@ pub enum Effect {
     Jitter { amount: f64, speed: f64 },
     /// 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数）
     Oscillate { x: f64, y: f64, speed: f64 },
+    /// プラグインのエフェクト（書き出しの FFmpeg のフィルターと画面の Canvas の filter の式。{名前} に values の数を入れる）
+    Plugin {
+        name: String,
+        ffmpeg: String,
+        #[serde(default)]
+        canvas: String,
+        #[serde(default)]
+        values: std::collections::BTreeMap<String, f64>,
+        /// 数のつまみ（プロパティに出すため。プラグインからそのまま写す）
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        params: Vec<crate::plugin::PluginParam>,
+    },
 }
 
 /// 決まった乱数（0〜1）。画面の model.ts の hash01 と同じ式（sin の小数部分）
@@ -1289,6 +1387,35 @@ pub struct TextDeco {
     pub box_radius: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient_color: Option<String>,
+    /// 縦書き
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<bool>,
+    /// 1 文字ずつ出す（画面側がコマごとの画像を用意し、書き出しは 1 コマずつ並べる）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_anim: Option<CharAnim>,
+}
+
+/// テキストの 1 文字ずつの登場（kind：type ＝そのまま出る／fade ＝ふわっと／pop ＝はねる／slideUp ＝下から）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CharAnim {
+    pub kind: String,
+    /// 次の文字が出るまでのフレーム
+    pub interval: Frame,
+    /// 1 文字が出きるまでのフレーム
+    #[serde(default = "char_len")]
+    pub length: Frame,
+}
+
+fn char_len() -> Frame {
+    6
+}
+
+impl CharAnim {
+    /// 全部の文字が出きるまでのフレーム（n 文字）。この後は画像が変わらない
+    pub fn frames(&self, n: usize) -> Frame {
+        (n.max(1) as Frame - 1) * self.interval.max(0) + self.length.max(1)
+    }
 }
 
 fn center() -> String {
@@ -1315,6 +1442,77 @@ pub struct ShapeClip {
     /// モザイク・ぼかし範囲：図形の形の中だけ、下の絵をモザイク・ぼかしにする（図形の色は使わない）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    /// グループ制御・カメラ・調整レイヤー（図形そのものは描かず、下のレイヤーに効く）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<Control>,
+    /// シーンアイテム：このシーン（id）を、アイテムの頭から再生して置く（図形そのものは描かない）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
+    /// 音声の波形・スペクトラム：動画の音を、図形の大きさ・塗りの色で描く（図形そのものは描かない）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viz: Option<AudioViz>,
+}
+
+/// 音声の見える化（wave ＝波形、bars ＝周波数の棒）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioViz {
+    Wave,
+    Bars,
+}
+
+/// グループ制御・カメラ・調整レイヤー
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Control {
+    pub kind: ControlKind,
+    /// グループ制御で、すぐ下の何レイヤーをまとめるか（カメラ・調整レイヤーは下の全部）
+    #[serde(default = "one_u32")]
+    pub layers: u32,
+}
+
+fn one_u32() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlKind {
+    /// すぐ下のレイヤーをまとめて、このアイテムの位置・大きさ・回転・エフェクトで動かす
+    Group,
+    /// 下の全部を、カメラを動かしたように見せる（右へ動かすと絵は左へ。拡大すると寄る）
+    Camera,
+    /// 下の全部に、このアイテムのエフェクトを掛ける
+    Adjust,
+}
+
+impl Control {
+    /// まとめるレイヤーの数（下のレイヤーの数 below まで）。調整レイヤーはまとめない
+    pub fn covers(&self, below: usize) -> usize {
+        match self.kind {
+            ControlKind::Group => (self.layers as usize).min(below),
+            ControlKind::Camera => below,
+            ControlKind::Adjust => 0,
+        }
+    }
+}
+
+/// カメラの動きを、まとめた絵の動きにする（右へ動かすと絵は左へ、回すと逆に回る。大きさ・不透明度・エフェクトはそのまま）
+pub fn camera_view(t: &Transform, look: &Look) -> (Transform, Look) {
+    let flip = |t: &Transform| Transform { x: -t.x, y: -t.y, ..*t };
+    let mut l = look.clone();
+    l.rotation = -look.rotation;
+    l.rot3d = look.rot3d.map(|[a, b]| [-a, -b]);
+    if let Some(a) = l.anim.as_mut() {
+        a.to = flip(&a.to);
+        a.rotation = -a.rotation;
+        a.rot3d = a.rot3d.map(|[x, y]| [-x, -y]);
+        for k in a.mid.iter_mut().chain(a.keys.iter_mut()) {
+            k.transform = flip(&k.transform);
+            k.rotation = -k.rotation;
+        }
+    }
+    (flip(t), l)
 }
 
 /// モザイク・ぼかし範囲
@@ -1500,6 +1698,7 @@ impl Project {
             tracks: (1..=6).map(|n| Track::new(format!("V{n}"), TrackKind::Video)).collect(),
             clips: vec![],
             markers: vec![],
+            scenes: vec![],
         }
     }
 
