@@ -1625,6 +1625,31 @@ pub(crate) fn pixel_effect(fx: &Effect, k: f64, tag: &str) -> Vec<String> {
             let al = format!("max(max(alpha({xs}-{c:.3},Y),alpha({xs},Y)),alpha({xs}+{c:.3},Y))");
             vec![pad(31.0 * a * k + 1.0), format!("geq=r='{}':g='{}':b='{}':a='{al}'", ch("r", -c), ch("g", 0.0), ch("b", c))]
         }
+        Effect::GlitchNoise { amount, rate, block } if *amount > 0.0 => {
+            let a = amount.min(1.0);
+            let h = crate::model::hash01_expr;
+            // 1 秒に 12 回、乱れ方が変わる。rate の割合の時間だけ大きく乱れる
+            let step = "floor(T*12)";
+            let i = format!("({a:.4}*(0.15+0.85*lt({},{:.4})*(0.5+0.5*{})))", h(step, "1"), rate.clamp(0.0, 1.0), h(step, "2"));
+            let b = block.max(2.0) * k;
+            let band = format!("floor(Y/{:.4})", (b * 0.5).max(1.0));
+            let bx = format!("floor(X/{:.4})", (b * 2.0).max(1.0));
+            let off = format!("(gt({},0.55)*{i}*{:.4}*({}*2-1))", h(&band, &format!("{step}+3")), 40.0 * k, h(&band, &format!("{step}+4")));
+            let (cr, cb) = (format!("({i}*{:.4}*{})", 8.0 * k, h(&band, &format!("{step}+5"))), format!("({i}*{:.4}*{})", 8.0 * k, h(&band, &format!("{step}+6"))));
+            let xs = format!("(X-{off})");
+            let corrupt = format!("gt({},1-0.1*{i})", h(&format!("{bx}+{band}*31.7"), &format!("{step}+7")));
+            let line = format!("gt({},1-0.05*{i})", h(&format!("floor(Y/{k:.4})"), "N+9"));
+            let noise = format!("{}*255", h("X+Y*0.37", "N+11"));
+            let ch = |f: &str, at: &str| {
+                let v = format!("{f}({at},Y)");
+                format!("clip(if({line},{noise},{v}+{corrupt}*(255-2*{v})),0,255)")
+            };
+            let al = format!("max(max(alpha({xs}-{cr},Y),alpha({xs},Y)),alpha({xs}+{cb},Y))");
+            vec![
+                pad(48.0 * a * k + 1.0),
+                format!("geq=r='{}':g='{}':b='{}':a='{al}'", ch("r", &format!("{xs}-{cr}")), ch("g", &xs), ch("b", &format!("{xs}+{cb}"))),
+            ]
+        }
         Effect::Film { amount } if *amount > 0.0 => {
             let a = amount.min(1.0);
             let h = crate::model::hash01_expr;
@@ -2856,6 +2881,7 @@ mod tests {
             Effect::Noise { amount: 0.5 },
             Effect::Glitch { amount: 8.0, band: 2.0, speed: 10.0 },
             Effect::Vhs { amount: 1.0 },
+            Effect::GlitchNoise { amount: 1.0, rate: 1.0, block: 4.0 },
             Effect::Mirror { mode: "kaleido".into(), segments: 6 },
             Effect::Tile { count: 3, flip: true },
             Effect::LineArt { amount: 0.5, keep_color: true },
