@@ -849,6 +849,22 @@ async def main():
         for key, label, tol, skip in [('la', '線画風：境目だけ黒い線', 40, 2), ('bl', 'ブルーム：明るい所が暗い側へにじむ', 40, 2), ('lf', 'レンズフレア：右上に光と筋', 30, 2), ('bu', '魚眼：真ん中が広がる', 14, 2), ('ka', '万華鏡：真ん中で折り返す', 14, 2), ('tf', 'タイル（裏返し）：3 回くり返す', 14, 2), ('du', 'デュオトーン：紺から黄へ', 14, 2)]:
             ok, m = close_row(r3[key], ref[key], tol, skip)
             check(f"{label}（書き出しと同じ。いちばん大きい差 {m}）", ok, str(r3[key]))
+        r4 = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const im=document.createElement('canvas'); im.width=40; im.height=20; const g=im.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,20,20); g.fillStyle='#000'; g.fillRect(20,0,20,20);
+          const L={rotation:0, fadeIn:0, fadeOut:0, effects:[{kind:'glitchNoise', amount:1, rate:1, block:8}]}; const tr={x:0,y:0,scale:1,opacity:1};
+          const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+          const st=v.visualAt(tr, L, 3, 90, 30, 0.1, [64,36]); const sv=v.itemSource(im, [40,20], L, st, 0.1, 1, 30); v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1);
+          const d=x.getImageData(0,0,64,36).data; const gy=(X,Y)=>Math.round(0.299*d[(Y*64+X)*4]+0.587*d[(Y*64+X)*4+1]+0.114*d[(Y*64+X)*4+2]);
+          return Array.from({length:36},(_,Y)=>Array.from({length:64},(_,X)=>gy(X,Y)))}""")
+        gn = {
+            14: [0, 0, 0, 0, 0, 0, 12, 28, 29, 29, 47, 172, 178, 215, 251, 251, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 236, 225, 224, 224, 203, 83, 74, 46, 2, 2] + [0] * 28,
+            18: [0, 0, 0, 0, 0, 0, 0, 0, 22, 28, 51, 169, 178, 178, 178, 227, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 254, 254, 229, 224, 202, 83, 75, 75, 74, 28] + [0] * 28,
+        }
+        for y, want in gn.items():
+            # 画面は縦にも 1px ずれることがある
+            ok, m = min((close_row(r4[y + dy], want, 40, 4) for dy in (0, 1)), key=lambda t: t[1])
+            check(f"グリッチノイズ：{y} 行目のずれと色ずれが書き出しと同じ（いちばん大きい差 {m}）", ok, str(r4[y]))
+        check("グリッチノイズ：横線のノイズが書き出しと同じ所（22 行目あたり）に出る", any(sum(1 for v in r4[y][12:52] if 30 < v < 225) > 15 for y in (21, 22, 23)), str(r4[22]))
         check("網点：50% の灰色は、点の真ん中を通る列がほぼ黒く、点の境目だけ明るい（書き出しは 129・0…0・129）", sum(v < 60 for v in r3['ht']) >= 14 and max(r3['ht']) >= 100, str(r3['ht']))
         check("光漏れ：書き出しと同じだけ明るくなる（139・109・124）", any(all(abs(a - b) <= 15 for a, b in zip(g, [139, 109, 124])) for g in (r3['ll'], r3['ll1'])), str(r3['ll']) + str(r3['ll1']))
         check("縁取り（書き出しと同じく形のまわり 4px が赤）", r['a'][0] > 200 and r['a'][1] < 60, str(r))
