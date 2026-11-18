@@ -1,14 +1,17 @@
 // 動く図形（紙吹雪などの粒・進行バー・グラフ）をコマごとに描く。プレビューも書き出しも、ここで描いた絵を使う
 // （書き出しは bakeItemImages がコマごとの画像を渡し、core/src/model.rs の ShapeAnim::sequence の間隔で並べる）
 
-import type {Chart, Marker, Particles, ProgressBar, ShapeAnim, ShapeClip} from '../model';
+import type {Chart, Lines, Marker, Particles, ProgressBar, ShapeAnim, ShapeClip} from '../model';
 
 /** 粒をくり返す長さ（フレーム）。Rust の ShapeAnim::particle_loop と同じ */
 export const particleLoop = (fps: number) => Math.max(1, fps) * 4;
 
+/** 集中線などをくり返す長さ（2 コマごとに描き直す 8 通り） */
+export const LINES_LOOP = 16;
+
 /** 画像の並べ方：何フレームごとの画像か・くり返すか。Rust の ShapeAnim::sequence と同じ */
 export function animStep(a: ShapeAnim, width: number, duration: number): {step: number; loop: boolean} {
-  if (a.kind === 'particles') return {step: 1, loop: true};
+  if (a.kind === 'particles' || a.kind === 'lines') return {step: 1, loop: true};
   if (a.kind === 'progress') return {step: Math.max(1, Math.floor(duration / Math.max(1, Math.round(width)))), loop: false};
   return {step: 1, loop: false};
 }
@@ -17,6 +20,7 @@ export function animStep(a: ShapeAnim, width: number, duration: number): {step: 
 export function animFrames(c: ShapeClip, fps: number): number[] {
   const a = c.anim!;
   const {step} = animStep(a, c.width, c.duration);
+  if (a.kind === 'lines') return Array.from({length: a.flicker ? LINES_LOOP : 1}, (_, k) => k);
   const n = a.kind === 'particles' ? particleLoop(fps) : a.kind === 'chart' ? Math.min(c.duration, Math.max(1, a.grow)) + 1 : Math.ceil(c.duration / step);
   return Array.from({length: Math.max(1, n)}, (_, k) => k * step);
 }
@@ -26,6 +30,7 @@ export function animFrameAt(c: ShapeClip, local: number, fps: number): number {
   const a = c.anim!;
   const f = Math.max(0, Math.floor(local));
   if (a.kind === 'particles') return f % particleLoop(fps);
+  if (a.kind === 'lines') return a.flicker ? f % LINES_LOOP : 0;
   if (a.kind === 'chart') return Math.min(f, Math.min(c.duration, Math.max(1, a.grow)));
   const {step} = animStep(a, c.width, c.duration);
   return Math.min(Math.floor(f / step), Math.ceil(c.duration / step) - 1) * step;
@@ -266,6 +271,90 @@ function drawChart(x: CanvasRenderingContext2D, a: Chart, W: number, H: number, 
   });
 }
 
+/** 集中線・スピード線・ガーン・怒りマーク。ちらつかせるときは 2 コマごとに線の並びを変える */
+function drawLines(x: CanvasRenderingContext2D, a: Lines, id: string, W: number, H: number, f: number) {
+  const r = rng(`${id}:${a.type}:${Math.floor(f / 2)}`);
+  const n = Math.max(4, Math.min(400, Math.round(a.density)));
+  const th = Math.max(1, a.thickness);
+  x.fillStyle = a.color;
+  x.strokeStyle = a.color;
+  if (a.type === 'focus') {
+    // 画面の外から真ん中へ向かう、先の細い三角
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = Math.hypot(W, H) / 2;
+    const inner = Math.max(0, Math.min(0.9, a.inner));
+    for (let i = 0; i < n; i++) {
+      const an = TAU * (i / n + (r() - 0.5) / n);
+      const len = inner + (1 - inner) * r() * 0.35;
+      const w = th * (0.6 + r() * 1.4);
+      const ca = Math.cos(an);
+      const sa = Math.sin(an);
+      // 中の端は楕円（画面の縦横比に合わせる）
+      const ix = cx + ca * (W / 2) * len;
+      const iy = cy + sa * (H / 2) * len;
+      x.beginPath();
+      x.moveTo(ix, iy);
+      x.lineTo(cx + ca * R * 1.1 - sa * w, cy + sa * R * 1.1 + ca * w);
+      x.lineTo(cx + ca * R * 1.1 + sa * w, cy + sa * R * 1.1 - ca * w);
+      x.closePath();
+      x.fill();
+    }
+    return;
+  }
+  if (a.type === 'speed') {
+    // 横に流れる線（両端は細く）
+    for (let i = 0; i < n; i++) {
+      const y = r() * H;
+      const len = W * (0.15 + r() * 0.5);
+      const x0 = r() * (W + len) - len;
+      const w = th * (0.4 + r());
+      const g = x.createLinearGradient(x0, 0, x0 + len, 0);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(0.3, a.color);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = g;
+      x.fillRect(x0, y - w / 2, len, w);
+    }
+    return;
+  }
+  if (a.type === 'shock') {
+    // ガーン：上から垂れる縦線（上が太く、下で消える）
+    for (let i = 0; i < n; i++) {
+      const px = ((i + r() * 0.8) / n) * W;
+      const len = H * (0.35 + r() * 0.55);
+      const w = th * (0.5 + r());
+      const g = x.createLinearGradient(0, 0, 0, len);
+      g.addColorStop(0, a.color);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = g;
+      x.beginPath();
+      x.moveTo(px - w, 0);
+      x.lineTo(px + w, 0);
+      x.lineTo(px, len);
+      x.closePath();
+      x.fill();
+    }
+    return;
+  }
+  // 怒りマーク：四つの曲がった線が真ん中で向かい合う。ちらつかせるときは少し脈打つ
+  const s = Math.min(W, H) * 0.42 * (a.flicker ? 1 + 0.06 * Math.sin((TAU * f) / LINES_LOOP) : 1);
+  x.save();
+  x.translate(W / 2, H / 2);
+  x.lineWidth = Math.max(2, th * 1.6);
+  x.lineCap = 'round';
+  for (let k = 0; k < 4; k++) {
+    x.save();
+    x.rotate((k * Math.PI) / 2);
+    x.beginPath();
+    x.moveTo(s * 0.18, -s * 0.95);
+    x.quadraticCurveTo(s * 0.2, -s * 0.2, s * 0.95, -s * 0.18);
+    x.stroke();
+    x.restore();
+  }
+  x.restore();
+}
+
 const cache = new Map<string, HTMLCanvasElement>();
 
 /** そのコマの絵（同じコマは使い回す。プレビューで毎コマ描き直さないように少しだけ覚える） */
@@ -281,6 +370,7 @@ export function animImage(c: ShapeClip, frame: number, fps: number, markers: Mar
   cv.height = H;
   const x = cv.getContext('2d')!;
   if (a.kind === 'particles') drawParticles(x, a, c.id, W, H, frame, fps);
+  else if (a.kind === 'lines') drawLines(x, a, c.id, W, H, frame);
   else if (a.kind === 'progress') drawProgress(x, c, a, W, H, frame, markers);
   else drawChart(x, a, W, H, frame);
   // 大きな絵が多いので、覚えるのは少しだけ（書き出しでは覚えない）
@@ -301,11 +391,18 @@ export function animKey(c: ShapeClip, frame: number, fps: number, markers: Marke
     c.fill,
     c.stroke,
     c.duration,
-    c.anim?.kind === 'progress' ? [c.start, markers.map(m => [m.frame, m.name])] : c.anim?.kind === 'particles' ? c.id : 0,
+    c.anim?.kind === 'progress' ? [c.start, markers.map(m => [m.frame, m.name])] : c.anim?.kind === 'particles' || c.anim?.kind === 'lines' ? c.id : 0,
     frame,
     fps,
   ];
 }
+
+export const LINES_PRESET: Record<Lines['type'], {label: string; color: string; density: number; inner: number; thickness: number; flicker: boolean}> = {
+  focus: {label: '集中線', color: '#000000', density: 120, inner: 0.55, thickness: 6, flicker: true},
+  speed: {label: 'スピード線', color: '#FFFFFF', density: 60, inner: 0, thickness: 4, flicker: true},
+  shock: {label: 'ガーン', color: '#2B2B5A', density: 26, inner: 0, thickness: 6, flicker: false},
+  anger: {label: '怒りマーク', color: '#E0201B', density: 4, inner: 0, thickness: 8, flicker: true},
+};
 
 export const PARTICLE_PRESET: Record<Particles['type'], {label: string; amount: number; size: number; speed: number; colors: string[]}> = {
   confetti: {label: '紙吹雪', amount: 140, size: 18, speed: 2, colors: ['#FF3B30', '#FFCC00', '#34C759', '#5AC8FA', '#AF52DE', '#FF9500']},

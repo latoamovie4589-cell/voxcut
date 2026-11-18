@@ -5,6 +5,7 @@
 import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
 import {timerStep, timerText, type Marker} from '../model';
 import {animFrameAt, animFrames, animImage, animKey} from './anim';
+import {bubbleImage} from './bubble';
 import {
   BLEND_CANVAS,
   animStateAt,
@@ -848,10 +849,16 @@ export const textKey = (c: TextClip) => [
   c.gradientColor ?? '',
   c.vertical ?? false,
   c.charAnim ?? null,
+  c.bubble ?? null,
 ];
 
 /** テキストアイテムの画像（大きさは文字に合わせる。縁取りの分だけ余白を足す）。字幕の「個別に設定」では組み方と飾りも */
 export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
+  // 吹き出し：文字の絵を作ってから、まわりに枠としっぽを描く
+  if (c.bubble) {
+    const b = c.bubble;
+    return cached(JSON.stringify(['bubble', ...textKey(c), ex]), () => bubbleImage(textImage({...c, bubble: null}, ex), b));
+  }
   // テキストアイテムの縦書き・1 文字ずつの登場（出きったあとは同じ画像）
   if (c.vertical) ex = {...ex, vertical: true};
   const ca = c.charAnim ?? null;
