@@ -1500,6 +1500,9 @@ pub struct TextDeco {
     /// タイマー（カウントダウン・カウントアップ）。文の中の {t} が時間になる（なければ文全体）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timer: Option<Timer>,
+    /// 吹き出し（文字のまわりに描く。描き方は画面側の preview/bubble.ts。ここでは値を保つだけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubble: Option<serde_json::Value>,
 }
 
 /// テキストのタイマー。from から to へ、実際の時間の速さで数える（to で止まる）。画面側の model.ts の timerText と同じ
@@ -1637,7 +1640,8 @@ impl ShapeAnim {
     /// 画像の並べ方：（何フレームごとの画像か、くり返すか）。画面側の animStep と同じ
     pub fn sequence(&self, width: f64, duration: Frame) -> (Frame, bool) {
         match self.kind.as_str() {
-            "particles" => (1, true),
+            // 粒・集中線などは、できた画像を頭から何度もくり返す
+            "particles" | "lines" => (1, true),
             // 進行バー：1 画素ずつ伸びればよいので、長い動画でも画像は幅の数まで
             "progress" => ((duration / (width.round() as Frame).max(1)).max(1), false),
             _ => (1, false),
