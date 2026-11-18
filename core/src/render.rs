@@ -1304,15 +1304,51 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
         }
         out
     };
+    // 跳ねる登場・退場の大きさ（行きすぎてから戻る。画面の visualAt と同じ式）
+    let back_out = |p: String| format!("(1+2.70158*pow(({p})-1,3)+1.70158*pow(({p})-1,2))");
+    let back_in = |p: String| format!("(2.70158*pow({p},3)-1.70158*pow({p},2))");
     let zoom_at = |lt: &str| {
         let mut zoom = String::new();
-        if let Some((MotionKind::Zoom, d)) = enter {
+        if let Some((MotionKind::Zoom | MotionKind::Spin, d)) = enter {
             zoom.push_str(&format!("*(1-{})", enter_k(lt, d)));
         }
-        if let Some((MotionKind::Zoom, d)) = exit {
+        if let Some((MotionKind::Zoom | MotionKind::Spin, d)) = exit {
             zoom.push_str(&format!("*(1-{})", exit_k(lt, d)));
         }
+        if let Some((MotionKind::Bounce, d)) = enter {
+            zoom.push_str(&format!("*{}", back_out(format!("clip({lt}/{d:.4},0,1)"))));
+        }
+        if let Some((MotionKind::Bounce, d)) = exit {
+            zoom.push_str(&format!("*(1-{})", back_in(format!("clip(({lt}-{:.4})/{d:.4},0,1)", (dur - d).max(0.0)))));
+        }
+        // 拍動：1 拍の頭でぐっと大きくなり、すぐ戻る
+        for fx in &look.effects {
+            if let Effect::Pulse { amount, bpm } = fx {
+                if *bpm > 0.0 && *amount > 0.0 {
+                    let ph = format!("mod({lt}*{:.6},1)", bpm / 60.0);
+                    zoom.push_str(&format!("*(1+{:.5}*exp(-10*{ph})*(1-exp(-60*{ph})))", amount * PULSE_NORM));
+                }
+            }
+        }
         zoom
+    };
+    // 回る量（度）：回転しながらの登場・退場と、回り続ける
+    let spin_at = |lt: &str| {
+        let mut r = String::new();
+        if let Some((MotionKind::Spin, d)) = enter {
+            r.push_str(&format!("-360*{}", enter_k(lt, d)));
+        }
+        if let Some((MotionKind::Spin, d)) = exit {
+            r.push_str(&format!("+360*{}", exit_k(lt, d)));
+        }
+        for fx in &look.effects {
+            if let Effect::Spin { rpm } = fx {
+                if rpm.abs() > 0.0 {
+                    r.push_str(&format!("+{:.6}*{lt}", rpm * 6.0));
+                }
+            }
+        }
+        r
     };
     let zoom = zoom_at("t");
     let mut chain: Vec<String> = vec![format!("fps={fps}"), "format=rgba".into()];
@@ -1363,7 +1399,9 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             }
             Effect::Trail { count, interval } if *count > 0 && *interval > 0 => trail = Some((*count.min(&8), *interval)),
             Effect::Trail { .. } => {}
-            Effect::Jitter { .. } | Effect::Oscillate { .. } => moves.push(fx),
+            Effect::Jitter { .. } | Effect::Oscillate { .. } | Effect::Bounce { .. } => moves.push(fx),
+            // 拍動・回り続けるは大きさ・回転の式に入れてある
+            Effect::Pulse { .. } | Effect::Spin { .. } => {}
             Effect::Blink { speed } if *speed > 0.0 => chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*(1-mod(floor(T*{:.4}),2))'", speed * 2.0)),
             Effect::Blink { .. } => {}
             Effect::Plugin { ffmpeg, values, .. } => {
@@ -1386,6 +1424,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             MotionKind::WipeLeft => wipe.push(format!("gte(X,W*{v})")),
             MotionKind::WipeDown => wipe.push(format!("lt(Y,H*(1-{v}))")),
             MotionKind::WipeUp => wipe.push(format!("gte(Y,H*{v})")),
+            MotionKind::Iris => wipe.push(format!("lt(hypot(X-W/2,Y-H/2),hypot(W,H)/2*(1-{v}))")),
+            MotionKind::Blur => wipe.push(format!("(1-{v})")),
             _ => {}
         }
     }
@@ -1396,6 +1436,8 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
             MotionKind::WipeLeft => wipe.push(format!("lt(X,W*(1-{q}))")),
             MotionKind::WipeDown => wipe.push(format!("gte(Y,H*{q})")),
             MotionKind::WipeUp => wipe.push(format!("lt(Y,H*(1-{q}))")),
+            MotionKind::Iris => wipe.push(format!("lt(hypot(X-W/2,Y-H/2),hypot(W,H)/2*(1-{q}))")),
+            MotionKind::Blur => wipe.push(format!("(1-{q})")),
             _ => {}
         }
     }
@@ -1408,12 +1450,33 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
     if r3a.iter().chain(r3b.iter()).any(|v| v.abs() > 1e-9) {
         chain.extend(tilt_filters(&tween(r3a[0], r3b[0], e, "T", dur), &tween(r3a[1], r3b[1], e, "T", dur)));
     }
-    if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.iter().any(|(_, v)| v.abs() > 1e-9) {
-        chain.push(format!("rotate=a='{}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'", tween3(sr, &mr, er, e, "t", dur)));
+    let spin = spin_at("t");
+    if sr.abs() > 1e-9 || er.abs() > 1e-9 || mr.iter().any(|(_, v)| v.abs() > 1e-9) || !spin.is_empty() {
+        let a = if spin.is_empty() { tween3(sr, &mr, er, e, "t", dur) } else { format!("({}{spin})", tween3(sr, &mr, er, e, "t", dur)) };
+        chain.push(format!("rotate=a='{a}*PI/180':c=black@0:ow='hypot(iw,ih)':oh='hypot(iw,ih)'"));
     }
     if blur > 0.0 {
         // 半径は画面上の px。この時点では元の大きさなので、始まりの大きさで割る
         chain.push(format!("gblur=sigma={:.3}", blur / ss.max(0.01)));
+    }
+    // ぼかしからの登場・退場：ぼかしの強さを 8 段に分けて、その時刻の段だけ掛ける（画面も同じ 8 段）
+    // 外へにじむよう透明な余白を足し、色は不透明度を掛けてからぼかす（画面の canvas と同じく、縁が黒ずまない）
+    let blur_motion: Vec<String> = [(enter, enter.map(|(_, d)| enter_k("t", d))), (exit, exit.map(|(_, d)| exit_k("t", d)))]
+        .into_iter()
+        .filter_map(|(m, v)| if let (Some((MotionKind::Blur, _)), Some(v)) = (m, v) { Some(v) } else { None })
+        .collect();
+    if !blur_motion.is_empty() {
+        let p = (MOTION_BLUR * 3.0 / ss.max(0.01)).ceil() as i64;
+        chain.push(format!("pad=iw+{0}:ih+{0}:{p}:{p}:color=black@0", p * 2));
+        chain.push("geq=r='r(X,Y)*alpha(X,Y)/255':g='g(X,Y)*alpha(X,Y)/255':b='b(X,Y)*alpha(X,Y)/255':a='alpha(X,Y)'".into());
+        for v in &blur_motion {
+            for j in 1..=MOTION_BLUR_STEPS {
+                let sg = MOTION_BLUR * j as f64 / MOTION_BLUR_STEPS as f64 / ss.max(0.01);
+                chain.push(format!("gblur=sigma={sg:.3}:enable='eq(round({v}*{MOTION_BLUR_STEPS}),{j})'"));
+            }
+        }
+        let un = |f: &str| format!("min(255,{f}(X,Y)*255/max(alpha(X,Y),1))");
+        chain.push(format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", un("r"), un("g"), un("b")));
     }
     if moving(so, &mo, eo) {
         chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween3(so, &mo, eo, e, "T", dur)));
@@ -1459,13 +1522,16 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
                     x.push_str(&format!("+{ax:.3}*sin(2*PI*{speed:.4}*{lt})"));
                     y.push_str(&format!("+{ay:.3}*sin(2*PI*{speed:.4}*{lt})"));
                 }
+                Effect::Bounce { height, bpm } if *bpm > 0.0 => {
+                    y.push_str(&format!("-{height:.3}*abs(sin(PI*{:.6}*{lt}))", bpm / 60.0));
+                }
                 _ => {}
             }
         }
         // 回転・拡大の中心：その点が位置に来るよう、中心から点までを回して大きさを掛けた分だけ戻す
         if let Some([ox, oy]) = look.pivot.filter(|p| p[0].abs() > 1e-9 || p[1].abs() > 1e-9) {
             let k = format!("({}{})", tween3(ss, &ms, es, e, &lt, dur), zoom_at(&lt));
-            let a = format!("(({})*PI/180)", tween3(sr, &mr, er, e, &lt, dur));
+            let a = format!("(({}{})*PI/180)", tween3(sr, &mr, er, e, &lt, dur), spin_at(&lt));
             // 回してから縦横の倍率を掛ける（書き出しの順と同じ）
             x.push_str(&format!("-({ox:.3}*cos({a})-{oy:.3}*sin({a}))*{kx:.4}*{k}"));
             y.push_str(&format!("-({ox:.3}*sin({a})+{oy:.3}*cos({a}))*{ky:.4}*{k}"));
@@ -1508,6 +1574,26 @@ fn average_geq(pts: &[String]) -> String {
     let sa = pts.iter().map(|p| format!("alpha({p})")).collect::<Vec<_>>().join("+");
     let ch = |f: &str| format!("({})/max({sa},0.001)", pts.iter().map(|p| format!("{f}({p})*alpha({p})")).collect::<Vec<_>>().join("+"));
     format!("geq=r='{}':g='{}':b='{}':a='({sa})/{n}'", ch("r"), ch("g"), ch("b"))
+}
+
+/// 色相の回転の行列（CSS の hue-rotate と同じ）。[定数・cos の係数・sin の係数] × [r, g, b]
+pub(crate) const HUE_ROTATE: [[[f64; 3]; 3]; 3] = [
+    [[0.213, 0.715, 0.072], [0.787, -0.715, -0.072], [-0.213, -0.715, 0.928]],
+    [[0.213, 0.715, 0.072], [-0.213, 0.285, -0.072], [0.143, 0.140, -0.283]],
+    [[0.213, 0.715, 0.072], [-0.213, -0.715, 0.928], [-0.787, 0.715, 0.072]],
+];
+/// ベベルで縁を読む距離（幅に対する割合）
+pub(crate) const BEVEL_STEPS: [f64; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
+
+/// 拍動の形 exp(−10φ)(1 − exp(−60φ)) のいちばん大きい値が 1 になる倍率（画面の PULSE_NORM と同じ）
+pub(crate) const PULSE_NORM: f64 = 1.658;
+/// ぼかしからの登場・退場：いちばん強いぼかし（画面の px）と、その段の数
+pub(crate) const MOTION_BLUR: f64 = 24.0;
+pub(crate) const MOTION_BLUR_STEPS: u32 = 8;
+
+/// 不透明度を読む式。絵の外は透明として読む（geq は外を端の色で読むので。画面の alphaOut と同じ）
+fn alpha_out(x: &str, y: &str) -> String {
+    format!("if(between({x},0,W-1)*between({y},0,H-1),alpha({x},{y}),0)")
 }
 
 /// 明るさ（0〜255）を、ある点（「X,Y」の形の式）で読む式
@@ -1624,6 +1710,67 @@ pub(crate) fn pixel_effect(fx: &Effect, k: f64, tag: &str) -> Vec<String> {
             let ch = |f: &str, dx: f64| format!("clip({f}({xs}+{dx:.3},Y)*{sl}+{nz},0,255)");
             let al = format!("max(max(alpha({xs}-{c:.3},Y),alpha({xs},Y)),alpha({xs}+{c:.3},Y))");
             vec![pad(31.0 * a * k + 1.0), format!("geq=r='{}':g='{}':b='{}':a='{al}'", ch("r", -c), ch("g", 0.0), ch("b", c))]
+        }
+        Effect::HueCycle { rpm, offset } => {
+            // 色相を回す（CSS の hue-rotate と同じ行列。画面も同じ式）
+            let th = format!("(({:.6}*T+{:.4})*PI/180)", rpm * 6.0, offset);
+            let (c, sn) = (format!("cos({th})"), format!("sin({th})"));
+            let row = |m: [[f64; 3]; 3]| {
+                ["r", "g", "b"]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, f)| format!("({:.4}+{:.4}*{c}+{:.4}*{sn})*{f}(X,Y)", m[0][j], m[1][j], m[2][j]))
+                    .collect::<Vec<_>>()
+                    .join("+")
+            };
+            let [r0, r1, r2] = HUE_ROTATE;
+            vec![format!("geq=r='clip({},0,255)':g='clip({},0,255)':b='clip({},0,255)':a='alpha(X,Y)'", row(r0), row(r1), row(r2))]
+        }
+        Effect::Sharpen { amount } if *amount > 0.0 => {
+            let a = amount.min(2.0);
+            let ch = |f: &str| format!("clip({f}(X,Y)*{:.4}-{a:.4}*({f}(X+{k:.4},Y)+{f}(X-{k:.4},Y)+{f}(X,Y+{k:.4})+{f}(X,Y-{k:.4})),0,255)", 1.0 + 4.0 * a);
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::InnerShadow { color, blur, x, y, opacity } => {
+            // 形の外（ずらした形の外側）を色で塗ってぼかし、形の中にだけ重ねる
+            let [r, g, b] = rgb255(color);
+            let (dx, dy, bl) = (x * k, y * k, blur.max(0.0) * k);
+            let gb = if bl > 0.0 { format!(",gblur=sigma={bl:.3}") } else { String::new() };
+            vec![format!(
+                "split=3[is{tag}a][is{tag}b][is{tag}c];[is{tag}c]alphaextract[is{tag}m];[is{tag}b]geq=r='{r}':g='{g}':b='{b}':a='(255-{})*{:.4}'{gb}[is{tag}s];[is{tag}a][is{tag}s]overlay=format=rgb,format=rgba[is{tag}o];[is{tag}o][is{tag}m]alphamerge",
+                alpha_out(&format!("X-{dx:.3}"), &format!("Y-{dy:.3}")),
+                opacity.clamp(0.0, 1.0)
+            )]
+        }
+        Effect::Bevel { size, strength, angle } if *size > 0.0 => {
+            // 光の側の縁を明るく、反対側の縁を暗く（形の縁から size だけ内側まで）
+            let (lx, ly) = (angle.to_radians().cos(), -angle.to_radians().sin());
+            let s0 = size * k;
+            let d = BEVEL_STEPS
+                .iter()
+                .map(|t| {
+                    let (ox, oy) = (s0 * t * lx, s0 * t * ly);
+                    format!("({}-{})", alpha_out(&format!("X-({ox:.4})"), &format!("Y-({oy:.4})")), alpha_out(&format!("X+({ox:.4})"), &format!("Y+({oy:.4})")))
+                })
+                .collect::<Vec<_>>()
+                .join("+");
+            let d = format!("(({d})/{:.1})", 255.0 * BEVEL_STEPS.len() as f64);
+            let st = strength.clamp(0.0, 1.0);
+            let ch = |f: &str| format!("clip({f}(X,Y)+max({d},0)*{st:.4}*(255-{f}(X,Y))+min({d},0)*{st:.4}*{f}(X,Y),0,255)");
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::Emboss { amount, angle, keep_color } => {
+            let (lx, ly) = (angle.to_radians().cos(), -angle.to_radians().sin());
+            let dd = 2.0 * k;
+            let (ox, oy) = (dd * lx, dd * ly);
+            let v = format!(
+                "(({}-{})*{:.4})",
+                lum_at(&format!("X-({ox:.4}),Y-({oy:.4})")),
+                lum_at(&format!("X+({ox:.4}),Y+({oy:.4})")),
+                0.5 + 1.5 * amount.clamp(0.0, 1.0)
+            );
+            let ch = |f: &str| if *keep_color { format!("clip({f}(X,Y)+{v},0,255)") } else { format!("clip(128+{v},0,255)") };
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
         }
         Effect::GlitchNoise { amount, rate, block } if *amount > 0.0 => {
             let a = amount.min(1.0);
@@ -2722,6 +2869,36 @@ mod tests {
         assert!(b[9 * 64 + 32] < 50 && b[20 * 64 + 32] > 200, "上から消えていく");
     }
 
+    #[test]
+    fn more_enter_exit_motions() {
+        if !has_ffmpeg() {
+            return;
+        }
+        use crate::model::Motion;
+        let mo = |k: MotionKind, en: bool| {
+            let m = Some(Motion { kind: k, frames: 15, smooth: false });
+            if en {
+                Look { enter: m, ..Default::default() }
+            } else {
+                Look { exit: m, ..Default::default() }
+            }
+        };
+        let w = |g: &[u8], y: usize| g[y * 64..y * 64 + 64].iter().map(|&v| v as f64 / 255.0).sum::<f64>();
+        // 回転しながら（0.25 秒：残り 25%）：-90° 回って 4 分の 3 の大きさ → 40×20 が縦長 15×30 に
+        let a = shot_look("color=c=white:s=40x20", mo(MotionKind::Spin, true), Transform::default(), 0.25);
+        assert!(w(&a, 18) < 19.0 && a[5 * 64 + 31] > 200, "{}", w(&a, 18));
+        // 跳ねて（0.35 秒）：行きすぎて元より大きい
+        let b = shot_look("color=c=white:s=20x20", mo(MotionKind::Bounce, true), Transform::default(), 0.35);
+        assert!(w(&b, 18) > 20.5, "{}", w(&b, 18));
+        // ぼかしから（0.2 秒）：ぼけて外へにじみ、薄い
+        let c = shot_look("color=c=white:s=20x20", mo(MotionKind::Blur, true), Transform::default(), 0.2);
+        assert!(c[18 * 64 + 16] > 10 && c[18 * 64 + 31] < 140, "{:?}", &c[18 * 64..19 * 64]);
+        // 丸く広がる（0.25 秒）：真ん中の行は 33px ほど、上の方の行は狭い。退場の丸く狭まるも同じ大きさ
+        let d = shot_look("color=c=white:s=40x20", mo(MotionKind::Iris, true), Transform::default(), 0.25);
+        let e = shot_look("color=c=white:s=40x20", mo(MotionKind::Iris, false), Transform::default(), 2.75);
+        assert!((w(&d, 18) - 34.0).abs() < 2.5 && w(&d, 10) < w(&d, 18) - 2.0 && (w(&e, 18) - w(&d, 18)).abs() < 3.0, "{} {} {}", w(&d, 18), w(&d, 10), w(&e, 18));
+    }
+
     /// 64×36 の黒い画面の真ん中に、lavfi で作った画像を look で 1 つ置き、at 秒の明るさ（gray）を返す
     pub(crate) fn shot_look(src: &str, look: Look, transform: Transform, at: f64) -> Vec<u8> {
         shot_fmt(src, look, transform, at, "gray")
@@ -2874,6 +3051,30 @@ mod tests {
         let ck = shot_rgb(rg, fx(Effect::ColorKeep { color: "#FF0000".into(), range: 0.1, soft: 0.1 }), 0.1);
         let (kr, kg) = (px(&ck, 20, 18), px(&ck, 44, 18));
         assert!(kr[0] > 200 && kr[1] < 60 && (kg[0] as i32 - kg[1] as i32).abs() < 20 && kg[1] > 80, "{kr:?} {kg:?}");
+        // ずっと続く動き：拍動（拍の頭で 1.48 倍）・回り続ける（1/8 秒で 45°）・跳ねる（半拍で 10px 上）
+        let sq20 = "color=c=white:s=20x20";
+        let w = |g: &[u8], y: usize| g[y * 64..y * 64 + 64].iter().map(|&v| v as f64 / 255.0).sum::<f64>();
+        let pu = shot_look(sq20, fx(Effect::Pulse { amount: 0.5, bpm: 60.0 }), Transform::default(), 0.05);
+        assert!((w(&pu, 18) - 29.5).abs() < 2.0, "{}", w(&pu, 18));
+        let sp = shot_look(sq20, fx(Effect::Spin { rpm: 60.0 }), Transform::default(), 0.125);
+        assert!(w(&sp, 8) > 5.0 && w(&sp, 8) < 14.0 && w(&sp, 18) > 26.0, "{} {}", w(&sp, 8), w(&sp, 18));
+        let bo = shot_look(sq20, fx(Effect::Bounce { height: 10.0, bpm: 60.0 }), Transform::default(), 0.5);
+        assert!(bo[64 + 31] > 200 && bo[20 * 64 + 31] < 30, "上へ 10px");
+        // 色相の回転：赤が 1/3 秒で 120° 回って緑に
+        let hu = shot_rgb("color=c=red:s=20x20", fx(Effect::HueCycle { rpm: 60.0, offset: 0.0 }), 1.0 / 3.0);
+        assert!(px(&hu, 31, 18)[1] > 90 && px(&hu, 31, 18)[0] < 20, "{:?}", px(&hu, 31, 18));
+        // シャープ：境目の明るい側がもっと明るく、暗い側がもっと暗く
+        let sh = shot_look("nullsrc=s=40x20,geq=lum='if(lt(X,20),150,100)':cb=128:cr=128", fx(Effect::Sharpen { amount: 1.0 }), Transform::default(), 0.1);
+        assert!(sh[18 * 64 + 31] > sh[18 * 64 + 20] + 30 && sh[18 * 64 + 32] + 30 < sh[18 * 64 + 45], "{:?}", &sh[18 * 64..19 * 64]);
+        // 内側の影（右下へ 3px・ぼかしなし）：左と上の内側 3px が黒い
+        let ins = shot_look(sq20, fx(Effect::InnerShadow { color: "#000000".into(), blur: 0.0, x: 3.0, y: 3.0, opacity: 1.0 }), Transform::default(), 0.1);
+        assert!(ins[18 * 64 + 23] < 30 && ins[18 * 64 + 26] > 220 && ins[9 * 64 + 31] < 30 && ins[12 * 64 + 31] > 220, "{:?}", &ins[18 * 64..19 * 64]);
+        // ベベル（左上から光）：左上の縁は明るく、右下の縁は暗い
+        let bv = shot_look("color=c=0x808080:s=20x20", fx(Effect::Bevel { size: 4.0, strength: 1.0, angle: 135.0 }), Transform::default(), 0.1);
+        assert!(bv[18 * 64 + 22] > 200 && bv[18 * 64 + 40] < 60 && (120..136).contains(&bv[18 * 64 + 31]), "{:?}", &bv[18 * 64..19 * 64]);
+        // エンボス（左から光）：平らな所は灰色、境目だけ暗い線
+        let em = shot_look("nullsrc=s=40x20,geq=lum='if(lt(X,20),235,16)':cb=128:cr=128", fx(Effect::Emboss { amount: 1.0, angle: 180.0, keep_color: false }), Transform::default(), 0.1);
+        assert!((120..136).contains(&em[18 * 64 + 20]) && em[18 * 64 + 31] < 30 && (120..136).contains(&em[18 * 64 + 45]), "{:?}", &em[18 * 64..19 * 64]);
         // 放射ブラー・ノイズ・グリッチは掛かる（元と変わる）
         let plain = shot_look(half, Look::default(), Transform::default(), 0.1);
         for e in [
