@@ -101,6 +101,8 @@ import {
   addRegion,
   addAudioViz,
   addParticles,
+  addBubble,
+  addEffectLines,
   addProgressBar,
   addChart,
   addControl,
@@ -2042,6 +2044,13 @@ export function Timeline() {
           <DropdownMenuItem label="ぼかし範囲" description="形の中の下の絵をぼかす" onClick={() => addRegion('blur')} />
           <DropdownMenuItem label="音声の波形" description="動画の音を波の形で出す" onClick={() => addAudioViz('wave')} />
           <DropdownMenuItem label="音声のスペクトラム" description="動画の音を高さごとの棒で出す" onClick={() => addAudioViz('bars')} />
+          <DropdownMenuItem label="吹き出し" description="文字のまわりに丸い枠としっぽ（プロパティで形を変えられる）" onClick={() => addBubble('round')} />
+          <DropdownMenuItem label="叫びの吹き出し" onClick={() => addBubble('shout')} />
+          <DropdownMenuItem label="考え中の吹き出し" onClick={() => addBubble('think')} />
+          <DropdownMenuItem label="集中線" description="驚き・強調。真ん中へ向かう線" onClick={() => addEffectLines('focus')} />
+          <DropdownMenuItem label="スピード線" onClick={() => addEffectLines('speed')} />
+          <DropdownMenuItem label="ガーン（縦線）" onClick={() => addEffectLines('shock')} />
+          <DropdownMenuItem label="怒りマーク" onClick={() => addEffectLines('anger')} />
           <DropdownMenuItem label="紙吹雪" description="色とりどりの紙が舞い落ちる" onClick={() => addParticles('confetti')} />
           <DropdownMenuItem label="雪" description="雪がゆっくり降る" onClick={() => addParticles('snow')} />
           <DropdownMenuItem label="花びら" description="花びらがひらひら舞う" onClick={() => addParticles('petals')} />
