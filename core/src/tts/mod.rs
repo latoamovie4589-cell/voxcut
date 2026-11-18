@@ -1,6 +1,9 @@
 //! 音声合成エンジンの共通窓口。
 
 pub mod aivoice;
+pub mod aquestalk;
+pub mod cevio;
+pub mod coeiroink;
 pub mod voicepeak;
 pub mod voicevox;
 pub mod voisona;
@@ -93,15 +96,22 @@ pub struct EngineConfig {
     pub aivoice_bridge_path: Option<PathBuf>,
     /// A.I.VOICE のインストール先（ユーザーが選んだ AIVoiceEditor.exe のあるフォルダ）
     pub aivoice_dir: Option<PathBuf>,
+    pub coeiroink: coeiroink::CoeiroinkConfig,
+    /// AquesTalkPlayer の場所と、足したプリセット名
+    pub aquestalk_path: Option<PathBuf>,
+    pub aquestalk_presets: Vec<String>,
 }
 
-/// 設定から3エンジンを作る
+/// 設定からエンジンを作る
 pub fn build_engines(cfg: &EngineConfig) -> Vec<std::sync::Arc<dyn TtsEngine>> {
     vec![
         std::sync::Arc::new(aivoice::AivoiceEngine::new(cfg.aivoice_bridge_path.clone()).with_install_dir(cfg.aivoice_dir.clone())),
         std::sync::Arc::new(voicepeak::VoicepeakEngine::new(cfg.voicepeak_path.clone())),
         std::sync::Arc::new(voisona::VoisonaEngine::new(cfg.voisona.clone())),
         std::sync::Arc::new(voicevox::VoicevoxEngine::new(cfg.voicevox.clone())),
+        std::sync::Arc::new(coeiroink::CoeiroinkEngine::new(cfg.coeiroink.clone())),
+        std::sync::Arc::new(aquestalk::AquestalkEngine::new(cfg.aquestalk_path.clone(), cfg.aquestalk_presets.clone())),
+        std::sync::Arc::new(cevio::CevioEngine::default()),
     ]
 }
 
