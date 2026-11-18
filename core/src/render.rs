@@ -32,6 +32,8 @@ pub struct ExportOptions {
     pub still_at: Option<f64>,
     /// 一部だけ書き出すときの範囲（始まりと終わりの秒）。無ければ全体
     pub range: Option<(f64, f64)>,
+    /// 背景を透明のまま書き出す（.mov は ProRes 4444、.webm は VP9。背景の色は塗らない）
+    pub transparent: bool,
 }
 
 impl ExportOptions {
@@ -50,6 +52,7 @@ impl ExportOptions {
             portrait_frames: Default::default(),
             still_at: None,
             range: None,
+            transparent: false,
         }
     }
 }
@@ -182,6 +185,8 @@ pub struct PortraitInput {
     pub only: Option<Vec<(f64, f64)>>,
     /// セリフの間だけ掛けるエフェクト（区間（秒）とエフェクト）
     pub fx: Vec<((f64, f64), Vec<Effect>)>,
+    /// 呼吸（足もとを止めて縦に伸び縮み）
+    pub breath: Option<crate::model::Breath>,
 }
 
 /// セリフの立ち絵エフェクト：そのキャラクターの、鳴るトラックにあるセリフのうちエフェクトを付けたものの区間（秒）
@@ -203,10 +208,21 @@ pub fn line_portrait_effects(p: &Project, character_id: &str) -> Vec<((f64, f64)
 pub fn prepare_sequences(p: &Project, images: &std::collections::HashMap<String, PathBuf>, work: &Path) -> Result<std::collections::HashMap<String, PathBuf>> {
     let mut out = std::collections::HashMap::new();
     let fps = p.video.fps as f64;
+    // 最後まで行ったら頭に戻ってくり返す（粒）
+    let mut looping = std::collections::HashSet::new();
     for c in &p.clips {
         // 1 文字ずつ出すテキスト：画面側がコマごとの画像を用意する（1 コマずつ。最後の画像は終わりまで）
         let step = match &c.body {
+            // タイマー：表示が変わるごとの画像（100 分の 1 秒まで出すときは毎コマ、ほかは 1 秒ごと）
+            ClipBody::Text(t) if t.deco.timer.is_some() => t.deco.timer.as_ref().map(|x| x.step(p.video.fps)).unwrap_or(1),
             ClipBody::Text(t) if t.deco.char_anim.is_some() => 1,
+            ClipBody::Shape(sh) if sh.anim.is_some() => {
+                let (step, looped) = sh.anim.as_ref().map(|a| a.sequence(sh.width, c.duration)).unwrap_or((1, false));
+                if looped {
+                    looping.insert(c.id.clone());
+                }
+                step
+            }
             _ => match p.line_of_subtitle(c).and_then(|v| v.subtitle_custom.as_deref()) {
                 Some(sc) if sc.interval > 0 => sc.interval,
                 _ => continue,
@@ -219,16 +235,20 @@ pub fn prepare_sequences(p: &Project, images: &std::collections::HashMap<String,
         let mut list = String::from("ffconcat version 1.0\n");
         let mut used = 0;
         let mut last = frames[0];
-        for (k, img) in frames.iter().enumerate() {
+        let looped = looping.contains(&c.id);
+        let mut k = 0usize;
+        loop {
             let left = c.duration - used;
             if left <= 0 {
                 break;
             }
-            // 最後の画像はクリップの終わりまで
-            let n = if k + 1 == frames.len() { left } else { step.min(left) };
+            let img = frames[k % frames.len()];
+            // 最後の画像はクリップの終わりまで（くり返すときは頭に戻る）
+            let n = if !looped && k + 1 == frames.len() { left } else { step.min(left) };
             list.push_str(&format!("file {}\nduration {:.6}\n", concat_quote(img), n as f64 / fps));
             used += n;
             last = img;
+            k += 1;
         }
         // concat demuxer は最後の duration を無視するので、最後の画像をもう一度書く
         list.push_str(&format!("file {}\n", concat_quote(last)));
@@ -241,6 +261,19 @@ pub fn prepare_sequences(p: &Project, images: &std::collections::HashMap<String,
 
 /// モノラルは左右に同じ大きさで、ステレオはそのまま
 const STEREO: &str = "pan=stereo|FL=FL+FC|FR=FR+FC";
+
+/// 素材の音のフェード（クリップの頭・終わりから。dur は鳴らす長さの秒）。プレビューの playback.ts の soundFadeGain と同じ直線
+fn sound_fades(fx: &crate::model::SourceFx, dur: f64, fps: u32) -> String {
+    let mut f = String::new();
+    if fx.sound_fade_in > 0 {
+        f.push_str(&format!(",afade=t=in:st=0:d={:.3}", fx.sound_fade_in as f64 / fps as f64));
+    }
+    if fx.sound_fade_out > 0 {
+        let d = (fx.sound_fade_out as f64 / fps as f64).min(dur);
+        f.push_str(&format!(",afade=t=out:st={:.3}:d={d:.3}", (dur - d).max(0.0)));
+    }
+    f
+}
 
 /// セリフの声に掛けるフィルタ（aresample の後ろにつなぐ。先頭は「,」）。dur はクリップの長さ（秒）。
 /// 画面（preview/playback.ts）と同じ順：再生開始位置 → 音声エフェクト → エコー → フェード → 左右
@@ -418,7 +451,7 @@ pub fn prepare_portraits(
                 continue; // この間に一度も喋らないなら出さない
             }
             let fx = line_portrait_effects(p, &ch.id).into_iter().map(|((s, e), fx)| ((s.max(a), e.min(b)), fx)).filter(|((s, e), _)| e > s).collect();
-            out.push(PortraitInput { concat, transform: pc.transform.clone(), track: item.track_id.clone(), only: Some(only), fx });
+            out.push(PortraitInput { concat, transform: pc.transform.clone(), track: item.track_id.clone(), only: Some(only), fx, breath: pt.breath.clone().filter(|b| b.amount > 0.0) });
         }
     }
     Ok(out)
@@ -456,6 +489,39 @@ pub fn build_args(
     captions: &[(String, PathBuf)],
     opt: &ExportOptions,
 ) -> Result<Vec<String>> {
+    let r = build_args_inner(p, voice_wav, portraits, captions, opt);
+    KEEP_ALPHA.with(|k| k.set(false));
+    r
+}
+
+/// 字幕（ASS）を重ねる。透明のまま書き出すときは、黒と白の上に描いた差から透明度を求めて重ねる（透明な画面には ass が描けないので）
+fn push_ass(fc: &mut Vec<String>, last_v: &mut String, sub_n: &mut usize, a: &Path, v: &crate::model::VideoSettings, total_s: f64, transparent: bool) {
+    let l = format!("sub{}", *sub_n);
+    let n = *sub_n;
+    *sub_n += 1;
+    let path = escape_filter_path(a);
+    if !transparent {
+        fc.push(format!("[{last_v}]ass={path}[{l}]"));
+    } else {
+        let src = |c: &str| format!("color=c={c}:s={}x{}:r={}:d={total_s:.3},format=rgb24,ass={path},format=gbrp", v.width, v.height, v.fps);
+        let col = "'if(gt(255-(y-x),0),min(255,x*255/(255-(y-x))),0)'";
+        fc.push(format!("{},split[sk{n}a][sk{n}b]", src("black")));
+        fc.push(format!("{},split[sw{n}a][sw{n}b]", src("white")));
+        fc.push(format!("[sk{n}a]extractplanes=g[skg{n}];[sw{n}a]extractplanes=g[swg{n}];[skg{n}][swg{n}]lut2=c0='255-(y-x)'[sal{n}]"));
+        fc.push(format!("[sk{n}b][sw{n}b]lut2=c0={col}:c1={col}:c2={col}[scl{n}];[scl{n}][sal{n}]alphamerge,format=rgba[sly{n}]"));
+        fc.push(format!("[{last_v}][sly{n}]overlay=0:0:eof_action=pass:format=auto[{l}]"));
+    }
+    *last_v = l;
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_args_inner(
+    p: &Project,
+    voice_wav: &dyn Fn(&str) -> Option<PathBuf>,
+    portraits: &[PortraitInput],
+    captions: &[(String, PathBuf)],
+    opt: &ExportOptions,
+) -> Result<Vec<String>> {
     // シーンアイテムはシーンのレイヤーとグループ制御に、つなぎ目の切り替えは前後のアイテムの登場・退場・フェードと覆う図形に置き換えて描く
     let owned = p.with_scenes().with_transitions();
     let p = &owned;
@@ -472,7 +538,11 @@ pub fn build_args(
     push_input(
         &mut args,
         vec!["-f".into(), "lavfi".into()],
-        format!("color=c={}:s={}x{}:r={}:d={:.3}", hex_color(&v.background), v.width, v.height, v.fps, total_s),
+        if opt.transparent {
+            format!("color=c=black@0:s={}x{}:r={}:d={total_s:.3},format=rgba", v.width, v.height, v.fps)
+        } else {
+            format!("color=c={}:s={}x{}:r={}:d={:.3}", hex_color(&v.background), v.width, v.height, v.fps, total_s)
+        },
     );
     let mut idx = 1usize;
     let mut fc: Vec<String> = vec![];
@@ -491,17 +561,24 @@ pub fn build_args(
         // セリフの間だけのエフェクト（大きさを変えた後に掛けるので、ぼかしの半径はそのまま画面の px）
         let (fx, dx, dy) = timed_effects(&pi.fx);
         let fx: String = fx.iter().map(|f| format!(",{f}")).collect();
-        fc.push(format!("[{i}:v]fps={},scale=iw*{s:.4}:ih*{s:.4},format=rgba,colorchannelmixer=aa={o:.3}{fx}[{src_l}]", v.fps, s = t.scale, o = t.opacity.clamp(0.0, 1.0)));
+        // 呼吸：高さだけをコマごとに変える（足もとは下の y の式で止める）
+        let breath = pi.breath.as_ref().map(|b| format!(",scale=w=iw:h='max(2,trunc(ih*{}/2)*2)':eval=frame", b.ffmpeg_expr())).unwrap_or_default();
+        fc.push(format!("[{i}:v]fps={},scale=iw*{s:.4}:ih*{s:.4},format=rgba,colorchannelmixer=aa={o:.3}{fx}{breath}[{src_l}]", v.fps, s = t.scale, o = t.opacity.clamp(0.0, 1.0)));
         let out_l = format!("ov{i}");
         // 喋っているときだけ表示する立ち絵は、その区間だけ重ねる
         let enable = match &pi.only {
             Some(iv) => format!(":enable='{}'", iv.iter().map(|(a, b)| format!("between(t,{a:.3},{:.3})", b - 0.0005)).collect::<Vec<_>>().join("+")),
             None => String::new(),
         };
-        let pos = if dx.is_empty() {
+        // 呼吸で伸ばしたときは、伸ばす前の高さ（h ÷ 倍率）の下端に合わせる
+        let ytop = match &pi.breath {
+            Some(b) => format!("(H+h/{e})/2-h", e = b.ffmpeg_expr()),
+            None => "(H-h)/2".into(),
+        };
+        let pos = if dx.is_empty() && pi.breath.is_none() {
             format!("x=(W-w)/2+{x:.1}:y=(H-h)/2+{y:.1}", x = t.x, y = t.y)
         } else {
-            format!("x='(W-w)/2+{x:.1}{dx}':y='(H-h)/2+{y:.1}{dy}'", x = t.x, y = t.y)
+            format!("x='(W-w)/2+{x:.1}{dx}':y='{ytop}+{y:.1}{dy}'", x = t.x, y = t.y)
         };
         fc.push(format!("[{last_v}][{src_l}]overlay={pos}:eof_action=pass{enable}{}[{out_l}]", ov_fmt()));
         *last_v = out_l;
@@ -515,7 +592,9 @@ pub fn build_args(
     let mut deferred_ass: Vec<PathBuf> = vec![];
     // 音声の波形・スペクトラムに渡す音（最後に混ぜた音を分けて渡す）
     let mut viz_labels: Vec<String> = vec![];
-    let reset_alpha = |depth: usize| KEEP_ALPHA.with(|k| k.set(depth > 0));
+    let transparent = opt.transparent;
+    let reset_alpha = |depth: usize| KEEP_ALPHA.with(|k| k.set(depth > 0 || transparent));
+    reset_alpha(0);
     // 映像は V1 から順に（後ろのトラックほど手前）。音声トラックは音だけ
     for (ti, track) in p.tracks.iter().enumerate() {
         // このレイヤーのグループ制御：まとめた絵を、グループの時間の外はそのまま、中はアイテムの動きで重ねる
@@ -538,10 +617,7 @@ pub fn build_args(
                 }
                 if saved.is_empty() {
                     for a in deferred_ass.drain(..) {
-                        let l = format!("sub{sub_n}");
-                        sub_n += 1;
-                        fc.push(format!("[{last_v}]ass={}[{l}]", escape_filter_path(&a)));
-                        last_v = l;
+                        push_ass(&mut fc, &mut last_v, &mut sub_n, &a, v, total_s, transparent);
                     }
                 }
             }
@@ -681,7 +757,8 @@ pub fn build_args(
                             push_input(&mut args, vec!["-ss".into(), format!("{in_s:.3}"), "-t".into(), format!("{span:.3}")], src);
                             if !fx.freeze {
                                 let l = format!("a{idx}");
-                                fc.push(format!("[{idx}:a]{apre}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
+                                let fades = sound_fades(fx, dur, v.fps);
+                                fc.push(format!("[{idx}:a]{apre}aresample={}{fades},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
                         }
@@ -709,7 +786,8 @@ pub fn build_args(
                                 let l = format!("a{idx}");
                                 // 切り替えで映像だけを延ばしたときは、音を元の長さで切る
                                 let cut = m.audio_frames.map(|f| format!("atrim=0:{:.3},", v.frames_to_secs(f))).unwrap_or_default();
-                                fc.push(format!("[{idx}:a]{apre}{cut}aresample={},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
+                                let fades = sound_fades(fx, m.audio_frames.map(|f| v.frames_to_secs(f)).unwrap_or(dur), v.fps);
+                                fc.push(format!("[{idx}:a]{apre}{cut}aresample={}{fades},adelay=delays={delay_ms}:all=1,volume={:.3}{duck}[{l}]", v.sample_rate, m.volume));
                                 audio_labels.push(l);
                             }
                             // 速さなど（動画だけ）→ 切り抜き → 色を抜く・形で切り抜く
@@ -784,10 +862,7 @@ pub fn build_args(
                 if !saved.is_empty() {
                     deferred_ass.push(a.clone());
                 } else {
-                    let l = format!("sub{sub_n}");
-                    sub_n += 1;
-                    fc.push(format!("[{last_v}]ass={}[{l}]", escape_filter_path(a)));
-                    last_v = l;
+                    push_ass(&mut fc, &mut last_v, &mut sub_n, a, v, total_s, transparent);
                 }
             }
         }
@@ -796,15 +871,12 @@ pub fn build_args(
     while let Some(main) = saved.pop() {
         reset_alpha(saved.len());
         let l = std::mem::replace(&mut last_v, main);
-        fc.push(format!("[{last_v}][{l}]overlay=0:0:eof_action=pass[gx{}]", saved.len()));
+        fc.push(format!("[{last_v}][{l}]overlay=0:0:eof_action=pass{}[gx{}]", ov_fmt(), saved.len()));
         last_v = format!("gx{}", saved.len());
     }
     reset_alpha(0);
     for a in deferred_ass.drain(..) {
-        let l = format!("sub{sub_n}");
-        sub_n += 1;
-        fc.push(format!("[{last_v}]ass={}[{l}]", escape_filter_path(&a)));
-        last_v = l;
+        push_ass(&mut fc, &mut last_v, &mut sub_n, &a, v, total_s, transparent);
     }
     // 描くトラックが分からない立ち絵は一番手前に
     for pi in portraits.iter().filter(|pi| !video_ids.contains(pi.track.as_str())) {
@@ -915,19 +987,26 @@ pub fn build_args(
         "-map".into(),
         "[aout]".into(),
     ]);
-    args.extend(opt.encoder.args(opt.crf, &opt.preset));
-    args.extend([
-        "-r".into(),
-        v.fps.to_string(),
-        "-c:a".into(),
-        "aac".into(),
-        "-b:a".into(),
-        "192k".into(),
-    ]);
+    let webm = ext.eq_ignore_ascii_case("webm");
+    let alpha_mov = transparent && ext.eq_ignore_ascii_case("mov");
+    if alpha_mov {
+        // ProRes 4444（透明を持てる。編集ソフトに読み込みやすい）
+        args.extend(["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "apl0", "-c:a", "pcm_s16le"].map(String::from));
+    } else if webm {
+        // WebM（VP9。透明を残すときは yuva420p）
+        let pix = if transparent { "yuva420p" } else { "yuv420p" };
+        args.extend(["-c:v".into(), "libvpx-vp9".into(), "-pix_fmt".into(), pix.into(), "-b:v".into(), "0".into(), "-crf".into(), (opt.crf as u32 + 10).min(63).to_string(), "-deadline".into(), "good".into(), "-cpu-used".into(), "4".into(), "-row-mt".into(), "1".into()]);
+        args.extend(["-c:a", "libopus", "-b:a", "160k"].map(String::from));
+    } else {
+        args.extend(opt.encoder.args(opt.crf, &opt.preset));
+        args.extend(["-c:a", "aac", "-b:a", "192k"].map(String::from));
+    }
+    args.extend(["-r".into(), v.fps.to_string()]);
     args.extend(range_args(opt.range, total_s));
+    if !webm {
+        args.extend(["-movflags".into(), "+faststart".into()]);
+    }
     args.extend([
-        "-movflags".into(),
-        "+faststart".into(),
         "-progress".into(),
         "pipe:1".into(),
         "-nostats".into(),
@@ -1948,6 +2027,7 @@ mod tests {
             only_while_speaking: true, // 実際の FFmpeg で enable の式が通るか
             expressions: vec![],
             psd: Some(crate::model::PsdPortrait { src: "a.psd".into(), ..Default::default() }),
+            breath: None,
         };
         let mut frames: std::collections::HashMap<usize, PathBuf> = Default::default();
         for eyes in 0..3 {
@@ -2023,7 +2103,7 @@ mod tests {
         let iv = speaking_intervals(&p, "ch_a");
         assert_eq!(iv, vec![(0.0, 3.0), (10.0, 13.0)]);
         assert_eq!(speaking_intervals(&p, "ch_b"), vec![(3.0, 6.0)]);
-        let pi = PortraitInput { concat: PathBuf::from("/c/p.ffconcat"), transform: Transform::default(), track: "V2".into(), only: Some(iv), fx: vec![] };
+        let pi = PortraitInput { concat: PathBuf::from("/c/p.ffconcat"), transform: Transform::default(), track: "V2".into(), only: Some(iv), fx: vec![], breath: None };
         let opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
         let args = build_args(&p, &|id| Some(PathBuf::from(format!("/c/{id}.wav"))), &[pi], &[], &opt).unwrap();
         let fc = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
@@ -2047,6 +2127,7 @@ mod tests {
             only_while_speaking: false,
             expressions: vec![],
             psd: Some(crate::model::PsdPortrait { src: "/a.psd".into(), ..Default::default() }),
+            breath: None,
         });
         let d = tempfile::tempdir().unwrap();
         // 立ち絵アイテムが無ければ出さない
@@ -2130,6 +2211,7 @@ mod tests {
                 control: None,
                 scene: None,
                 viz: None,
+                anim: None,
             }),
         });
         let mut opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
@@ -2233,7 +2315,7 @@ mod tests {
             start,
             duration: 30,
             link_id: None,
-            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 320.0, height: 180.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look, region: None, control: None, scene: None, viz: None }),
+            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 320.0, height: 180.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look, region: None, control: None, scene: None, viz: None, anim: None }),
         };
         p.clips.push(shape("a", 0, Look { exit: Some(Motion { kind: MotionKind::SlideLeft, frames: 10, smooth: true }), ..Default::default() }));
         p.clips.push(shape("b", 30, Look { enter: Some(Motion { kind: MotionKind::SlideRight, frames: 10, smooth: true }), ..Default::default() }));
@@ -2539,7 +2621,7 @@ mod tests {
         let sq = d.path().join("sq.png");
         assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=6x6", "-frames:v", "1"]).arg(&sq).status().unwrap().success());
         let img = |id: &str, track: &str, x: f64| Clip { id: id.into(), track_id: track.into(), start: 0, duration: 60, link_id: None, body: ClipBody::Media(MediaClip { src: sq.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform { x, ..Default::default() }, look: Look::default(), audio_frames: None, src_fx: Default::default() }) };
-        let ctl = |kind: ControlKind, layers: u32, transform: Transform, look: Look| Clip { id: "g".into(), track_id: "V3".into(), start: 0, duration: 30, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 10.0, height: 10.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform, look, region: None, control: Some(Control { kind, layers }), scene: None, viz: None }) };
+        let ctl = |kind: ControlKind, layers: u32, transform: Transform, look: Look| Clip { id: "g".into(), track_id: "V3".into(), start: 0, duration: 30, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 10.0, height: 10.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform, look, region: None, control: Some(Control { kind, layers }), scene: None, viz: None, anim: None }) };
         let shot = |g: Clip, at: f64| -> Vec<u8> {
             let mut p = Project::sample();
             (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
@@ -2636,7 +2718,7 @@ mod tests {
             start,
             duration,
             link_id: None,
-            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 6.0, height: 6.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { x, ..Default::default() }, look: Look::default(), region: None, control: None, scene: scene.map(Into::into), viz: None }),
+            body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 6.0, height: 6.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { x, ..Default::default() }, look: Look::default(), region: None, control: None, scene: scene.map(Into::into), viz: None, anim: None }),
         };
         let mut p = Project::sample();
         (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
@@ -2690,7 +2772,7 @@ mod tests {
             p.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
             p.clips = vec![
                 Clip { id: "a".into(), track_id: "A1".into(), start: 0, duration: 90, link_id: None, body: ClipBody::Media(MediaClip { src: wav.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Look::default(), audio_frames: None, src_fx: Default::default() }) },
-                Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 90, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 48.0, height: 24.0, fill: "#ff0000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: Some(kind) }) },
+                Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 90, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 48.0, height: 24.0, fill: "#ff0000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: Some(kind), anim: None }) },
             ];
             // 動画に書き出して 1 秒目のコマを読む（静止画は音を混ぜないので）
             let out = d.path().join("o.mp4");
@@ -2743,7 +2825,7 @@ mod tests {
             p.clips.clear();
             p.clips.push(Clip { id: "m".into(), track_id: "V1".into(), start: 0, duration: 10, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Image, has_audio: false, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: Default::default() }) });
             let v2 = p.tracks.iter().find(|t| t.kind == crate::model::TrackKind::Video && t.id != "V1").map(|t| t.id.clone()).unwrap_or_else(|| "V2".into());
-            p.clips.push(Clip { id: "r".into(), track_id: v2, start: 0, duration: 10, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 32.0, height: 36.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { x: -16.0, ..Default::default() }, look: Look::default(), region: Some(Region { kind, strength: 4.0 }), control: None, scene: None, viz: None }) });
+            p.clips.push(Clip { id: "r".into(), track_id: v2, start: 0, duration: 10, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 32.0, height: 36.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { x: -16.0, ..Default::default() }, look: Look::default(), region: Some(Region { kind, strength: 4.0 }), control: None, scene: None, viz: None, anim: None }) });
             let out = d.path().join("o.png");
             let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
             opt.still_at = Some(0.1);
@@ -3140,7 +3222,7 @@ mod tests {
         assert!(!ass.contains(&p.clips[0].as_voice().unwrap().text));
         let eff = line_portrait_effects(&p, "ch_a");
         assert_eq!(eff.len(), 1);
-        let pi = PortraitInput { concat, transform: Transform::default(), track: "V2".into(), only: None, fx: eff };
+        let pi = PortraitInput { concat, transform: Transform::default(), track: "V2".into(), only: None, fx: eff, breath: None };
         let out = d.path().join("o.mp4");
         let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
         // 1 文字ずつ出す字幕は、文字数ごとの画像（id#1, id#2, …）を順に出す
@@ -3162,5 +3244,167 @@ mod tests {
         let opt2 = ExportOptions::new("ffmpeg", &out, d.path());
         let w = wav.clone();
         assert!(build_args(&p, &move |_: &str| Some(w.clone()), &[], &[], &opt2).is_err());
+    }
+
+    /// 背景を透明のまま書き出す：.mov（ProRes 4444）と .webm（VP9）で、何もないところは透明、図形と字幕は不透明に残る
+    #[test]
+    fn transparent_export_keeps_alpha_with_real_ffmpeg() {
+        use crate::model::{Clip, ShapeClip};
+        let d = tempfile::tempdir().unwrap();
+        let shape = d.path().join("r.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1"]).arg(&shape).status().unwrap().success());
+        let ass = d.path().join("s.ass");
+        std::fs::write(&ass, "[Script Info]\nPlayResX: 160\nPlayResY: 90\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: D,DejaVu Sans,30,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,8,0,0,2,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:05.00,D,,0,0,0,,HH\n").unwrap();
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (160, 90, 30);
+        p.clips.clear();
+        p.clips.push(Clip { id: "r".into(), track_id: "V1".into(), start: 0, duration: 30, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: 40.0, height: 40.0, fill: "#f00".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform { y: 20.0, ..Default::default() }, look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
+        for name in ["o.mov", "o.webm"] {
+            let out = d.path().join(name);
+            let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+            opt.transparent = true;
+            opt.item_images.insert("r".into(), shape.clone());
+            let args = build_args(&p, &|_: &str| None, &[], &[("V1".into(), ass.clone())], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            // VP9 の透明は libvpx で読まないと消える
+            let mut c = std::process::Command::new("ffmpeg");
+            c.args(["-v", "error"]);
+            if name.ends_with("webm") {
+                c.args(["-c:v", "libvpx-vp9"]);
+            }
+            let img = c.arg("-i").arg(&out).args(["-ss", "0.5", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"]).output().unwrap().stdout;
+            assert_eq!(img.len(), 160 * 90 * 4, "{name}");
+            let a = |x: usize, y: usize| img[(y * 160 + x) * 4 + 3];
+            assert!(a(2, 88) < 10 && a(150, 50) < 10, "{name}: 何もないところは透明 {} {}", a(2, 88), a(150, 50));
+            assert!(a(80, 65) > 245 && img[(65 * 160 + 80) * 4] > 200, "{name}: 図形は不透明な赤 {}", a(80, 65));
+            let top = (0..20).flat_map(|y| (40..120).map(move |x| (x, y))).filter(|&(x, y)| a(x, y) > 200).count();
+            assert!(top > 20, "{name}: 字幕は透明な画面にも残る {top}");
+        }
+        let probe = std::process::Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0"]).arg(d.path().join("o.mov")).output().unwrap().stdout;
+        assert!(String::from_utf8_lossy(&probe).contains("prores,yuva444p"), "{}", String::from_utf8_lossy(&probe));
+    }
+
+    /// クロスフェード：前の音を延ばして消していき、次の音は大きくしていく（書き出しの WAV を実際に測る）
+    #[test]
+    fn crossfade_overlaps_audio_with_real_ffmpeg() {
+        use crate::model::Clip;
+        let d = tempfile::tempdir().unwrap();
+        let tone = d.path().join("t.wav");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=4:sample_rate=48000", "-ac", "1"]).arg(&tone).status().unwrap().success());
+        let rms = |cf: Frame, a_tone: bool| {
+            let mut p = Project::sample();
+            p.clips.clear();
+            let mut fx = SourceFx::default();
+            let clip = |id: &str, start: Frame, src: &Path, fx: SourceFx| Clip {
+                id: id.into(),
+                track_id: "V6".into(),
+                start,
+                duration: 30,
+                link_id: None,
+                body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }),
+            };
+            // 片方だけ音を入れ、もう片方は無音の素材にする
+            let silent = d.path().join("s.wav");
+            if !silent.exists() {
+                assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "4"]).arg(&silent).status().unwrap().success());
+            }
+            let (sa, sb) = if a_tone { (&tone, &silent) } else { (&silent, &tone) };
+            p.clips.push(clip("a", 0, sa, SourceFx::default()));
+            fx.crossfade = cf;
+            p.clips.push(clip("b", 30, sb, fx));
+            let out = d.path().join(format!("o{cf}{a_tone}.wav"));
+            let opt = ExportOptions::new("ffmpeg", &out, d.path());
+            let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
+            let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let raw = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-ac", "1", "-ar", "48000", "-f", "f32le", "-"]).output().unwrap().stdout;
+            let x: Vec<f32> = raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            // 30 フレーム目（1 秒）がつなぎ目。前後 0.1 秒ずつの窓で測る
+            move |t: f64| {
+                let i = (t * 48000.0) as usize;
+                let w = &x[i.min(x.len())..(i + 4800).min(x.len())];
+                (w.iter().map(|v| v * v).sum::<f32>() / w.len().max(1) as f32).sqrt()
+            }
+        };
+        let full = 0.70710677 * 0.125; // sine の既定の大きさ（1/8）の実効値
+        let hard = rms(0, true);
+        assert!(hard(0.8) > full * 0.8 && hard(1.05) < full * 0.05, "つながないときはつなぎ目で切れる {} {}", hard(0.8), hard(1.05));
+        // 前の音（12 フレーム＝0.4 秒延ばす）はつなぎ目の後もしばらく鳴り、だんだん小さくなる
+        let out = rms(12, true);
+        let (a, b, c) = (out(1.0), out(1.2), out(1.5));
+        assert!(a > full * 0.6 && b > full * 0.2 && b < a && c < full * 0.05, "前の音が消えていく {a} {b} {c}");
+        // 次の音はつなぎ目から大きくなっていく
+        let inn = rms(12, false);
+        let (a, b, c) = (inn(1.0), inn(1.2), inn(1.5));
+        assert!(a < full * 0.4 && b > a && c > full * 0.8, "次の音が大きくなる {a} {b} {c}");
+    }
+
+    /// 立ち絵の呼吸：足もとは動かさず、頭のほうだけが伸び縮みする（プレビューの breathScale と同じ式）
+    #[test]
+    fn portrait_breath_stretches_up_from_the_feet_with_real_ffmpeg() {
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("t.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x80,format=rgba", "-frames:v", "1"]).arg(&png).status().unwrap().success());
+        let concat = d.path().join("p.ffconcat");
+        std::fs::write(&concat, format!("ffconcat version 1.0\nfile {}\nduration 3\nfile {}\n", concat_quote(&png), concat_quote(&png))).unwrap();
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (160, 160, 30);
+        p.clips.retain(|c| c.as_voice().is_none());
+        p.clips.push(crate::model::Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 75, link_id: None, body: ClipBody::Shape(crate::model::ShapeClip { shape: "rect".into(), width: 1.0, height: 1.0, fill: "#000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
+        let b = crate::model::Breath { amount: 20.0, period: 2.0 };
+        assert!((b.scale_at(0.0) - 1.0).abs() < 1e-9 && (b.scale_at(1.0) - 1.2).abs() < 1e-9 && (b.scale_at(0.5) - 1.1).abs() < 1e-9);
+        let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: Some(b) };
+        let out = d.path().join("o.mp4");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let dark = d.path().join("k.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=2x2", "-frames:v", "1"]).arg(&dark).status().unwrap().success());
+        opt.item_images.insert("z".into(), dark);
+        let args = build_args(&p, &|_: &str| None, &[pi], &[], &opt).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        // 真ん中の列の赤い範囲（上端・下端）
+        let span = |t: &str| {
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-ss", t, "-i"]).arg(&out).args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+            let red: Vec<usize> = (0..160).filter(|&y| img[(y * 160 + 80) * 3] > 150 && img[(y * 160 + 80) * 3 + 1] < 90).collect();
+            (red[0], *red.last().unwrap())
+        };
+        // 伸ばす前は 50〜129（真ん中から 10 下げる）。1 秒で 1.2 倍：上だけ 16 伸びる
+        let (a, b0) = span("0");
+        let (c, d1) = span("1");
+        assert!(a.abs_diff(50) <= 1 && b0.abs_diff(129) <= 1, "はじめ {a} {b0}");
+        assert!(d1.abs_diff(b0) <= 1 && c.abs_diff(34) <= 2, "1 秒 {c} {d1}");
+    }
+
+    /// 動く図形：粒はくり返し、進行バーは幅の数までの間隔、グラフは最後の絵のまま（画面側の animStep と同じ）
+    #[test]
+    fn shape_anim_sequences_loop_or_hold() {
+        use crate::model::{Clip, ShapeAnim, ShapeClip};
+        let d = tempfile::tempdir().unwrap();
+        let mut p = Project::sample();
+        p.video.fps = 30;
+        let anim = |kind: &str| Some(ShapeAnim { kind: kind.into(), rest: serde_json::from_str(r#"{"type":"snow","amount":10}"#).unwrap() });
+        let shape = |id: &str, w: f64, dur: Frame, a: Option<ShapeAnim>| Clip { id: id.into(), track_id: "V1".into(), start: 0, duration: dur, link_id: None, body: ClipBody::Shape(ShapeClip { shape: "rect".into(), width: w, height: 10.0, fill: "#fff".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: a }) };
+        p.clips = vec![shape("pt", 100.0, 7, anim("particles")), shape("pg", 100.0, 1000, anim("progress")), shape("ch", 100.0, 9, anim("chart"))];
+        let mut images = std::collections::HashMap::new();
+        for (id, n) in [("pt", 3), ("pg", 100), ("ch", 4)] {
+            for k in 1..=n {
+                images.insert(format!("{id}#{k}"), d.path().join(format!("{id}{k}.png")));
+            }
+        }
+        let seq = prepare_sequences(&p, &images, d.path()).unwrap();
+        let read = |id: &str| std::fs::read_to_string(&seq[id]).unwrap();
+        let files = |t: &str| t.lines().filter(|l| l.starts_with("file")).map(|l| l.rsplit('/').next().unwrap().trim_end_matches('\'').to_string()).collect::<Vec<_>>();
+        // 粒：3 枚を 7 コマぶんくり返す（最後の 1 行は concat のための重ね書き）
+        assert_eq!(files(&read("pt")), ["pt1.png", "pt2.png", "pt3.png", "pt1.png", "pt2.png", "pt3.png", "pt1.png", "pt1.png"]);
+        // 進行バー：幅 100 で 1000 コマ → 10 コマごと
+        assert_eq!(ShapeAnim { kind: "progress".into(), rest: Default::default() }.sequence(100.0, 1000), (10, false));
+        assert!(read("pg").contains(&format!("duration {:.6}", 10.0 / 30.0)));
+        // グラフ：4 枚目（伸びきった絵）が終わりまで
+        let ch = read("ch");
+        assert!(ch.contains(&format!("duration {:.6}", 6.0 / 30.0)), "{ch}");
+        // 描き方の値はそのまま保つ
+        let json = serde_json::to_value(&p.clips[0]).unwrap();
+        assert_eq!((json["anim"]["kind"].as_str(), json["anim"]["type"].as_str(), json["anim"]["amount"].as_i64()), (Some("particles"), Some("snow"), Some(10)));
     }
 }
