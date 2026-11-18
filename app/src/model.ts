@@ -3,13 +3,16 @@ import type {SubtitleAnimation} from './subtitleAnim';
 // Rust 側（core/src/model.rs）と同じ形。時間はすべて整数フレーム。
 
 export type Frame = number;
-export type EngineId = 'aivoice' | 'voicepeak' | 'voisona' | 'voicevox';
+export type EngineId = 'aivoice' | 'voicepeak' | 'voisona' | 'voicevox' | 'coeiroink' | 'aquestalk' | 'cevio';
 
 export const ENGINE_LABEL: Record<EngineId, string> = {
   aivoice: 'A.I.VOICE',
   voicepeak: 'VOICEPEAK',
   voisona: 'VoiSona Talk',
   voicevox: 'VOICEVOX',
+  coeiroink: 'COEIROINK',
+  aquestalk: 'ゆっくりボイス（AquesTalk）',
+  cevio: 'CeVIO AI',
 };
 
 export interface VoiceParams {
@@ -80,6 +83,20 @@ export interface Portrait {
   expressions: Expression[];
   /** PSD 立ち絵（あれば base・eyes・mouth の画像の代わりに、PSD のレイヤーの表示を切り替えて描く） */
   psd?: PsdPortrait | null;
+  /** 呼吸（しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みする） */
+  breath?: Breath | null;
+}
+
+/** 立ち絵の呼吸。amount は伸びる大きさ（高さの %）、period は 1 回の長さ（秒） */
+export interface Breath {
+  amount: number;
+  period: number;
+}
+
+/** 時刻 t 秒での呼吸の縦の倍率。Rust の Breath::scale_at と同じ式 */
+export function breathScale(b: Breath | null | undefined, t: number): number {
+  if (!b || !(b.amount > 0)) return 1;
+  return 1 + ((Math.min(20, Math.max(0, b.amount)) / 100) * (1 - Math.cos((2 * Math.PI * t) / Math.max(0.2, b.period)))) / 2;
 }
 
 /** PSD 立ち絵の設定。レイヤーは上からの位置をつないだ id（例 "2/0/5"）で指す */
@@ -339,6 +356,11 @@ export interface MediaClip extends ClipBase {
   matte?: string;
   /** なめらかスロー：遅くしたとき、間のコマを動きから作る（書き出しのみ。画面はコマをくり返す） */
   smooth?: boolean;
+  /** 音のフェードイン・フェードアウト（フレーム。音声素材と、音の入った動画） */
+  soundFadeIn?: Frame;
+  soundFadeOut?: Frame;
+  /** 同じレイヤーのすぐ前の音声素材と、この長さ（フレーム）だけ重ねてなめらかにつなぐ（クロスフェード） */
+  crossfade?: Frame;
 }
 
 /** 効果音集（Rust の sfx::SFX と同じ名前と順） */
@@ -1071,6 +1093,44 @@ export interface TextClip extends ClipBase {
   vertical?: boolean;
   /** 1 文字ずつ出す（書き出しはコマごとの画像を並べる） */
   charAnim?: CharAnim | null;
+  /** タイマー（カウントダウン・カウントアップ）。文の中の {t} が時間になる（なければ文全体） */
+  timer?: Timer | null;
+}
+
+/** テキストのタイマー（core/src/model.rs の Timer と同じ）。from から to へ実際の速さで数え、to で止まる */
+export interface Timer {
+  /** 始まりの値（秒） */
+  from: number;
+  /** 終わりの値（秒）。from より小さければカウントダウン */
+  to: number;
+  /** s（10）・m:ss（1:05）・h:mm:ss（0:01:05）・m:ss.cc（1:05.30） */
+  format: 's' | 'm:ss' | 'h:mm:ss' | 'm:ss.cc';
+}
+
+/** 表示が変わる間隔（フレーム）。Rust の Timer::step と同じ */
+export const timerStep = (t: Timer, fps: number) => (t.format.endsWith('.cc') ? 1 : Math.max(1, fps));
+
+/** アイテムの頭から local フレームでのタイマーの文字。Rust の Timer::text_at と同じ */
+export function timerText(t: Timer, template: string, local: number, fps: number): string {
+  const sec = Math.max(0, local) / Math.max(1, fps);
+  const down = t.to < t.from;
+  const v = down ? Math.max(t.to, t.from - sec) : Math.min(t.to, t.from + sec);
+  const cc = t.format.endsWith('.cc');
+  const q = v * (cc ? 100 : 1);
+  const n = Math.max(0, down ? Math.ceil(q - 1e-6) : Math.floor(q + 1e-6));
+  const whole = cc ? Math.floor(n / 100) : n;
+  const frac = cc ? n % 100 : 0;
+  const p2 = (x: number) => String(x).padStart(2, '0');
+  const [h, m, s] = [Math.floor(whole / 3600), Math.floor(whole / 60) % 60, whole % 60];
+  const body =
+    t.format === 's'
+      ? String(whole)
+      : t.format === 'h:mm:ss'
+        ? `${h}:${p2(m)}:${p2(s)}`
+        : t.format === 'm:ss.cc'
+          ? `${Math.floor(whole / 60)}:${p2(s)}.${p2(frac)}`
+          : `${Math.floor(whole / 60)}:${p2(s)}`;
+  return template.includes('{t}') ? template.split('{t}').join(body) : body;
 }
 
 /** テキストの 1 文字ずつの登場（core/src/model.rs の CharAnim と同じ） */
@@ -1165,7 +1225,49 @@ export interface ShapeClip extends ClipBase {
   scene?: string | null;
   /** 音声の波形・スペクトラム：動画の音を、図形の大きさ・塗りの色で描く（wave ＝波形、bars ＝周波数の棒） */
   viz?: 'wave' | 'bars' | null;
+  /** 動く図形（紙吹雪などの粒・進行バー・グラフ）。画面側がコマごとに描き、書き出しはその画像を並べる */
+  anim?: ShapeAnim | null;
 }
+
+/** 降ってくる粒 */
+export interface Particles {
+  kind: 'particles';
+  /** confetti 紙吹雪・snow 雪・petals 花びら・sparkle キラキラ */
+  type: 'confetti' | 'snow' | 'petals' | 'sparkle';
+  /** 粒の数 */
+  amount: number;
+  /** 速さ（4 秒で画面を何回通るか。1〜3） */
+  speed: number;
+  /** 粒の大きさ（画素） */
+  size: number;
+  /** 色（紙吹雪・花びら・キラキラ。いくつかから選ぶ） */
+  colors: string[];
+}
+/** 進行バー：アイテムの頭から終わりまでで伸びる。マーカーを章の区切りにできる */
+export interface ProgressBar {
+  kind: 'progress';
+  /** まだのところの色 */
+  trackColor: string;
+  /** マーカーの所で区切る */
+  chapters: boolean;
+  /** 区切りの上に章の名前を出す */
+  labels: boolean;
+}
+/** グラフ：数字を入れると、伸びる動きつきで出る */
+export interface Chart {
+  kind: 'chart';
+  chart: 'bar' | 'pie' | 'line';
+  items: {label: string; value: number; color: string}[];
+  /** 伸びきるまで（フレーム） */
+  grow: number;
+  /** 数字を出す */
+  showValues: boolean;
+  /** 数字のあとに付ける単位 */
+  unit: string;
+  /** 文字の色 */
+  textColor: string;
+}
+export type ShapeAnim = Particles | ProgressBar | Chart;
 
 /** グループ制御・カメラ・調整レイヤー（core/src/model.rs の Control と同じ） */
 export interface Control {
@@ -1349,11 +1451,62 @@ export function transitionFrames(t: Transition, a: Clip, b: Clip): number {
   return Math.max(2, Math.min(t.frames, Math.floor((a.duration * 4) / 5), Math.floor((b.duration * 4) / 5)));
 }
 
+/** クロスフェードに使う長さ（前後の音の長さの 8 割まで、2 フレーム以上）。Rust の crossfade_frames と同じ */
+export function crossfadeFrames(want: number, a: number, b: number): number {
+  return Math.max(2, Math.min(want, Math.floor((a * 4) / 5), Math.floor((b * 4) / 5)));
+}
+
+/** クロスフェードでつなぐ前の音声素材（同じレイヤーのすぐ前、2 フレームまでのすき間） */
+export function prevAudio(p: Project, b: Clip): MediaClip | null {
+  let best: MediaClip | null = null;
+  for (const a of p.clips) {
+    if (a.id === b.id || a.trackId !== b.trackId || a.type !== 'media' || a.mediaKind !== 'audio' || a.start >= b.start) continue;
+    const end = a.start + a.duration;
+    if (end > b.start || end < b.start - 2) continue;
+    if (!best || end > best.start + best.duration || (end === best.start + best.duration && a.start >= best.start)) best = a;
+  }
+  return best;
+}
+
+/**
+ * クロスフェード：音声素材 b に crossfade があり、すぐ前に音声素材 a があれば、a を後ろへその長さだけ延ばして消していき、
+ * b はその長さで大きくする。Rust の with_crossfades と同じ
+ */
+export function withCrossfades(p: Project): Project {
+  const jobs: [string, string, number][] = [];
+  for (const b of p.clips) {
+    if (b.type !== 'media' || b.mediaKind !== 'audio' || !(b.crossfade && b.crossfade > 0)) continue;
+    const a = prevAudio(p, b);
+    if (a) jobs.push([a.id, b.id, crossfadeFrames(b.crossfade, a.duration, b.duration)]);
+  }
+  if (!jobs.length) return p;
+  const clips = p.clips.map(c => ({...c}) as Clip);
+  const byId = new Map(clips.map(c => [c.id, c as MediaClip]));
+  const orig = new Map(p.clips.map(c => [c.id, c]));
+  for (const [ai, bi, d] of jobs) {
+    const a = byId.get(ai)!;
+    const b = orig.get(bi)!;
+    a.duration = b.start - a.start + d;
+    a.soundFadeOut = Math.max(a.soundFadeOut ?? 0, d);
+    const nb = byId.get(bi)!;
+    nb.soundFadeIn = Math.max(nb.soundFadeIn ?? 0, d);
+  }
+  return {...p, clips};
+}
+
+/** 素材の音のフェードの大きさ（tau はクリップの頭からの秒、dur は鳴らす長さの秒）。書き出しの sound_fades と同じ直線 */
+export function soundFadeAt(c: MediaClip, tau: number, dur: number, fps: number): number {
+  const fi = (c.soundFadeIn ?? 0) / fps;
+  const fo = Math.min(dur, (c.soundFadeOut ?? 0) / fps);
+  return (fi > 0 ? Math.min(1, Math.max(0, tau / fi)) : 1) * (fo > 0 ? Math.min(1, Math.max(0, (dur - tau) / fo)) : 1);
+}
+
 /**
  * 切り替えを、前後のアイテムの登場・退場・フェード（と、暗転・白は画面を覆う図形）に置き換えた写し。
  * プレビューと書き出し用の画像はこれを描く。Rust の with_transitions と同じ結果になる
  */
-export function withTransitions(p: Project): Project {
+export function withTransitions(p0: Project): Project {
+  const p = withCrossfades(p0);
   const jobs: {a: VisualClip; b: VisualClip; t: Transition}[] = [];
   for (const b of p.clips) {
     if (!isVisual(b) || !b.look?.transition) continue;
@@ -1894,6 +2047,12 @@ export const TUNING_EXTRA: Record<EngineId, TuningExtra[]> = {
     {key: 'huskiness', label: 'かすれ', min: -20, max: 20, step: 0.5, def: 0, format: v => (Math.abs(v) < 0.25 ? '標準' : `${v > 0 ? '+' : ''}${v.toFixed(1)}`)},
   ],
   voicepeak: [],
+  coeiroink: [
+    {key: 'prePhonemeLength', label: '話し始めの前の無音', min: 0, max: 1.5, step: 0.01, def: 0.1, format: v => ms(v * 1000)},
+    {key: 'postPhonemeLength', label: '話し終わりの後の無音', min: 0, max: 1.5, step: 0.01, def: 0.1, format: v => ms(v * 1000)},
+  ],
+  aquestalk: [],
+  cevio: [{key: 'alpha', label: '声質', min: 0, max: 100, step: 1, def: 50, format: v => `${Math.round(v)}`}],
 };
 
 /** この行で実際に使う声（Rust の Project::effective_voice と同じ順：キャラクター → プリセット → 行の話者 → 行の調声） */
