@@ -25,7 +25,8 @@ import {itemTemplateName, saveTemplate} from '../templates';
 import {QuickEffects} from './QuickEffects';
 import {KeyframeBar} from './KeyframeBar';
 import {TextDecoFields, TextDecoPicker} from './TextDeco';
-import {PARTICLE_PRESET} from '../preview/anim';
+import {LINES_PRESET, PARTICLE_PRESET} from '../preview/anim';
+import {BUBBLE_PRESET, angleTo} from '../preview/bubble';
 import {
   SHAPE_LABEL,
   CONTROL_LABEL,
@@ -50,6 +51,9 @@ import {
   type ShapeAnim,
   type Particles,
   type Chart,
+  type Lines,
+  type Bubble,
+  type PortraitClip,
   type Transform,
   type VisualClip,
   GRADES,
@@ -826,7 +830,103 @@ function TimerFields({clip}: {clip: TextClip}) {
   );
 }
 
-const ANIM_TITLE = (a: ShapeAnim) => (a.kind === 'particles' ? PARTICLE_PRESET[a.type].label : a.kind === 'progress' ? '進行バー' : 'グラフ');
+/** 吹き出し：形・色・しっぽの向き（立ち絵へ向けられる） */
+function BubbleFields({clip}: {clip: TextClip}) {
+  const b = clip.bubble;
+  const set = (bubble: Bubble | null) => updateClip(clip.id, {bubble});
+  // しっぽを向ける先：このアイテムの間に出ている立ち絵（いちばん近いもの）
+  const target = useStore(s => {
+    const p = s.project;
+    if (!p) return null;
+    const mid = clip.start + clip.duration / 2;
+    const ps = p.clips.filter((c): c is PortraitClip => c.type === 'portrait' && c.start < clip.start + clip.duration && clip.start < c.start + c.duration);
+    const best = ps.sort(
+      (a, z) => Math.abs(a.start + a.duration / 2 - mid) - Math.abs(z.start + z.duration / 2 - mid) || Math.abs(a.transform.x - clip.transform.x) - Math.abs(z.transform.x - clip.transform.x),
+    )[0];
+    if (!best) return null;
+    const name = p.characters.find(ch => ch.id === best.characterId)?.name ?? '立ち絵';
+    return `${name}|${best.transform.x}|${best.transform.y}`;
+  });
+  return (
+    <>
+      <Switch
+        label="吹き出しにする"
+        description="文字のまわりに枠としっぽを描きます"
+        value={!!b}
+        onChange={on => {
+          if (!on) return set(null);
+          const {label: _l, ...pr} = BUBBLE_PRESET.round;
+          updateClip(clip.id, {bubble: {kind: 'round', ...pr}, ...(clip.color.toUpperCase() === '#FFFFFF' ? {color: '#222222', outlineWidth: 0} : {})});
+        }}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {b && (
+        <VStack gap={2} data-bubble-fields>
+          <SegmentedControl
+            label="形"
+            size="sm"
+            layout="fill"
+            value={b.kind}
+            onChange={v => {
+              const k = v as Bubble['kind'];
+              const {label: _l, fill, padding} = BUBBLE_PRESET[k];
+              set({...b, kind: k, padding, fill: b.fill === BUBBLE_PRESET[b.kind].fill ? fill : b.fill});
+            }}>
+            {(Object.keys(BUBBLE_PRESET) as Bubble['kind'][]).map(k => (
+              <SegmentedControlItem key={k} value={k} label={BUBBLE_PRESET[k].label} />
+            ))}
+          </SegmentedControl>
+          <ColorRow label="中の色" value={b.fill} onChange={fill => set({...b, fill})} />
+          <ColorRow label="枠の色" value={b.stroke} onChange={stroke => set({...b, stroke})} />
+          <HStack gap={2}>
+            <NumberInput label="枠の太さ" units="px" value={b.strokeWidth} min={0} max={40} onChange={strokeWidth => set({...b, strokeWidth})} />
+            <NumberInput label="文字との間" units="px" value={b.padding} min={0} max={200} onChange={padding => set({...b, padding})} />
+          </HStack>
+          <Slider
+            label="しっぽの長さ"
+            value={b.tailLength}
+            min={0}
+            max={300}
+            step={2}
+            valueDisplay="text"
+            formatValue={v => (v ? `${v}px` : 'なし')}
+            onChange={(tailLength: number) => set({...b, tailLength})}
+          />
+          {b.tailLength > 0 && (
+            <>
+              <Slider
+                label="しっぽの向き"
+                value={((b.tailAngle % 360) + 360) % 360}
+                min={0}
+                max={359}
+                step={1}
+                valueDisplay="text"
+                formatValue={v => `${['右', '右下', '下', '左下', '左', '左上', '上', '右上'][Math.round(v / 45) % 8]}（${v}°）`}
+                onChange={(tailAngle: number) => set({...b, tailAngle})}
+              />
+              <Button
+                label={target ? `しっぽを${target.split('|')[0]}へ向ける` : 'しっぽを立ち絵へ向ける'}
+                size="sm"
+                variant="ghost"
+                isDisabled={!target}
+                tooltip={target ? undefined : 'このアイテムの間に立ち絵アイテムがありません'}
+                onClick={() => {
+                  if (!target) return;
+                  const [, tx, ty] = target.split('|').map(Number);
+                  set({...b, tailAngle: (angleTo(clip.transform, {x: tx, y: ty}) + 360) % 360});
+                }}
+              />
+            </>
+          )}
+        </VStack>
+      )}
+    </>
+  );
+}
+
+const ANIM_TITLE = (a: ShapeAnim) => (a.kind === 'particles' ? PARTICLE_PRESET[a.type].label : a.kind === 'lines' ? LINES_PRESET[a.type].label : a.kind === 'progress' ? '進行バー' : 'グラフ');
 const CHART_LABEL: Record<Chart['chart'], string> = {bar: '棒', pie: '円', line: '折れ線'};
 const PALETTE = ['#5AC8FA', '#FF9500', '#34C759', '#FF3B30', '#AF52DE', '#FFCC00', '#FF2D55', '#8E8E93'];
 
@@ -884,6 +984,51 @@ function AnimFields({clip}: {clip: ShapeClip}) {
           />
         )}
         {a.chapters && a.labels && <ColorRow label="章の名前の色" value={clip.stroke || '#ffffff'} onChange={stroke => updateClip(clip.id, {stroke})} />}
+      </VStack>
+    );
+  if (a.kind === 'lines')
+    return (
+      <VStack gap={2} data-anim-fields="lines">
+        <SegmentedControl
+          label="種類"
+          size="sm"
+          layout="fill"
+          value={a.type}
+          onChange={v => {
+            const t = v as Lines['type'];
+            const pr = LINES_PRESET[t];
+            set({...a, type: t, color: pr.color, density: pr.density, inner: pr.inner, thickness: pr.thickness, flicker: pr.flicker});
+          }}>
+          {(Object.keys(LINES_PRESET) as Lines['type'][]).map(k => (
+            <SegmentedControlItem key={k} value={k} label={LINES_PRESET[k].label} />
+          ))}
+        </SegmentedControl>
+        <ColorRow label="色" value={a.color} onChange={color => set({...a, color})} />
+        {a.type !== 'anger' && (
+          <Slider label="線の数" value={a.density} min={8} max={300} step={2} valueDisplay="text" formatValue={v => `${v} 本`} onChange={(density: number) => set({...a, density})} />
+        )}
+        {a.type === 'focus' && (
+          <Slider
+            label="真ん中の空き"
+            value={a.inner}
+            min={0}
+            max={0.9}
+            step={0.01}
+            valueDisplay="text"
+            formatValue={v => `${Math.round(v * 100)}%`}
+            onChange={(inner: number) => set({...a, inner})}
+          />
+        )}
+        <Slider label="太さ" value={a.thickness} min={1} max={30} step={1} valueDisplay="text" formatValue={v => `${v}px`} onChange={(thickness: number) => set({...a, thickness})} />
+        <Switch
+          label={a.type === 'anger' ? '脈打たせる' : 'ちらつかせる'}
+          description={a.type === 'anger' ? undefined : '2 コマごとに線を描き直して、勢いを出します'}
+          value={a.flicker}
+          onChange={flicker => set({...a, flicker})}
+          labelPosition="start"
+          labelSpacing="spread"
+          width="100%"
+        />
       </VStack>
     );
   const items = a.items;
@@ -979,6 +1124,7 @@ export function TextInspector({clip}: {clip: TextClip}) {
           </VStack>
         )}
         <TimerFields clip={clip} />
+        <BubbleFields clip={clip} />
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
