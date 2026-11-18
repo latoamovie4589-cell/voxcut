@@ -5,7 +5,7 @@
 
 import {useSyncExternalStore} from 'react';
 
-export const PANEL_IDS = ['characters', 'script', 'engines', 'preview', 'timeline', 'inspector'] as const;
+export const PANEL_IDS = ['characters', 'script', 'engines', 'preview', 'timeline', 'inspector', 'library'] as const;
 export type PanelId = (typeof PANEL_IDS)[number];
 
 export const PANEL_TITLE: Record<PanelId, string> = {
@@ -15,6 +15,7 @@ export const PANEL_TITLE: Record<PanelId, string> = {
   preview: 'プレビュー',
   timeline: 'タイムライン',
   inspector: 'プロパティ',
+  library: 'ライブラリ',
 };
 
 export type Group = {
@@ -444,6 +445,7 @@ const HOME: Record<PanelId, PanelId[]> = {
   preview: ['timeline', 'inspector'],
   timeline: ['preview', 'inspector'],
   inspector: ['characters', 'script'],
+  library: ['inspector', 'characters', 'script', 'engines'],
 };
 
 /** パネルを見せる：開いていればそのタブを前に、閉じていれば戻す */
