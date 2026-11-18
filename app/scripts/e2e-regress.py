@@ -814,6 +814,43 @@ async def main():
         check("ポスタリゼーション（3 段階で 60% の灰色は真ん中の 128）", near(r2['ps'], [128, 128, 128], 3), str(r2))
         check("ドット絵風（5px の点は同じ色。書き出しは 50・180 の 2 段）", r2['dt'][1] == r2['dt'][3] and r2['dt'][4] == r2['dt'][5] and r2['dt'][4] > r2['dt'][1] + 100 and r2['dt'][0] == 0, str(r2))
         check("VHS 風（色がにじんで、左の外は青、右の外は赤）", any(c[2] > c[0] + 80 for c in r2['vh'][0]) and any(c[0] > c[2] + 80 for c in r2['vh'][1]) and r2['vh'][2] == [0, 0, 0], str(r2))
+        r3 = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const shot=(iw, ih, fill, look, at=0.1)=>{const im=document.createElement('canvas'); im.width=iw; im.height=ih; const g=im.getContext('2d'); fill(g);
+            const L={rotation:0, fadeIn:0, fadeOut:0, ...look}; const tr={x:0,y:0,scale:1,opacity:1}; const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+            const st=v.visualAt(tr, L, at*30, 90, 30, at, [64,36]); const sv=v.itemSource(im, [iw,ih], L, st, at, 1, 30); v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1);
+            const d=x.getImageData(0,0,64,36).data; return (X,Y)=>Math.round(0.299*d[(Y*64+X)*4]+0.587*d[(Y*64+X)*4+1]+0.114*d[(Y*64+X)*4+2])};
+          const fx=e=>({effects:[e]}); const fill=c=>g=>{g.fillStyle=c; g.fillRect(0,0,99,99)};
+          const half=g=>{g.fillStyle='#fff'; g.fillRect(0,0,20,20); g.fillStyle='#000'; g.fillRect(20,0,20,20)};
+          const ramp=g=>{for(let X=0;X<40;X++){const u=Math.round(X*5*255/219); g.fillStyle=`rgb(${u},${u},${u})`; g.fillRect(X,0,1,20)}};
+          const row=(f,y=18)=>Array.from({length:45},(_,i)=>f(10+i,y));
+          const ht=shot(20,20,fill('#808080'),fx({kind:'halftone', size:10, ink:'#000000'})); const ll=shot(20,20,fill('#404040'),fx({kind:'lightLeak', color:'#FF9A3C', amount:1}));
+          return {la:row(shot(40,20,half,fx({kind:'lineArt', amount:1, keepColor:false}))), ht:Array.from({length:21},(_,i)=>ht(27,8+i)), bl:row(shot(40,20,half,fx({kind:'bloom', threshold:0.5, amount:1, radius:4}))),
+            ll:[ll(22,8),ll(31,18),ll(41,27)], ll1:[ll(23,9),ll(32,19),ll(42,28)], lf:row(shot(20,20,fill('#404040'),fx({kind:'lensFlare', x:0.5, y:-0.5, amount:1, color:'#FFE0A0'})),13),
+            bu:row(shot(40,20,ramp,fx({kind:'bulge', amount:1}))), ka:row(shot(40,20,ramp,fx({kind:'mirror', mode:'kaleido', segments:6}))), tf:row(shot(40,20,ramp,fx({kind:'tile', count:3, flip:true}))),
+            du:row(shot(40,20,ramp,fx({kind:'duotone', dark:'#000080', light:'#FFFF00', amount:1})))}}""")
+        # 書き出し（core/src/render.rs の more_effects と同じ絵）で読んだ値。画面は 1px ずれることがあるので、ずらして比べる
+        ref = {
+            'la': [0, 0] + [255] * 19 + [0, 0] + [255] * 19 + [0, 0],
+            'bl': [0, 0] + [255] * 20 + [103, 73, 52, 36, 25, 17, 12, 9, 5, 3, 3, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+            'lf': [0] * 12 + [73, 75, 80, 86, 92, 99, 108, 118, 127, 141, 156, 172, 191, 220, 252, 252, 252, 220, 191, 172] + [0] * 12,
+            'bu': [0, 0, 0, 4, 10, 17, 23, 29, 33, 39, 46, 52, 58, 64, 69, 78, 86, 93, 98, 104, 109, 114, 116, 116, 121, 125, 131, 138, 145, 152, 160, 166, 173, 180, 186, 192, 196, 202, 208, 215, 221, 221, 0, 0],
+            'ka': [0, 0, 221, 220, 214, 208, 201, 195, 190, 185, 179, 173, 166, 161, 156, 150, 144, 138, 131, 126, 121, 116, 116, 122, 128, 132, 138, 145, 151, 157, 163, 167, 173, 180, 186, 192, 196, 202, 208, 215, 221, 221, 0, 0],
+            'tf': [0, 0, 0, 17, 33, 52, 68, 87, 103, 122, 138, 157, 173, 192, 208, 221, 221, 202, 186, 167, 150, 132, 116, 97, 81, 62, 45, 29, 10, 3, 23, 39, 58, 74, 91, 109, 126, 145, 163, 180, 196, 214, 0, 0],
+            'du': [0, 0, 14, 17, 22, 28, 32, 37, 42, 46, 51, 56, 62, 67, 71, 75, 80, 86, 90, 94, 99, 104, 109, 114, 120, 123, 128, 134, 138, 143, 149, 152, 157, 163, 168, 173, 177, 180, 186, 192, 196, 196, 0, 0],
+        }
+        def close_row(got, want, tol, skip=0):
+            best = None
+            for off in (0, 1):
+                d = [abs(got[i + off] - w) for i, w in enumerate(want) if i + off < len(got)]
+                d = sorted(d)[: len(d) - skip] if skip else d
+                m = max(d)
+                best = m if best is None else min(best, m)
+            return best <= tol, best
+        for key, label, tol, skip in [('la', '線画風：境目だけ黒い線', 40, 2), ('bl', 'ブルーム：明るい所が暗い側へにじむ', 40, 2), ('lf', 'レンズフレア：右上に光と筋', 30, 2), ('bu', '魚眼：真ん中が広がる', 14, 2), ('ka', '万華鏡：真ん中で折り返す', 14, 2), ('tf', 'タイル（裏返し）：3 回くり返す', 14, 2), ('du', 'デュオトーン：紺から黄へ', 14, 2)]:
+            ok, m = close_row(r3[key], ref[key], tol, skip)
+            check(f"{label}（書き出しと同じ。いちばん大きい差 {m}）", ok, str(r3[key]))
+        check("網点：50% の灰色は、点の真ん中を通る列がほぼ黒く、点の境目だけ明るい（書き出しは 129・0…0・129）", sum(v < 60 for v in r3['ht']) >= 14 and max(r3['ht']) >= 100, str(r3['ht']))
+        check("光漏れ：書き出しと同じだけ明るくなる（139・109・124）", any(all(abs(a - b) <= 15 for a, b in zip(g, [139, 109, 124])) for g in (r3['ll'], r3['ll1'])), str(r3['ll']) + str(r3['ll1']))
         check("縁取り（書き出しと同じく形のまわり 4px が赤）", r['a'][0] > 200 and r['a'][1] < 60, str(r))
         check("ドロップシャドウ（右へ 8px）", r['b'][0][0] > 200 and r['b'][0][1] < 60 and r['b'][1][0] < 30, str(r))
         check("発光（すぐ外が赤みがかる。書き出しは 53・46）", 35 < r['c'][0][0] < 140 and r['c'][0][1] < 30 and r['c'][1][0] > 20, str(r))
