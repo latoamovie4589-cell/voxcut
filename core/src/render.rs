@@ -1510,6 +1510,9 @@ fn average_geq(pts: &[String]) -> String {
     format!("geq=r='{}':g='{}':b='{}':a='({sa})/{n}'", ch("r"), ch("g"), ch("b"))
 }
 
+/// 真ん中からの離れ方（真ん中 0・角 1）。周辺減光に使う（画面の preview/retro.ts と同じ）
+const D2: &str = "((X/W-0.5)*(X/W-0.5)+(Y/H-0.5)*(Y/H-0.5))*2";
+
 /// 縁取り・影・発光で、形を読む向き（16 方向）
 pub const RING: usize = 16;
 
@@ -1587,6 +1590,61 @@ pub(crate) fn pixel_effect(fx: &Effect, k: f64, tag: &str) -> Vec<String> {
         Effect::Threshold { level } => {
             let v = format!("255*gt(0.299*r(X,Y)+0.587*g(X,Y)+0.114*b(X,Y),{:.3})", level.clamp(0.0, 1.0) * 255.0);
             vec![format!("geq=r='{v}':g='{v}':b='{v}':a='alpha(X,Y)'")]
+        }
+        Effect::Vhs { amount } if *amount > 0.0 => {
+            let a = amount.min(1.0);
+            let h = crate::model::hash01_expr;
+            let row = format!("floor(Y/{:.4})", 2.0 * k);
+            // 流れる帯（上から下へ。帯の中ほど大きく揺れ、ノイズが増える）
+            let bk = "max(0,1-abs(Y-(mod(T*0.23,1)*1.2-0.1)*H)/(0.05*H))";
+            let wob = format!("{:.4}*(2*({}*2-1)+24*{bk}*({}*2-1))", a * k, h(&row, "N"), h(&row, "N+3"));
+            let c = 5.0 * a * k;
+            let xs = format!("(X-{wob})");
+            let sl = format!("(1-{:.4}*mod({row},2))", 0.2 * a);
+            let nz = format!("({}-0.5)*{:.3}*(60+160*{bk})", h("X+Y*0.618", "N+0.37"), a);
+            let ch = |f: &str, dx: f64| format!("clip({f}({xs}+{dx:.3},Y)*{sl}+{nz},0,255)");
+            let al = format!("max(max(alpha({xs}-{c:.3},Y),alpha({xs},Y)),alpha({xs}+{c:.3},Y))");
+            vec![pad(31.0 * a * k + 1.0), format!("geq=r='{}':g='{}':b='{}':a='{al}'", ch("r", -c), ch("g", 0.0), ch("b", c))]
+        }
+        Effect::Film { amount } if *amount > 0.0 => {
+            let a = amount.min(1.0);
+            let h = crate::model::hash01_expr;
+            let fl = format!("(1+{:.4}*({}-0.5))", 0.16 * a, h("N", "5"));
+            let vig = format!("(1-{:.4}*{D2})", 0.6 * a);
+            // 縦の傷（コマごとに 2 本まで。明るい線）
+            let sc: Vec<String> = (0..2).map(|j| format!("gt({},0.4)*max(0,1-abs(X-{}*W)/{:.4})", h("N", &(21 + j).to_string()), h("N", &(11 + j).to_string()), 1.5 * k)).collect();
+            let grain = format!("({}-0.5)*{:.3}", h("X+Y*0.618", "N+0.37"), 50.0 * a);
+            let sep = |m: [f64; 3], f: &str| format!("({f}(X,Y)+({:.3}*r(X,Y)+{:.3}*g(X,Y)+{:.3}*b(X,Y)-{f}(X,Y))*{a:.4})", m[0], m[1], m[2]);
+            let ch = |m: [f64; 3], f: &str| format!("clip({}*{fl}*{vig}+{grain}+{:.3}*({}),0,255)", sep(m, f), 110.0 * a, sc.join("+"));
+            vec![format!(
+                "geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'",
+                ch([0.393, 0.769, 0.189], "r"),
+                ch([0.349, 0.686, 0.168], "g"),
+                ch([0.272, 0.534, 0.131], "b")
+            )]
+        }
+        Effect::Crt { amount } if *amount > 0.0 => {
+            let a = amount.min(1.0);
+            let sl = format!("(1-{:.4}*(0.5-0.5*cos(2*PI*Y/{:.4})))", 0.45 * a, 3.0 * k);
+            let col = format!("mod(floor(X/{:.4}),3)", 2.0 * k);
+            let vig = format!("(1-{:.4}*{D2})", 0.5 * a);
+            let ch = |f: &str, i: u8| format!("clip({f}(X,Y)*{sl}*(1-{:.4}*(1-eq({col},{i})))*{vig}*{:.4},0,255)", 0.35 * a, 1.0 + 0.35 * a);
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r", 0), ch("g", 1), ch("b", 2))]
+        }
+        Effect::Vignette { amount } if *amount > 0.0 => {
+            let ch = |f: &str| format!("{f}(X,Y)*(1-{:.4}*pow({D2},1.5))", amount.min(1.0));
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::Posterize { levels } => {
+            let q = levels.round().clamp(2.0, 16.0) - 1.0;
+            let ch = |f: &str| format!("round({f}(X,Y)/255*{q})*255/{q}");
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::Pixelate { size } if *size >= 2.0 => {
+            // 点ごとに、その真ん中の色（画面も同じ所を読む）
+            let b = size * k;
+            let at = format!("floor((floor(X/{b:.4})+0.5)*{b:.4}),floor((floor(Y/{b:.4})+0.5)*{b:.4})");
+            vec![format!("geq=r='r({at})':g='g({at})':b='b({at})':a='alpha({at})'")]
         }
         _ => vec![],
     }
@@ -2589,10 +2647,30 @@ mod tests {
         let g1 = shot_look("color=c=0x666666:s=10x10", fx(Effect::Threshold { level: 0.5 }), Transform::default(), 0.1);
         let g2 = shot_look("color=c=0x999999:s=10x10", fx(Effect::Threshold { level: 0.5 }), Transform::default(), 0.1);
         assert!(g1[18 * 64 + 32] < 30 && g2[18 * 64 + 32] > 220, "{} {} {:?}", g1[18 * 64 + 32], g2[18 * 64 + 32], &g1[18 * 64..19 * 64]);
+        // 映像加工（画面の preview/retro.ts と同じ式。e2e で同じ所の色を比べる）
+        let gray = |c: &str| format!("color=c={c}:s=10x10");
+        let p1 = shot_look(&gray("0x666666"), fx(Effect::Posterize { levels: 2.0 }), Transform::default(), 0.1);
+        let p2 = shot_look(&gray("0x999999"), fx(Effect::Posterize { levels: 2.0 }), Transform::default(), 0.1);
+        assert!(p1[18 * 64 + 32] < 10 && p2[18 * 64 + 32] > 245, "{} {}", p1[18 * 64 + 32], p2[18 * 64 + 32]);
+        // 周辺減光（強さ 1）：真ん中はそのまま、辺の真ん中は 1 − 0.5^1.5 ≒ 0.65 倍（四角は x = 26〜35）
+        let vg = shot_look(sq, fx(Effect::Vignette { amount: 1.0 }), Transform::default(), 0.1);
+        assert!(vg[18 * 64 + 31] > 245 && (140..180).contains(&vg[18 * 64 + 26]) && vg[18 * 64 + 26] < vg[18 * 64 + 28], "{:?}", &vg[18 * 64 + 26..18 * 64 + 38]);
+        // 古いフィルム：灰色がセピア（赤が青より明るい）
+        let fm = shot_rgb(&gray("0x808080"), fx(Effect::Film { amount: 1.0 }), 0.1);
+        assert!(px(&fm, 32, 18)[0] > px(&fm, 32, 18)[2] + 25, "{:?}", px(&fm, 32, 18));
+        // ブラウン管：2px ごとに赤・緑・青の縦じま
+        let ct = shot_rgb(sq, fx(Effect::Crt { amount: 1.0 }), 0.1);
+        let (c0, c1) = (px(&ct, 26, 18), px(&ct, 28, 18));
+        assert!(c0[0] > c0[1] + 40 && c1[1] > c1[0] + 40, "{c0:?} {c1:?}");
+        // ドット絵風（5px）：点の中は同じ色
+        let grad = "nullsrc=s=10x10,geq=lum='X*25':cb=128:cr=128";
+        let dt = shot_look(grad, fx(Effect::Pixelate { size: 5.0 }), Transform::default(), 0.1);
+        let row = &dt[18 * 64 + 26..18 * 64 + 36];
+        assert!(row[0] == row[4] && row[5] == row[9] && row[5] > row[0] + 60, "{row:?}");
         // 放射ブラー・ノイズ・グリッチは掛かる（元と変わる）
         let half = "nullsrc=s=40x20,geq=lum='if(lt(X,20),235,16)':cb=128:cr=128";
         let plain = shot_look(half, Look::default(), Transform::default(), 0.1);
-        for e in [Effect::RadialBlur { amount: 0.5 }, Effect::Noise { amount: 0.5 }, Effect::Glitch { amount: 8.0, band: 2.0, speed: 10.0 }] {
+        for e in [Effect::RadialBlur { amount: 0.5 }, Effect::Noise { amount: 0.5 }, Effect::Glitch { amount: 8.0, band: 2.0, speed: 10.0 }, Effect::Vhs { amount: 1.0 }] {
             let h = shot_look(half, fx(e.clone()), Transform::default(), 0.1);
             assert!(h != plain, "{e:?}");
         }

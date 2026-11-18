@@ -1361,6 +1361,18 @@ pub enum Effect {
     DirBlur { length: f64, angle: f64 },
     /// 二値化（しきい値 0〜1。明るいところは白、暗いところは黒）
     Threshold { level: f64 },
+    /// VHS 風（強さ 0〜1）：横の揺れ・流れる帯・色のにじみ・走査線・ノイズ
+    Vhs { amount: f64 },
+    /// 古いフィルム（強さ 0〜1）：セピア・明るさのちらつき・周辺減光・縦の傷・粒子
+    Film { amount: f64 },
+    /// ブラウン管（強さ 0〜1）：走査線・RGB の縦じま（2px ずつ）・周辺減光
+    Crt { amount: f64 },
+    /// 周辺減光（強さ 0〜1）
+    Vignette { amount: f64 },
+    /// ポスタリゼーション（色の段階の数 2〜16）
+    Posterize { levels: f64 },
+    /// ドット絵風（1 つの点の大きさ px）
+    Pixelate { size: f64 },
     /// ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数）
     Jitter { amount: f64, speed: f64 },
     /// 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数）
