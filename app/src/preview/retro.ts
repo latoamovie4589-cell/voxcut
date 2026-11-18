@@ -1,11 +1,30 @@
-// 映像加工：VHS 風・古いフィルム・ブラウン管・周辺減光・ポスタリゼーション・ドット絵風。
+// 映像加工：VHS 風・古いフィルム・ブラウン管・周辺減光・ポスタリゼーション・ドット絵風・線画風・網点・デュオトーン・
+// 光漏れ・ブルーム・レンズフレア・魚眼・鏡写し・タイル・パートカラー。
 // 書き出し（core/src/render.rs の pixel_effect）と同じ式で、画素ごとに計算する。
 // 座標は元の大きさの px（x = X / r）、時刻はアイテムの頭からの秒 t（コマは N = t × fps）。
 
 import {hash01, type Effect} from '../model';
 
-export type RetroEffect = Extract<Effect, {kind: 'vhs' | 'film' | 'crt' | 'vignette' | 'posterize' | 'pixelate'}>;
-export const RETRO_FX = new Set(['vhs', 'film', 'crt', 'vignette', 'posterize', 'pixelate']);
+type Kinds = 'vhs' | 'film' | 'crt' | 'vignette' | 'posterize' | 'pixelate' | 'lineArt' | 'halftone' | 'duotone' | 'lightLeak' | 'bloom' | 'lensFlare' | 'bulge' | 'mirror' | 'tile' | 'colorKeep';
+export type RetroEffect = Extract<Effect, {kind: Kinds}>;
+export const RETRO_FX = new Set<string>([
+  'vhs',
+  'film',
+  'crt',
+  'vignette',
+  'posterize',
+  'pixelate',
+  'lineArt',
+  'halftone',
+  'duotone',
+  'lightLeak',
+  'bloom',
+  'lensFlare',
+  'bulge',
+  'mirror',
+  'tile',
+  'colorKeep',
+]);
 
 /** 先に四方に足す余白（元の px。書き出しの pad と同じ） */
 export function retroPad(fx: RetroEffect, k: number): number {
@@ -14,10 +33,48 @@ export function retroPad(fx: RetroEffect, k: number): number {
 
 /** 掛かるか（強さ 0 などは何もしない。書き出しと同じ条件） */
 export function retroActive(fx: RetroEffect): boolean {
-  if (fx.kind === 'posterize') return true;
-  if (fx.kind === 'pixelate') return fx.size >= 2;
-  return fx.amount > 0;
+  switch (fx.kind) {
+    case 'posterize':
+    case 'lineArt':
+    case 'duotone':
+    case 'mirror':
+    case 'colorKeep':
+      return true;
+    case 'pixelate':
+    case 'halftone':
+      return fx.size >= 2;
+    case 'tile':
+      return fx.count >= 2;
+    case 'bulge':
+      return Math.abs(fx.amount) > 0;
+    case 'bloom':
+      return fx.amount > 0 && fx.radius > 0;
+    default:
+      return fx.amount > 0;
+  }
 }
+
+/** 色の文字（#RRGGBB）を 0〜255 の R・G・B に（読めなければ白。書き出しの rgb255 と同じ） */
+export function rgb255(c: string): [number, number, number] {
+  let h = c.replace(/^#/, '');
+  if (h.length === 3) h = [...h].map(x => x + x).join('');
+  const v = (i: number) => {
+    const n = parseInt(h.slice(i, i + 2), 16);
+    return h.length >= i + 2 && !Number.isNaN(n) ? n : 255;
+  };
+  return [v(0), v(2), v(4)];
+}
+
+/** 色相（ラジアン。書き出しの hue_of と同じ式） */
+export const hueOf = (r: number, g: number, b: number) => Math.atan2(1.7320508 * (g - b), 2 * r - g - b);
+/** レンズフレアのゴースト（真ん中への進み具合・半径。書き出しの FLARE_GHOSTS と同じ） */
+const FLARE_GHOSTS: [number, number][] = [
+  [0.5, 0.03],
+  [1.2, 0.06],
+  [1.7, 0.02],
+];
+const lum = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 * b;
+const clip01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 const clip = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 const mod = (a: number, b: number) => a - b * Math.floor(a / b);
@@ -66,6 +123,184 @@ export function retroPixels(fx: RetroEffect, d: ImageData, r: number, k: number,
     }
     return o;
   }
+  // 縦横に線形で読む（書き出しの geq と同じく、端は 0〜W−2 に寄せる）。xo・yo は元の px
+  const samp = (xo: number, yo: number, c: number) => {
+    const X = Math.min(Math.max(xo * r, 0), W - 2);
+    const Y = Math.min(Math.max(yo * r, 0), H - 2);
+    const xi = Math.floor(X);
+    const yi = Math.floor(Y);
+    const fx2 = X - xi;
+    const fy = Y - yi;
+    const p = (xx: number, yy: number) => s[(yy * W + xx) * 4 + c];
+    return (1 - fy) * ((1 - fx2) * p(xi, yi) + fx2 * p(xi + 1, yi)) + fy * ((1 - fx2) * p(xi, yi + 1) + fx2 * p(xi + 1, yi + 1));
+  };
+  const sampLum = (xo: number, yo: number) => lum(samp(xo, yo, 0), samp(xo, yo, 1), samp(xo, yo, 2));
+  // 読む所を変えるもの（魚眼・鏡写し・タイル）：(x, y) → 読む所
+  const remap = (where: (x: number, y: number) => [number, number]) => {
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const [sx, sy] = where(X / r, Y / r);
+        const i = (Y * W + X) * 4;
+        for (let c = 0; c < 4; c++) out[i + c] = samp(sx, sy, c);
+      }
+    return o;
+  };
+  if (fx.kind === 'bulge') {
+    const a = 0.9 * Math.min(1, Math.max(-1, fx.amount));
+    const R = Math.min(Wo, Ho) / 2;
+    return remap((x, y) => {
+      const rr = Math.hypot(x - Wo / 2, y - Ho / 2) / R;
+      const f = 1 - a * Math.max(0, 1 - rr) ** 2;
+      return [Wo / 2 + (x - Wo / 2) * f, Ho / 2 + (y - Ho / 2) * f];
+    });
+  }
+  if (fx.kind === 'mirror') {
+    const m = fx.mode;
+    if (m === 'left') return remap((x, y) => [Math.min(x, Wo - 1 - x), y]);
+    if (m === 'right') return remap((x, y) => [Math.max(x, Wo - 1 - x), y]);
+    if (m === 'top') return remap((x, y) => [x, Math.min(y, Ho - 1 - y)]);
+    if (m === 'bottom') return remap((x, y) => [x, Math.max(y, Ho - 1 - y)]);
+    if (m === 'quad') return remap((x, y) => [Math.min(x, Wo - 1 - x), Math.min(y, Ho - 1 - y)]);
+    const seg = (Math.PI * 2) / Math.min(24, Math.max(2, Math.round(fx.segments)));
+    const cx = (Wo - 1) / 2;
+    const cy = (Ho - 1) / 2;
+    return remap((x, y) => {
+      const dx = x - cx;
+      const dy = y - cy;
+      const a = seg / 2 - Math.abs(mod(Math.atan2(dy, dx), seg) - seg / 2);
+      const rr = Math.hypot(dx, dy);
+      return [cx + rr * Math.cos(a), cy + rr * Math.sin(a)];
+    });
+  }
+  if (fx.kind === 'tile') {
+    const n = Math.min(12, Math.round(fx.count));
+    const axis = (v: number, d: number) => {
+      const u = (v * n) / d;
+      const f = mod(u, 1);
+      return (fx.flip ? f + mod(Math.floor(u), 2) * (1 - 2 * f) : f) * d;
+    };
+    return remap((x, y) => [axis(x, Wo), axis(y, Ho)]);
+  }
+  if (fx.kind === 'lineArt') {
+    const gain = 1 + 7 * clip01(fx.amount);
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const y = Y / r;
+        const e = clip01(((Math.abs(sampLum(x + k, y) - sampLum(x - k, y)) + Math.abs(sampLum(x, y + k) - sampLum(x, y - k))) * gain) / 255);
+        const i = (Y * W + X) * 4;
+        for (let c = 0; c < 3; c++) out[i + c] = (fx.keepColor ? s[i + c] : 255) * (1 - e);
+        out[i + 3] = s[i + 3];
+      }
+    return o;
+  }
+  if (fx.kind === 'halftone') {
+    const c = fx.size * k;
+    const ink = fx.ink ? rgb255(fx.ink) : null;
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const y = Y / r;
+        const cx = (Math.floor(x / c) + 0.5) * c;
+        const cy = (Math.floor(y / c) + 0.5) * c;
+        const S = [samp(cx, cy, 0), samp(cx, cy, 1), samp(cx, cy, 2)];
+        const cov = clip01(c * Math.SQRT1_2 * Math.sqrt(Math.max(0, 1 - lum(S[0], S[1], S[2]) / 255)) - Math.hypot(x - cx, y - cy) + 0.5);
+        const i = (Y * W + X) * 4;
+        for (let j = 0; j < 3; j++) out[i + j] = 255 + ((ink ? ink[j] : S[j]) - 255) * cov;
+        out[i + 3] = s[i + 3];
+      }
+    return o;
+  }
+  if (fx.kind === 'bloom') {
+    // 明るい所だけを取り出してぼかし、足す（書き出しは gblur と blend の addition）
+    const th = Math.min(0.99, Math.max(0, fx.threshold)) * 255;
+    const amt = Math.min(2, fx.amount);
+    const sig = fx.radius * k * r;
+    const pad = Math.ceil(sig * 3);
+    const src = document.createElement('canvas');
+    src.width = W + pad * 2;
+    src.height = H + pad * 2;
+    const sx = src.getContext('2d')!;
+    sx.fillStyle = '#000';
+    sx.fillRect(0, 0, src.width, src.height);
+    const br = new ImageData(W, H);
+    for (let i = 0; i < W * H * 4; i += 4) {
+      const m = clip01((lum(s[i], s[i + 1], s[i + 2]) - th) / (255 - th + 1)) * amt;
+      br.data[i] = s[i] * m;
+      br.data[i + 1] = s[i + 1] * m;
+      br.data[i + 2] = s[i + 2] * m;
+      br.data[i + 3] = 255;
+    }
+    sx.putImageData(br, pad, pad);
+    const bl = document.createElement('canvas');
+    bl.width = src.width;
+    bl.height = src.height;
+    const bx = bl.getContext('2d', {willReadFrequently: true})!;
+    bx.filter = `blur(${sig}px)`;
+    bx.drawImage(src, 0, 0);
+    const b = bx.getImageData(pad, pad, W, H).data;
+    for (let i = 0; i < W * H * 4; i += 4) {
+      out[i] = clip(s[i] + b[i]);
+      out[i + 1] = clip(s[i + 1] + b[i + 1]);
+      out[i + 2] = clip(s[i + 2] + b[i + 2]);
+      out[i + 3] = s[i + 3];
+    }
+    return o;
+  }
+  if (fx.kind === 'duotone' || fx.kind === 'colorKeep' || fx.kind === 'lightLeak' || fx.kind === 'lensFlare') {
+    const M = Math.max(Wo, Ho);
+    const gs = (d2v: number, sg: number) => Math.exp(-d2v / (2 * (sg * M) ** 2));
+    const col = rgb255(fx.kind === 'duotone' ? fx.dark : fx.color);
+    const light = fx.kind === 'duotone' ? rgb255(fx.light) : col;
+    const h0 = hueOf(col[0], col[1], col[2]);
+    const sf = fx.kind === 'colorKeep' ? Math.max(0.001, clip01(fx.soft)) : 1;
+    const a = fx.kind === 'colorKeep' ? 0 : fx.kind === 'duotone' ? clip01(fx.amount) : Math.min(1, fx.amount);
+    // 光漏れの 2 つの光の真ん中（時刻でゆっくり動く）
+    const l1 = [Wo * (0.1 + 0.15 * Math.sin(t * 0.4)), Ho * (0.25 + 0.1 * Math.sin(t * 0.31))];
+    const l2 = [Wo * (0.9 - 0.1 * Math.sin(t * 0.27 + 1)), Ho * (0.8 + 0.1 * Math.cos(t * 0.35))];
+    const P = fx.kind === 'lensFlare' ? [(Wo / 2) * (1 + Math.min(1, Math.max(-1, fx.x))), (Ho / 2) * (1 + Math.min(1, Math.max(-1, fx.y)))] : [0, 0];
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const y = Y / r;
+        const i = (Y * W + X) * 4;
+        const v = [s[i], s[i + 1], s[i + 2]];
+        out[i + 3] = s[i + 3];
+        if (fx.kind === 'duotone') {
+          const tt = lum(v[0], v[1], v[2]) / 255;
+          for (let j = 0; j < 3; j++) out[i + j] = v[j] + (col[j] + (light[j] - col[j]) * tt - v[j]) * a;
+        } else if (fx.kind === 'colorKeep') {
+          const diff = Math.abs(mod(hueOf(v[0], v[1], v[2]) - h0 + Math.PI, 2 * Math.PI) - Math.PI) / Math.PI;
+          const mx = Math.max(v[0], v[1], v[2]);
+          const sat = (mx - Math.min(v[0], v[1], v[2])) / Math.max(mx, 1);
+          const keep = clip01((clip01(fx.range) + sf - diff) / sf) * clip01(sat * 4);
+          const L = lum(v[0], v[1], v[2]);
+          for (let j = 0; j < 3; j++) out[i + j] = L + (v[j] - L) * keep;
+        } else {
+          let I: number;
+          let core = 0;
+          if (fx.kind === 'lightLeak') {
+            I = clip01(a * (0.9 * gs((x - l1[0]) ** 2 + (y - l1[1]) ** 2, 0.3) + 0.6 * gs((x - l2[0]) ** 2 + (y - l2[1]) ** 2, 0.22)));
+          } else {
+            const p0 = (x - P[0]) ** 2 + (y - P[1]) ** 2;
+            let sum = gs(p0, 0.04) + 0.35 * gs(p0, 0.15);
+            sum += 0.6 * Math.exp(-((y - P[1]) ** 2) / (2 * (0.006 * M) ** 2)) * Math.exp(-((x - P[0]) ** 2) / (2 * (0.35 * M) ** 2));
+            for (const [tg, rg] of FLARE_GHOSTS) {
+              const gx = P[0] + (Wo / 2 - P[0]) * tg;
+              const gy = P[1] + (Ho / 2 - P[1]) * tg;
+              sum += 0.18 * clip01((rg * M - Math.hypot(x - gx, y - gy)) / (0.01 * M));
+            }
+            I = a * sum;
+            core = a * 255 * 0.6 * gs(p0, 0.04);
+          }
+          for (let j = 0; j < 3; j++) {
+            const lt = fx.kind === 'lightLeak' ? col[j] * I : Math.min(255, col[j] * I + core);
+            out[i + j] = 255 - ((255 - v[j]) * (255 - lt)) / 255;
+          }
+        }
+      }
+    return o;
+  }
   if (fx.kind === 'pixelate') {
     const b = fx.size * k;
     for (let Y = 0; Y < H; Y++) {
@@ -83,6 +318,7 @@ export function retroPixels(fx: RetroEffect, d: ImageData, r: number, k: number,
     return o;
   }
   // 色だけ変えるもの（位置で明るさが変わる）
+  if (fx.kind !== 'posterize' && fx.kind !== 'vignette' && fx.kind !== 'crt' && fx.kind !== 'film') return o;
   const a = fx.kind === 'posterize' ? 0 : Math.min(1, fx.amount);
   const q = fx.kind === 'posterize' ? Math.min(16, Math.max(2, Math.round(fx.levels))) - 1 : 0;
   const fl = 1 + 0.16 * a * (hash01(N, 5) - 0.5);
