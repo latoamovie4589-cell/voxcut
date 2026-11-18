@@ -598,7 +598,9 @@ export const BLEND_CANVAS: Record<BlendMode, GlobalCompositeOperation> = {
   add: 'lighter',
 };
 /** つなぎ目の切り替え。slide は「前の場面がその方向へ流れ、次の場面が反対側から入る」 */
-export type TransitionKind = 'dissolve' | 'black' | 'white' | 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom';
+/** wipe は次の場面がその向きへ広がって前を覆う、iris は真ん中から丸く広がる、blur はぼやけて切り替わる、glitch は前後で画面が乱れる */
+export type TransitionKind =
+  'dissolve' | 'black' | 'white' | 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom' | 'wipeRight' | 'wipeLeft' | 'wipeDown' | 'wipeUp' | 'iris' | 'blur' | 'glitch';
 export interface Transition {
   kind: TransitionKind;
   /** 全体の長さ（フレーム） */
@@ -606,7 +608,8 @@ export interface Transition {
 }
 /** 登場・退場の動き。slide は「その方向から入る／その方向へ出る」 */
 /** wipe はクリッピング解除（ワイプ）：登場は「その向きへ広がって現れる」、退場は「その向きへ消えていく」 */
-export type MotionKind = 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom' | 'wipeRight' | 'wipeLeft' | 'wipeDown' | 'wipeUp';
+/** spin は回転しながら、bounce は跳ねて（行きすぎてから戻る）、blur はぼかしから、iris は真ん中から丸く */
+export type MotionKind = 'slideLeft' | 'slideRight' | 'slideUp' | 'slideDown' | 'zoom' | 'wipeRight' | 'wipeLeft' | 'wipeDown' | 'wipeUp' | 'spin' | 'bounce' | 'blur' | 'iris';
 export interface Motion {
   kind: MotionKind;
   /** 掛ける長さ（フレーム） */
@@ -947,6 +950,22 @@ export type Effect =
   | {kind: 'tile'; count: number; flip: boolean}
   /** パートカラー（残す色・色の幅 0〜1・境目のなめらかさ 0〜1） */
   | {kind: 'colorKeep'; color: string; range: number; soft: number}
+  /** 拍動（ドクンと大きくなる。大きくなる割合 0〜1・1 分間の回数） */
+  | {kind: 'pulse'; amount: number; bpm: number}
+  /** 回り続ける（1 分間に回る回数。マイナスで左回り） */
+  | {kind: 'spin'; rpm: number}
+  /** 跳ねる（跳ねる高さ px・1 分間の回数） */
+  | {kind: 'bounce'; height: number; bpm: number}
+  /** 色相の回転（虹色に色が変わり続ける。1 分間に一周する回数・ずらす角度） */
+  | {kind: 'hueCycle'; rpm: number; offset: number}
+  /** シャープ（くっきり。強さ 0〜2） */
+  | {kind: 'sharpen'; amount: number}
+  /** 内側の影（色・ぼかし px・ずれ px・濃さ 0〜1） */
+  | {kind: 'innerShadow'; color: string; blur: number; x: number; y: number; opacity: number}
+  /** ベベル（縁の幅 px・強さ 0〜1・光の向き 度） */
+  | {kind: 'bevel'; size: number; strength: number; angle: number}
+  /** エンボス（浮き彫り。強さ 0〜1・光の向き 度・元の色を残す） */
+  | {kind: 'emboss'; amount: number; angle: number; keepColor: boolean}
   /** ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数） */
   | {kind: 'jitter'; amount: number; speed: number}
   /** 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数） */
@@ -1623,6 +1642,34 @@ export function withTransitions(p0: Project): Project {
     } else if (t.kind === 'zoom') {
       edit(a.id, () => ({exit: {kind: 'zoom', frames: outF}, fadeOut: outF}));
       edit(b.id, () => ({enter: {kind: 'zoom', frames: inF}, fadeIn: inF}));
+    } else if (t.kind === 'wipeRight' || t.kind === 'wipeLeft' || t.kind === 'wipeDown' || t.kind === 'wipeUp' || t.kind === 'iris') {
+      // 前の場面を後ろへ延ばして、その上に次の場面を広げていく
+      const kind: MotionKind = t.kind;
+      extendA();
+      edit(a.id, () => ({exit: null, fadeOut: 0}));
+      edit(b.id, () => ({enter: {kind, frames: d, smooth: true}, fadeIn: 0}));
+    } else if (t.kind === 'blur') {
+      edit(a.id, () => ({exit: {kind: 'blur', frames: outF}, fadeOut: 0}));
+      edit(b.id, () => ({enter: {kind: 'blur', frames: inF}, fadeIn: 0}));
+    } else if (t.kind === 'glitch') {
+      // つなぎ目の前後に、下の全部を乱す調整レイヤーを置く（同じレイヤーの上に重ねる）
+      extra.push({
+        id: `${b.id}~glitch`,
+        trackId: b.trackId,
+        start: cut - outF,
+        duration: d,
+        linkId: null,
+        type: 'shape',
+        shape: 'rect',
+        width: 200,
+        height: 120,
+        fill: '#5AC8FA',
+        stroke: '',
+        strokeWidth: 0,
+        transform: {x: 0, y: 0, scale: 1, opacity: 1},
+        look: {...plainLook(), effects: [{kind: 'glitchNoise', amount: 1, rate: 1, block: 32}]},
+        control: {kind: 'adjust', layers: 1},
+      });
     } else {
       // 前の場面がその方向へ流れて、次の場面が反対側から入る
       const pair: Record<string, [MotionKind, MotionKind]> = {
