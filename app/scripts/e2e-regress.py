@@ -1059,6 +1059,36 @@ async def main():
         r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const st=s.getState(); const g=id=>st.project.clips.find(c=>c.id===id); const vh=st.project.video.height;
           const out={a:[g('a').transform.y, g('a').crop], b:g('b').transform.y, vh, open:st.splitOpen}; s.setState({project:window.__keepP, selectedClipIds:[], selectedClipId:null}); return out}""")
         check("画面分割：ダイアログで「上下」を選んで並べると、上と下に収まる（すき間 8px）", abs(r['a'][0] + r['vh'] / 4) <= 8 and r['b'] == -r['a'][0] and r['a'][1] is not None and not r['open'], str(r))
+        # ── 吹き出し・集中線・まとめたテンプレート
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const v=await import('/src/preview/visual.ts'); const an=await import('/src/preview/anim.ts'); const keep=structuredClone(s.getState().project); window.__keepP=keep;
+          const id=s.addBubble('round'); const c=s.getState().project.clips.find(x=>x.id===id);
+          const plain=v.textImage({...c, bubble:null}); const b1=v.textImage(c); const b2=v.textImage({...c, bubble:{...c.bubble, tailAngle:(c.bubble.tailAngle+180)%360}});
+          const px=x=>Array.from(x.getContext('2d').getImageData(0,0,x.width,x.height).data); const diff=(a,b)=>{if(a.width!==b.width||a.height!==b.height) return 999; const x=px(a),y=px(b); let d=0; for(let i=0;i<x.length;i++) d=Math.max(d,Math.abs(x[i]-y[i])); return d};
+          const shout=v.textImage({...c, bubble:{...c.bubble, kind:'shout'}});
+          const lid=s.addEffectLines('focus'); const l=s.getState().project.clips.find(x=>x.id===lid); const fps=s.getState().project.video.fps;
+          const still={...l, anim:{...l.anim, flicker:false}};
+          const ink=x=>px(x).filter((a,i)=>i%4===3&&a>0).length;
+          const out={size:[plain.width,plain.height,b1.width,b1.height], tail:diff(b1,b2), shout:diff(b1,shout), lines:[an.animFrames(l,fps).length, an.animFrames(still,fps).length, an.animStep(l.anim,l.duration,l.duration).loop, an.animFrameAt(l,20,fps)],
+            ink:['focus','speed','shock','anger'].map(t=>ink(an.animImage({...l, anim:{...l.anim, type:t}},0,fps))), flick:diff(an.animImage(l,0,fps,[],false), an.animImage(l,4,fps,[],false))};
+          s.setState({project:keep}); return out}""")
+        sz = r['size']
+        check("吹き出し：文字より大きい枠になり、しっぽの向き・形で絵が変わる", sz[2] > sz[0] and sz[3] > sz[1] and r['tail'] > 50 and r['shout'] > 50, str(r))
+        check("集中線：ちらつかせると 16 枚でくり返し、止めると 1 枚。4 種類とも描ける", r['lines'] == [16, 1, True, 4] and all(n > 100 for n in r['ink']) and r['flick'] > 50, str(r))
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const t=await import('/src/templates.ts'); const keep=structuredClone(s.getState().project); window.__keepP=keep;
+          const p=s.getState().project; const L=p.tracks.map(x=>x.id);
+          const txt={id:'g1', type:'text', trackId:L[L.length-1], start:100, duration:60, text:'タイトル', fontSize:80, color:'#fff', outlineColor:'#000', outlineWidth:4, align:'center', transform:{x:0,y:0,scale:1,opacity:1}};
+          const shp={id:'g2', type:'shape', trackId:L[L.length-2], start:110, duration:40, shape:'rect', fill:'#f00', width:200, height:100, transform:{x:0,y:0,scale:1,opacity:1}};
+          s.setState({project:{...p, clips:[...p.clips, txt, shp]}});
+          const items=t.toGroup(s.getState().project, ['g1','g2']);
+          const saved=t.saveTemplate('group', t.groupTemplateName(items), items);
+          const back=t.getTemplates().find(x=>x.id===saved.id);
+          s.setState({project:keep, playhead:300});
+          const n=s.insertGroupTemplate(back.data); const st=s.getState().project; const ids=s.getState().selectedClipIds;
+          const put=ids.map(id=>st.clips.find(c=>c.id===id)); const ti=st.tracks.map(x=>x.id);
+          const a=put.find(c=>c.type==='text'), b=put.find(c=>c.type==='shape');
+          const out={n, name:saved.name, layers:items.map(i=>i.layer), start:[a.start,b.start], above:ti.indexOf(a.trackId)>ti.indexOf(b.trackId), fresh:!keep.clips.some(c=>c.id===a.id)};
+          t.removeTemplate(saved.id); s.setState({project:keep, selectedClipIds:[], selectedClipId:null}); return out}""")
+        check("まとめたテンプレート：2 つを保存して再生位置に置くと、ずれと上下の並びを保つ", r['n'] == 2 and r['start'] == [300, 310] and r['above'] and r['fresh'] and r['name'].startswith('タイトル'), str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
