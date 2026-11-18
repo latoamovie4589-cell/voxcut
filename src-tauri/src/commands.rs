@@ -143,14 +143,38 @@ pub async fn open_project(app: AppHandle, path: PathBuf) -> CmdResult<Project> {
 }
 
 #[tauri::command]
-pub async fn save_project(path: PathBuf, project: Project) -> CmdResult<()> {
+pub async fn save_project(app: AppHandle, path: PathBuf, project: Project) -> CmdResult<()> {
+    let root = backup_root(&app)?;
     blocking(move || {
         project.validate().map_err(err)?;
+        // 上書きする前に、それまでの内容を残す（失敗しても保存は続ける）
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = voxcut_core::backup::before_save(&root, &path, now);
         let tmp = path.with_extension("voxcut.tmp");
         std::fs::write(&tmp, project.to_json().map_err(err)?).map_err(err)?;
         std::fs::rename(&tmp, &path).map_err(err)
     })
     .await
+}
+
+fn backup_root(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("バックアップ"))
+}
+
+/// そのプロジェクトの、上書き保存する前に残した版（新しい順）
+#[tauri::command]
+pub fn list_backups(app: AppHandle, path: PathBuf) -> CmdResult<Vec<voxcut_core::backup::BackupEntry>> {
+    Ok(voxcut_core::backup::list(&backup_root(&app)?, &path))
+}
+
+/// 残した版を読む（開くのは元のプロジェクトとして。保存すると元の場所に上書きする）
+#[tauri::command]
+pub async fn read_backup(app: AppHandle, path: PathBuf) -> CmdResult<Project> {
+    let root = backup_root(&app)?;
+    if !path.starts_with(&root) {
+        return Err("バックアップではありません".into());
+    }
+    blocking(move || Project::from_json(&std::fs::read_to_string(&path).map_err(err)?).map_err(err)).await
 }
 
 // ───────────── 設定 ─────────────
@@ -539,6 +563,85 @@ pub fn write_portrait_png(app: AppHandle, request: tauri::ipc::Request<'_>) -> C
     Ok(path)
 }
 
+/// マイクで録った音（画面側で作った WAV のバイト列そのもの）を、アプリのデータの「録音」フォルダに保存してパスを返す
+#[tauri::command]
+pub fn write_recording(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<PathBuf> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("録音が届いていません".into());
+    };
+    if !bytes.starts_with(b"RIFF") {
+        return Err("WAV ではありません".into());
+    }
+    let dir = app.path().app_data_dir().map_err(err)?.join("録音");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let _ = app.asset_protocol_scope().allow_directory(&dir, false);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = dir.join(format!("録音_{secs}.wav"));
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(path)
+}
+
+/// 画面録画（WebM）を保存して、長さを書き込んだ動画のパスを返す
+#[tauri::command]
+pub async fn write_capture(app: AppHandle, state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> CmdResult<PathBuf> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("録画が届いていません".into());
+    };
+    if !voxcut_core::capture::looks_like_video(bytes) {
+        return Err("動画ではありません".into());
+    }
+    let dir = app.path().app_data_dir().map_err(err)?.join("画面録画");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let _ = app.asset_protocol_scope().allow_directory(&dir, false);
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let raw = dir.join(format!(".録画中_{ms}.webm"));
+    std::fs::write(&raw, bytes).map_err(err)?;
+    let out = dir.join(format!("画面録画_{ms}.webm"));
+    let ffmpeg = state.ffmpeg();
+    blocking(move || voxcut_core::capture::finish(&ffmpeg, &raw, &out).map_err(err)).await
+}
+
+// ───────────── 素材ライブラリ ─────────────
+
+fn library_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    let dir = app.path().app_data_dir().map_err(err)?.join("ライブラリ");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let _ = app.asset_protocol_scope().allow_directory(&dir, true);
+    Ok(dir)
+}
+
+#[tauri::command]
+pub fn library_list(app: AppHandle) -> CmdResult<Vec<voxcut_core::library::LibraryItem>> {
+    Ok(voxcut_core::library::list(&library_dir(&app)?))
+}
+
+/// ファイルをライブラリへ写す。プロジェクトからの相対パスはプロジェクトのフォルダから探す
+#[tauri::command]
+pub fn library_add(app: AppHandle, paths: Vec<String>, folder: String, project_path: Option<String>) -> CmdResult<Vec<voxcut_core::library::LibraryItem>> {
+    let base = project_path.as_deref().and_then(|p| Path::new(p).parent().map(Path::to_path_buf));
+    let srcs: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| {
+            let pb = PathBuf::from(p);
+            match (&base, pb.is_absolute()) {
+                (Some(b), false) => b.join(pb),
+                _ => pb,
+            }
+        })
+        .collect();
+    voxcut_core::library::add(&library_dir(&app)?, &srcs, &folder).map_err(err)
+}
+
+#[tauri::command]
+pub fn library_update(app: AppHandle, id: String, name: Option<String>, folder: Option<String>) -> CmdResult<()> {
+    voxcut_core::library::update(&library_dir(&app)?, &id, name.as_deref(), folder.as_deref()).map_err(err)
+}
+
+#[tauri::command]
+pub fn library_remove(app: AppHandle, id: String) -> CmdResult<()> {
+    voxcut_core::library::remove(&library_dir(&app)?, &id).map_err(err)
+}
+
 /// キャッシュにある PSD 立ち絵の画像のパス（無ければ None）
 #[tauri::command]
 pub fn portrait_png_path(app: AppHandle, name: String) -> Option<PathBuf> {
@@ -631,6 +734,7 @@ pub async fn export_video(
         // 一部だけ書き出すとき（始まりと終わりのフレーム）
         let range = options.range_frames.filter(|(a, b)| b > a).map(|(a, b)| (project.video.frames_to_secs(a.max(0)), project.video.frames_to_secs(b)));
         opt.range = range;
+        opt.transparent = options.transparent;
         // 静止画では音のないプロジェクトとして組み立てる（まだ合成していないセリフがあっても書き出せるように）
         let silent = still.map(|_| {
             let mut q = exp.clone();
@@ -675,6 +779,9 @@ pub struct ExportRequest {
     still_frame: Option<voxcut_core::model::Frame>,
     /// 一部だけ書き出すときの範囲（始まりと終わりのフレーム）
     range_frames: Option<(voxcut_core::model::Frame, voxcut_core::model::Frame)>,
+    /// 背景を透明のまま書き出す（.mov / .webm / .png）
+    #[serde(default)]
+    transparent: bool,
     /// テキスト・図形アイテムの画像（クリップ id → PNG のパス）
     #[serde(default)]
     item_images: std::collections::HashMap<String, PathBuf>,

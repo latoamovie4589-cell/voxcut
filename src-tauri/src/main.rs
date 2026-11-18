@@ -36,6 +36,14 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_plugins,
+            commands::write_recording,
+            commands::write_capture,
+            commands::library_list,
+            commands::list_backups,
+            commands::read_backup,
+            commands::library_add,
+            commands::library_update,
+            commands::library_remove,
             commands::new_project,
             commands::export_srt,
             commands::open_project,
