@@ -52,6 +52,8 @@ import {
   Sticker,
   Music2,
   Clapperboard,
+  Mic,
+  MonitorPlay,
 } from 'lucide-react';
 import type {Clip, MediaClip, Project, Track} from '../model';
 import {
@@ -98,6 +100,9 @@ import {
   addSticker,
   addRegion,
   addAudioViz,
+  addParticles,
+  addProgressBar,
+  addChart,
   addControl,
   addScene,
   addSceneItem,
@@ -117,6 +122,8 @@ import {
 import {getPeaks, onPeaks} from '../peaks';
 import {addMedia, addSfx, getNotify, synthesize} from '../actions';
 import './timeline.css';
+import {RecordDialog} from '../panels/RecordDialog';
+import {CaptureDialog} from '../panels/CaptureDialog';
 
 const RULER_H = 26;
 /** レイヤーの高さ：小（YMM4 と同じくらい細い）・中（波形と名前が分かれて読める）・大。タイムラインの上の「レイヤーの高さ」で選ぶ */
@@ -573,6 +580,9 @@ function mediaBadge(m: MediaClip): string {
   return `${m.reverse ? '⟲ ' : ''}${sp}`;
 }
 
+/** 画面上の位置が、タイムラインのどのフレーム・レイヤーか（タイムラインの外なら null） */
+export const timelineHit: {current: ((x: number, y: number) => {frame: number; trackId?: string} | null) | null} = {current: null};
+
 export function Timeline() {
   const layerSize = useStore(s => s.layerSize);
   LAYER_H = LAYER_SIZES[layerSize] ?? LAYER_SIZES.small;
@@ -612,6 +622,8 @@ export function Timeline() {
     return () => ro.disconnect();
   }, []);
   const compactRef = useRef(false);
+  const [recOpen, setRecOpen] = useState(false);
+  const [capOpen, setCapOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const headersRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
@@ -1479,6 +1491,16 @@ export function Timeline() {
     return {frame, clip: clip ?? null, ruler: false, mode, track};
   };
 
+  // ほかのパネル（素材ライブラリ）から落とした所を調べられるように
+  timelineHit.current = (x: number, y: number) => {
+    const el = scrollRef.current;
+    if (!el || !getState().project) return null;
+    const r = el.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    const h = hitTest(x, y);
+    return {frame: Math.max(0, h.frame), trackId: h.track?.id};
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (!getState().project) return;
     scrollRef.current?.focus({preventScroll: true});
@@ -2000,6 +2022,18 @@ export function Timeline() {
             ))}
           {project?.sceneId && <DropdownMenuItem label="このシーンを消す" description="置いたシーンアイテムも消えます" onClick={() => deleteScene(project.sceneId!)} />}
         </DropdownMenu>
+        <Button label="録音" size="sm" variant="ghost" icon={<Icon icon={Mic} />} isIconOnly={compact} tooltip="マイクで録音して、再生位置に置く" onClick={() => setRecOpen(true)} />
+        {recOpen && <RecordDialog isOpen={recOpen} onOpenChange={setRecOpen} />}
+        <Button
+          label="画面録画"
+          size="sm"
+          variant="ghost"
+          icon={<Icon icon={MonitorPlay} />}
+          isIconOnly={compact}
+          tooltip="パソコンの画面を録画して、再生位置に置く"
+          onClick={() => setCapOpen(true)}
+        />
+        {capOpen && <CaptureDialog isOpen={capOpen} onOpenChange={setCapOpen} />}
         <DropdownMenu button={{label: '図形', size: 'sm', variant: 'ghost', icon: <Icon icon={Shapes} />, isIconOnly: compact, tooltip: '図形を再生位置に追加'}} menuWidth={160}>
           {BASIC_SHAPES.map(k => (
             <DropdownMenuItem key={k} label={SHAPE_LABEL[k]} icon={<Icon icon={SHAPE_ICON[k]} />} onClick={() => addVisualItem('shape', k)} />
@@ -2008,6 +2042,14 @@ export function Timeline() {
           <DropdownMenuItem label="ぼかし範囲" description="形の中の下の絵をぼかす" onClick={() => addRegion('blur')} />
           <DropdownMenuItem label="音声の波形" description="動画の音を波の形で出す" onClick={() => addAudioViz('wave')} />
           <DropdownMenuItem label="音声のスペクトラム" description="動画の音を高さごとの棒で出す" onClick={() => addAudioViz('bars')} />
+          <DropdownMenuItem label="紙吹雪" description="色とりどりの紙が舞い落ちる" onClick={() => addParticles('confetti')} />
+          <DropdownMenuItem label="雪" description="雪がゆっくり降る" onClick={() => addParticles('snow')} />
+          <DropdownMenuItem label="花びら" description="花びらがひらひら舞う" onClick={() => addParticles('petals')} />
+          <DropdownMenuItem label="キラキラ" description="光の粒がまたたく" onClick={() => addParticles('sparkle')} />
+          <DropdownMenuItem label="進行バー" description="動画のどこまで進んだか。マーカーで章に区切る" onClick={() => addProgressBar()} />
+          <DropdownMenuItem label="棒グラフ" description="数字を入れると、伸びる動きつきで出る" onClick={() => addChart('bar')} />
+          <DropdownMenuItem label="円グラフ" onClick={() => addChart('pie')} />
+          <DropdownMenuItem label="折れ線グラフ" onClick={() => addChart('line')} />
           <DropdownMenuItem label="グループ制御" description="すぐ下のレイヤーをまとめて動かす" onClick={() => addControl('group')} />
           <DropdownMenuItem label="カメラ" description="下の全部をカメラで撮ったように動かす" onClick={() => addControl('camera')} />
           <DropdownMenuItem label="調整レイヤー" description="下の全部にエフェクトを掛ける" onClick={() => addControl('adjust')} />
