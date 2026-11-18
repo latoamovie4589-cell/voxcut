@@ -3,7 +3,9 @@
 
 import {useSyncExternalStore} from 'react';
 import type {
+  Bubble,
   Chart,
+  Lines,
   Particles,
   LineAudio,
   CaptionClip,
@@ -26,7 +28,9 @@ import type {
   VoicePreset,
 } from './model';
 import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
-import {PARTICLE_PRESET} from './preview/anim';
+import type {GroupItem} from './templates';
+import {LINES_PRESET, PARTICLE_PRESET} from './preview/anim';
+import {BUBBLE_PRESET} from './preview/bubble';
 import {
   isPlainLineAudio,
   plainLineAudio,
@@ -1386,6 +1390,43 @@ export function addAudioViz(kind: 'wave' | 'bars'): string | null {
   return id;
 }
 
+/** 吹き出し：文字の入ったテキストアイテムとして置く（文字は黒、まわりに枠としっぽ） */
+export function addBubble(kind: Bubble['kind']): string | null {
+  const id = addVisualItem('text');
+  const {label: _l, ...b} = BUBBLE_PRESET[kind];
+  if (id)
+    updateClip(id, {
+      text: kind === 'think' ? 'うーん…' : kind === 'shout' ? 'えーっ！' : 'セリフ',
+      fontSize: 64,
+      color: '#222222',
+      outlineWidth: 0,
+      bubble: {kind, ...b},
+    } as Partial<Clip>);
+  return id;
+}
+
+/** 集中線・スピード線・ガーン・怒りマーク（怒りマークは小さく右上に、ほかは画面いっぱい） */
+export function addEffectLines(type: Lines['type']): string | null {
+  const p = state.project;
+  const id = addVisualItem('shape', 'rect');
+  const {label: _l, ...pr} = LINES_PRESET[type];
+  if (id && p) {
+    const small = type === 'anger';
+    const sz = Math.round(Math.min(p.video.width, p.video.height) * 0.22);
+    updateClip(id, {
+      anim: {kind: 'lines', type, ...pr},
+      width: small ? sz : p.video.width,
+      height: small ? sz : p.video.height,
+      fill: '#ffffff',
+      stroke: '',
+      strokeWidth: 0,
+      duration: p.video.fps * 2,
+      transform: small ? {x: Math.round(p.video.width * 0.25), y: -Math.round(p.video.height * 0.25), scale: 1, opacity: 1} : {x: 0, y: 0, scale: 1, opacity: 1},
+    } as Partial<Clip>);
+  }
+  return id;
+}
+
 /** 紙吹雪・雪・花びら・キラキラを、画面いっぱいに置く */
 export function addParticles(type: Particles['type']): string | null {
   const p = state.project;
@@ -1716,6 +1757,53 @@ export function insertItemTemplate(data: VisualClip): string | null {
   });
   setState(s => ({selectedClipId: id, selectedClipIds: [id], revealSeq: s.revealSeq + 1}));
   return id;
+}
+
+/**
+ * まとめたテンプレートを再生位置に置く。ずれと上下の並びはそのまま、空いているレイヤーへ（無ければ足す）。
+ * 置いたアイテムの数を返す
+ */
+export function insertGroupTemplate(items: GroupItem[]): number {
+  const p = state.project;
+  if (!p || !items.length) return 0;
+  const at = state.playhead;
+  const layers = [...new Set(items.map(i => i.layer))].sort((a, b) => a - b);
+  const forLines = (t: Track) => isLineTrack(p, t.id) || charactersOnTrack(p, t.id).length > 0;
+  const placed: Clip[] = [];
+  const links = new Map<string, string>();
+  const relink = (l?: string | null) => (l ? (links.get(l) ?? (links.set(l, newId('lk')), links.get(l)!)) : null);
+  commit(pr => {
+    const tracks = [...pr.tracks];
+    let from = 0;
+    for (const layer of layers) {
+      const mine = items.filter(i => i.layer === layer);
+      const busy = (t: Track) => pr.clips.some(c => c.trackId === t.id && mine.some(i => c.start < at + i.start + Math.max(1, i.clip.duration) && at + i.start < c.start + c.duration));
+      // 下のレイヤーほど前に。前に選んだレイヤーより上から探す
+      let idx = tracks.findIndex((t, k) => k >= from && !t.locked && !forLines(t) && !busy(t));
+      if (idx < 0) {
+        tracks.push(newLayer(newId('V')));
+        idx = tracks.length - 1;
+      }
+      from = idx + 1;
+      for (const i of mine) {
+        const c = i.clip;
+        placed.push({
+          ...structuredClone(c),
+          id: newId(c.type === 'text' ? 'tx' : c.type === 'shape' ? 'sh' : 'm'),
+          trackId: tracks[idx].id,
+          start: at + i.start,
+          duration: Math.max(1, c.duration),
+          linkId: relink(c.linkId),
+        } as Clip);
+      }
+    }
+    let next = {...pr, tracks, clips: [...pr.clips, ...placed]};
+    for (const t of new Set(placed.map(c => c.trackId))) next = resolveOverlaps(next, t, placed.find(c => c.trackId === t)?.id);
+    return next;
+  });
+  if (!placed.length) return 0;
+  setState(s => ({selectedClipIds: placed.map(c => c.id), selectedClipId: placed[0].id, revealSeq: s.revealSeq + 1}));
+  return placed.length;
 }
 
 // ───────────── マーカー ─────────────

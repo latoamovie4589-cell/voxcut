@@ -1095,6 +1095,21 @@ export interface TextClip extends ClipBase {
   charAnim?: CharAnim | null;
   /** タイマー（カウントダウン・カウントアップ）。文の中の {t} が時間になる（なければ文全体） */
   timer?: Timer | null;
+  /** 吹き出し（文字のまわりに描く） */
+  bubble?: Bubble | null;
+}
+
+/** 吹き出し。round 丸・square 四角・shout ギザギザ（叫び）・think もくもく（考え中） */
+export interface Bubble {
+  kind: 'round' | 'square' | 'shout' | 'think';
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  /** 文字と枠のあいだ（画素） */
+  padding: number;
+  /** しっぽの向き（度。0 が右、90 が下）。tailLength が 0 ならしっぽなし */
+  tailAngle: number;
+  tailLength: number;
 }
 
 /** テキストのタイマー（core/src/model.rs の Timer と同じ）。from から to へ実際の速さで数え、to で止まる */
@@ -1267,7 +1282,21 @@ export interface Chart {
   /** 文字の色 */
   textColor: string;
 }
-export type ShapeAnim = Particles | ProgressBar | Chart;
+/** 集中線・効果線。focus 集中線・speed スピード線・shock ガーン（縦線）・anger 怒りマーク */
+export interface Lines {
+  kind: 'lines';
+  type: 'focus' | 'speed' | 'shock' | 'anger';
+  color: string;
+  /** 線の数（怒りマークは使わない） */
+  density: number;
+  /** 真ん中の空ける大きさ（0〜0.9。集中線） */
+  inner: number;
+  /** 線の太さ（画素） */
+  thickness: number;
+  /** 2 コマごとに描き直してちらつかせる（漫画の勢い） */
+  flicker: boolean;
+}
+export type ShapeAnim = Particles | ProgressBar | Chart | Lines;
 
 /** グループ制御・カメラ・調整レイヤー（core/src/model.rs の Control と同じ） */
 export interface Control {

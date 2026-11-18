@@ -2,19 +2,25 @@
 // ほかのプロジェクトでも使い回す。この PC に覚える（プロジェクトのファイルには入れない）。
 
 import {useSyncExternalStore} from 'react';
-import type {SubtitleStyle, Transform, VisualClip} from './model';
+import type {Clip, MediaClip, Project, SubtitleStyle, Transform, VisualClip} from './model';
 import {newId} from './model';
 
+/** まとめて取っておくアイテム。start は先頭からのずれ、layer は上下の並び（0 がいちばん下） */
+export type GroupItem = {clip: VisualClip | MediaClip; start: number; layer: number};
 export type Template =
-  {id: string; name: string; kind: 'item'; data: VisualClip} | {id: string; name: string; kind: 'subtitle'; data: SubtitleStyle} | {id: string; name: string; kind: 'placement'; data: Transform};
+  | {id: string; name: string; kind: 'item'; data: VisualClip}
+  | {id: string; name: string; kind: 'group'; data: GroupItem[]}
+  | {id: string; name: string; kind: 'subtitle'; data: SubtitleStyle}
+  | {id: string; name: string; kind: 'placement'; data: Transform};
 export type TemplateKind = Template['kind'];
 
 const KEY = 'voxcut.templates';
+const KINDS = ['item', 'group', 'subtitle', 'placement'];
 
 function read(): Template[] {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? '[]');
-    return Array.isArray(v) ? v.filter(t => t && typeof t.id === 'string' && typeof t.name === 'string' && ['item', 'subtitle', 'placement'].includes(t.kind) && t.data) : [];
+    return Array.isArray(v) ? v.filter(t => t && typeof t.id === 'string' && typeof t.name === 'string' && KINDS.includes(t.kind) && t.data) : [];
   } catch {
     return [];
   }
@@ -85,9 +91,28 @@ export function templatesFromFile(text: string): number {
   if (!v || v.voxcutTemplates !== 1 || !Array.isArray(v.templates)) throw new Error('VoxCut のテンプレートのファイルではありません');
   let n = 0;
   for (const t of v.templates) {
-    if (!t || typeof t.name !== 'string' || !['item', 'subtitle', 'placement'].includes(t.kind) || !t.data) continue;
+    if (!t || typeof t.name !== 'string' || !KINDS.includes(t.kind) || !t.data) continue;
     saveTemplate(t.kind, t.name, t.data);
     n++;
   }
   return n;
+}
+
+/** まとめて取っておけるアイテム（テキスト・図形・画像・動画・音）。セリフと字幕は台本ごとに違うので入れない */
+export const groupable = (c: Clip): c is VisualClip | MediaClip => c.type === 'text' || c.type === 'shape' || c.type === 'media';
+
+/** 選んだアイテムを、先頭からのずれとレイヤーの上下の並びにして取っておく形にする */
+export function toGroup(p: Project, ids: Iterable<string>): GroupItem[] {
+  const want = new Set(ids);
+  const clips = p.clips.filter(c => want.has(c.id)).filter(groupable);
+  if (!clips.length) return [];
+  const base = Math.min(...clips.map(c => c.start));
+  const order = p.tracks.map(t => t.id).filter(id => clips.some(c => c.trackId === id));
+  return clips.map(c => ({clip: structuredClone(c), start: c.start - base, layer: order.indexOf(c.trackId)})).sort((a, b) => a.layer - b.layer || a.start - b.start);
+}
+
+/** まとめたテンプレートの名前の初期値 */
+export function groupTemplateName(items: GroupItem[]): string {
+  const text = items.find(i => i.clip.type === 'text');
+  return text ? `${itemTemplateName(text.clip as VisualClip)} など` : `${items.length} 個のアイテム`;
 }
