@@ -25,6 +25,7 @@ import {itemTemplateName, saveTemplate} from '../templates';
 import {QuickEffects} from './QuickEffects';
 import {KeyframeBar} from './KeyframeBar';
 import {TextDecoFields, TextDecoPicker} from './TextDeco';
+import {PARTICLE_PRESET} from '../preview/anim';
 import {
   SHAPE_LABEL,
   CONTROL_LABEL,
@@ -45,6 +46,10 @@ import {
   type ShapeClip,
   type ShapeKind,
   type TextClip,
+  type Timer,
+  type ShapeAnim,
+  type Particles,
+  type Chart,
   type Transform,
   type VisualClip,
   GRADES,
@@ -771,6 +776,155 @@ export function TextStyleFields({value, onChange}: {value: TextStyle; onChange: 
   );
 }
 
+const TIMER_FORMAT: Record<Timer['format'], string> = {s: '10', 'm:ss': '1:05', 'h:mm:ss': '0:01:05', 'm:ss.cc': '1:05.30'};
+
+/** 分と秒で入れる（タイマーの値） */
+function MinSec({label, value, onChange}: {label: string; value: number; onChange: (v: number) => void}) {
+  const m = Math.floor(value / 60);
+  const sec = Math.round((value - m * 60) * 100) / 100;
+  return (
+    <HStack gap={2} vAlign="end">
+      <NumberInput label={label} units="分" value={m} min={0} max={999} onChange={v => onChange(Math.max(0, v) * 60 + sec)} />
+      <NumberInput label="" aria-label={`${label}（秒）`} units="秒" value={sec} min={0} max={59.99} step={1} onChange={v => onChange(m * 60 + Math.min(59.99, Math.max(0, v)))} />
+    </HStack>
+  );
+}
+
+/** タイマー：数字が時間どおりに減る・増える（カウントダウン・カウントアップ） */
+function TimerFields({clip}: {clip: TextClip}) {
+  const fps = useStore(s => s.project?.video.fps ?? 30);
+  const t = clip.timer;
+  const set = (timer: Timer | null) => updateClip(clip.id, {timer, ...(timer ? {charAnim: null} : {})});
+  return (
+    <>
+      <Switch
+        label="タイマーにする"
+        description="数字が時間どおりに減る（増える）文字にします。文の中の {t} が時間になり、{t} がなければ文全体が時間になります"
+        value={!!t}
+        onChange={on => set(on ? {from: Math.round(clip.duration / fps), to: 0, format: 'm:ss'} : null)}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {t && (
+        <VStack gap={2} data-timer-fields>
+          <SegmentedControl label="表し方" size="sm" layout="fill" value={t.format} onChange={v => set({...t, format: v as Timer['format']})}>
+            {(Object.keys(TIMER_FORMAT) as Timer['format'][]).map(k => (
+              <SegmentedControlItem key={k} value={k} label={TIMER_FORMAT[k]} />
+            ))}
+          </SegmentedControl>
+          <MinSec label="始まりの値" value={t.from} onChange={from => set({...t, from})} />
+          <MinSec label="終わりの値" value={t.to} onChange={to => set({...t, to})} />
+          <HStack gap={2} hAlign="start" wrap="wrap">
+            <Button label="アイテムの長さで 0 まで数える" size="sm" variant="ghost" onClick={() => set({...t, from: Math.round((clip.duration / fps) * 100) / 100, to: 0})} />
+            <Button label="0 から数え上げる" size="sm" variant="ghost" onClick={() => set({...t, from: 0, to: Math.max(t.from, t.to, 5999)})} />
+          </HStack>
+          <Hint>{t.to < t.from ? 'カウントダウン：終わりの値で止まります' : 'カウントアップ：終わりの値で止まります'}</Hint>
+        </VStack>
+      )}
+    </>
+  );
+}
+
+const ANIM_TITLE = (a: ShapeAnim) => (a.kind === 'particles' ? PARTICLE_PRESET[a.type].label : a.kind === 'progress' ? '進行バー' : 'グラフ');
+const CHART_LABEL: Record<Chart['chart'], string> = {bar: '棒', pie: '円', line: '折れ線'};
+const PALETTE = ['#5AC8FA', '#FF9500', '#34C759', '#FF3B30', '#AF52DE', '#FFCC00', '#FF2D55', '#8E8E93'];
+
+/** 動く図形（粒・進行バー・グラフ）の設定 */
+function AnimFields({clip}: {clip: ShapeClip}) {
+  const a = clip.anim!;
+  const set = (anim: ShapeAnim) => updateClip(clip.id, {anim});
+  if (a.kind === 'particles')
+    return (
+      <VStack gap={2} data-anim-fields="particles">
+        <SegmentedControl
+          label="種類"
+          size="sm"
+          layout="fill"
+          value={a.type}
+          onChange={v => {
+            const t = v as Particles['type'];
+            const pr = PARTICLE_PRESET[t];
+            set({...a, type: t, amount: pr.amount, size: pr.size, speed: pr.speed, colors: pr.colors});
+          }}>
+          {(Object.keys(PARTICLE_PRESET) as Particles['type'][]).map(k => (
+            <SegmentedControlItem key={k} value={k} label={PARTICLE_PRESET[k].label} />
+          ))}
+        </SegmentedControl>
+        <Slider label="量" value={a.amount} min={5} max={400} step={5} valueDisplay="text" formatValue={v => `${v} 個`} onChange={(amount: number) => set({...a, amount})} />
+        <Slider label="粒の大きさ" value={a.size} min={2} max={80} step={1} valueDisplay="text" formatValue={v => `${v}px`} onChange={(size: number) => set({...a, size})} />
+        {a.type !== 'sparkle' && (
+          <SegmentedControl label="速さ" size="sm" layout="fill" value={String(a.speed)} onChange={v => set({...a, speed: Number(v)})}>
+            <SegmentedControlItem value="1" label="ゆっくり" />
+            <SegmentedControlItem value="2" label="ふつう" />
+            <SegmentedControlItem value="3" label="はやい" />
+          </SegmentedControl>
+        )}
+        <ColorRow label="色" value={a.colors[0] ?? '#ffffff'} onChange={c => set({...a, colors: [c, ...a.colors.slice(1)]})} />
+        {a.colors.length > 1 && <Button label="色を 1 つにする" size="sm" variant="ghost" onClick={() => set({...a, colors: a.colors.slice(0, 1)})} />}
+        {a.colors.length <= 1 && <Button label="いつもの色に戻す" size="sm" variant="ghost" onClick={() => set({...a, colors: PARTICLE_PRESET[a.type].colors})} />}
+        <Hint>4 秒ごとにくり返す動きなので、アイテムを長くしても途切れません</Hint>
+      </VStack>
+    );
+  if (a.kind === 'progress')
+    return (
+      <VStack gap={2} data-anim-fields="progress">
+        <Text type="supporting">アイテムの頭から終わりまでで伸びます。動画全体に合わせるときは、アイテムを動画の長さにしてください</Text>
+        <ColorRow label="まだのところの色" value={a.trackColor} onChange={trackColor => set({...a, trackColor})} />
+        <Switch label="マーカーで章に区切る" value={a.chapters} onChange={chapters => set({...a, chapters})} labelPosition="start" labelSpacing="spread" width="100%" />
+        {a.chapters && (
+          <Switch
+            label="章の名前を出す"
+            description="マーカーの名前を、区切りの上に出します"
+            value={a.labels}
+            onChange={labels => set({...a, labels})}
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+          />
+        )}
+        {a.chapters && a.labels && <ColorRow label="章の名前の色" value={clip.stroke || '#ffffff'} onChange={stroke => updateClip(clip.id, {stroke})} />}
+      </VStack>
+    );
+  const items = a.items;
+  const setItem = (i: number, patch: Partial<Chart['items'][number]>) => set({...a, items: items.map((it, k) => (k === i ? {...it, ...patch} : it))});
+  return (
+    <VStack gap={2} data-anim-fields="chart">
+      <SegmentedControl label="グラフの種類" size="sm" layout="fill" value={a.chart} onChange={v => set({...a, chart: v as Chart['chart']})}>
+        {(Object.keys(CHART_LABEL) as Chart['chart'][]).map(k => (
+          <SegmentedControlItem key={k} value={k} label={CHART_LABEL[k]} />
+        ))}
+      </SegmentedControl>
+      {items.map((it, i) => (
+        <HStack key={i} gap={1} vAlign="end">
+          <div style={{flex: 2, minWidth: 0}}>
+            <TextInput label={i === 0 ? '名前' : ''} aria-label={`${i + 1} つ目の名前`} size="sm" value={it.label} onChange={label => setItem(i, {label})} />
+          </div>
+          <div style={{flex: 1.4, minWidth: 0}}>
+            <NumberInput label={i === 0 ? '数' : ''} aria-label={`${i + 1} つ目の数`} size="sm" value={it.value} step={1} onChange={value => setItem(i, {value})} />
+          </div>
+          <ColorRow label="" value={it.color} onChange={color => setItem(i, {color})} />
+          <IconButton label="この行を消す" size="sm" variant="ghost" icon={<Icon icon={X} />} isDisabled={items.length <= 1} onClick={() => set({...a, items: items.filter((_, k) => k !== i)})} />
+        </HStack>
+      ))}
+      <Button
+        label="行を足す"
+        size="sm"
+        variant="ghost"
+        icon={<Icon icon={Plus} />}
+        isDisabled={items.length >= 12}
+        onClick={() => set({...a, items: [...items, {label: `項目 ${items.length + 1}`, value: 10, color: PALETTE[items.length % PALETTE.length]}]})}
+      />
+      <HStack gap={2}>
+        <TextInput label="単位" size="sm" placeholder="%・人・円 など" value={a.unit} onChange={unit => set({...a, unit})} />
+        <NumberInput label="伸びきるまで" units="フレーム" size="sm" value={a.grow} min={1} max={600} onChange={grow => set({...a, grow: Math.max(1, grow)})} />
+      </HStack>
+      <Switch label="数を出す" value={a.showValues} onChange={showValues => set({...a, showValues})} labelPosition="start" labelSpacing="spread" width="100%" />
+      <ColorRow label="文字の色" value={a.textColor} onChange={textColor => set({...a, textColor})} />
+    </VStack>
+  );
+}
+
 export function TextInspector({clip}: {clip: TextClip}) {
   const set = (patch: Partial<TextClip>) => updateClip(clip.id, patch);
   const textRef = useRef<HTMLDivElement>(null);
@@ -824,6 +978,7 @@ export function TextInspector({clip}: {clip: TextClip}) {
             )}
           </VStack>
         )}
+        <TimerFields clip={clip} />
       </VStack>
       <Divider />
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
@@ -898,8 +1053,21 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
       <VStack gap={3} paddingBlock={4} paddingInline={4}>
         <ItemHeader
           clip={clip}
-          title={clip.viz ? (clip.viz === 'bars' ? '音声のスペクトラム' : '音声の波形') : clip.region ? (clip.region.kind === 'mosaic' ? 'モザイク範囲' : 'ぼかし範囲') : '図形'}
+          title={
+            clip.anim
+              ? ANIM_TITLE(clip.anim)
+              : clip.viz
+                ? clip.viz === 'bars'
+                  ? '音声のスペクトラム'
+                  : '音声の波形'
+                : clip.region
+                  ? clip.region.kind === 'mosaic'
+                    ? 'モザイク範囲'
+                    : 'ぼかし範囲'
+                  : '図形'
+          }
         />
+        {clip.anim && <AnimFields clip={clip} />}
         {clip.viz && (
           <VStack gap={2}>
             <SegmentedControl label="出しかた" layout="fill" value={clip.viz} onChange={v => set({viz: v as 'wave' | 'bars'})}>
@@ -928,7 +1096,7 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
             />
           </VStack>
         )}
-        {!clip.viz && (
+        {!clip.viz && !clip.anim && (
           <Selector
             label="形"
             value={clip.shape}
@@ -941,8 +1109,10 @@ export function ShapeInspector({clip}: {clip: ShapeClip}) {
           <NumberInput label="幅" units="px" value={clip.width} min={1} max={8000} step={10} onChange={width => set({width})} />
           <NumberInput label={clip.shape === 'line' ? '太さ' : '高さ'} units="px" value={clip.height} min={1} max={8000} step={clip.shape === 'line' ? 1 : 10} onChange={height => set({height})} />
         </HStack>
-        {!clip.region && <ColorRow label={clip.shape === 'line' ? '線の色' : '塗りの色'} value={clip.fill} onChange={fill => set({fill})} />}
-        {clip.shape !== 'line' && !clip.region && !clip.viz && (
+        {!clip.region && (!clip.anim || clip.anim.kind === 'progress') && (
+          <ColorRow label={clip.anim ? '進んだところの色' : clip.shape === 'line' ? '線の色' : '塗りの色'} value={clip.fill} onChange={fill => set({fill})} />
+        )}
+        {clip.shape !== 'line' && !clip.region && !clip.viz && !clip.anim && (
           <Collapsible defaultIsOpen={!!clip.stroke} trigger={<Text type="label">枠線</Text>}>
             <VStack gap={2} paddingBlockStart={2}>
               <ColorRow label="枠線の色" value={clip.stroke} allowNone onChange={stroke => set({stroke, strokeWidth: stroke && !clip.strokeWidth ? 6 : clip.strokeWidth})} />

@@ -41,6 +41,8 @@ import {
   plainLook,
   speakerLabel,
   SPLIT_LAYOUTS,
+  prevAudio,
+  crossfadeFrames,
 } from '../model';
 import {LineTuning, PresetManager, VoiceTuner} from './VoiceTuning';
 import {LinePsdLayers, PsdPortraitEditor, pickPsdPortrait} from './PsdPortraitEditor';
@@ -382,6 +384,38 @@ function portraitSummary(project: Project, clip: VoiceClip): string {
 
 const AUDIO_FILTER_LABEL = {highpass: '低い音を削る', lowpass: '高い音を削る'} as const;
 const panLabel = (v: number) => (Math.abs(v) < 0.005 ? '中央' : v < 0 ? `左 ${Math.round(-v * 100)}%` : `右 ${Math.round(v * 100)}%`);
+
+/** 素材の音のフェードと、前の音とのクロスフェード（書き出しも同じ） */
+function SoundFadeFields({clip}: {clip: MediaClip}) {
+  const prev = useStore(s => (clip.mediaKind === 'audio' && s.project ? prevAudio(s.project, clip) : null));
+  const cf = clip.crossfade ?? 0;
+  return (
+    <>
+      <HStack gap={2}>
+        <NumberInput label="音のフェードイン" units="フレーム" value={clip.soundFadeIn ?? 0} min={0} max={clip.duration} onChange={v => updateClip(clip.id, {soundFadeIn: v || undefined})} />
+        <NumberInput label="音のフェードアウト" units="フレーム" value={clip.soundFadeOut ?? 0} min={0} max={clip.duration} onChange={v => updateClip(clip.id, {soundFadeOut: v || undefined})} />
+      </HStack>
+      {clip.mediaKind === 'audio' && (
+        <NumberInput
+          label="前の音となめらかにつなぐ（クロスフェード）"
+          description={
+            !prev
+              ? '同じレイヤーのすぐ前に音声素材を置くと使えます'
+              : cf > 0
+                ? `前の音を ${crossfadeFrames(cf, prev.duration, clip.duration)} フレーム延ばして重ね、だんだん入れ替えます`
+                : '0 のときはつながず、つなぎ目で切り替わります'
+          }
+          units="フレーム"
+          value={cf}
+          min={0}
+          max={clip.duration}
+          isDisabled={!prev && cf === 0}
+          onChange={v => updateClip(clip.id, {crossfade: v || undefined})}
+        />
+      )}
+    </>
+  );
+}
 
 /** 声の聞こえ方：左右・フェード・再生開始位置・エコー・音声エフェクト（書き出しも同じ） */
 function LineAudioFields({clip}: {clip: VoiceClip}) {
@@ -833,6 +867,7 @@ function MediaInspector({clip, notify}: {clip: MediaClip; notify: Notify}) {
             formatValue={v => `${Math.round(v * 100)}%`}
             onChange={(volume: number) => updateClip(sound.id, {volume})}
           />
+          <SoundFadeFields clip={sound} />
           <SoundFxFields clip={sound} notify={notify} />
           {/* BGM の自動音量下げ（レイヤーごとの設定。レイヤーのメニューと同じもの） */}
           {soundTrack && (
@@ -901,6 +936,41 @@ export function PortraitSection({character}: {character: Character}) {
         labelSpacing="spread"
         width="100%"
       />
+      <Switch
+        label="呼吸する"
+        description="しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みします（書き出しも同じ）"
+        value={!!pt.breath}
+        isDisabled={!pt.visible}
+        onChange={on => setPt({breath: on ? {amount: 1.5, period: 3} : null})}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {pt.breath && (
+        <>
+          <Slider
+            label="呼吸の大きさ"
+            value={pt.breath.amount}
+            min={0.5}
+            max={6}
+            step={0.1}
+            valueDisplay="text"
+            formatValue={v => `${v.toFixed(1)}%`}
+            onChange={(amount: number) => setPt({breath: {...pt.breath!, amount}})}
+          />
+          <Slider
+            label="呼吸の速さ"
+            description="1 分間に呼吸する回数"
+            value={Math.round(60 / pt.breath.period)}
+            min={8}
+            max={60}
+            step={1}
+            valueDisplay="text"
+            formatValue={v => `${v} 回`}
+            onChange={(n: number) => setPt({breath: {...pt.breath!, period: 60 / n}})}
+          />
+        </>
+      )}
       <PsdPortraitEditor character={character} />
       <Heading level={4}>新しく置く立ち絵アイテムの位置と大きさ</Heading>
       <TransformFields value={pt.transform} onChange={transform => setPt({transform})} />
