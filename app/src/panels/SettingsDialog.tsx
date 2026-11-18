@@ -123,6 +123,28 @@ export function SettingsDialog({isOpen, onOpenChange, notify}: {isOpen: boolean;
             </VStack>
           </Collapsible>
           <Divider />
+          <Heading level={3}>COEIROINK</Heading>
+          <Text type="supporting">COEIROINK v2 を起動しておくだけで使えます。v1 は VOICEVOX と同じ仕組みなので、VOICEVOX のポートを 50031 にしてください。</Text>
+          <Collapsible defaultIsOpen={false} trigger={<Text type="supporting">詳しい設定（ふつうは変えません）</Text>}>
+            <HStack gap={2} paddingBlockStart={2}>
+              <TextInput label="ホスト" value={e.coeiroink.host} onChange={v => setEngines({coeiroink: {...e.coeiroink, host: v}})} />
+              <NumberInput label="ポート" value={e.coeiroink.port} min={1} max={65535} onChange={v => setEngines({coeiroink: {...e.coeiroink, port: v}})} />
+            </HStack>
+          </Collapsible>
+          <Divider />
+          <Heading level={3}>ゆっくりボイス（AquesTalkPlayer）</Heading>
+          <Text type="supporting">AquesTalkPlayer のプリセット（「れいむ」「まりさ」など）で読み上げます。速さや高さはプリセットで決めてください。</Text>
+          <ExeField label="AquesTalkPlayer の場所" exeName="AquesTalkPlayer.exe" value={e.aquestalkPath ?? ''} onChange={p => setEngines({aquestalkPath: p || null})} />
+          <TextInput
+            label="使うプリセット"
+            description="AquesTalkPlayer で作ったプリセットの名前を「、」で区切って入れます（れいむ・まりさは入っています）"
+            value={e.aquestalkPresets.join('、')}
+            onChange={v => setEngines({aquestalkPresets: v.split(/[、,，]/).map(x => x.trimStart())})}
+          />
+          <Divider />
+          <Heading level={3}>CeVIO AI</Heading>
+          <Text type="supporting">CeVIO AI が入っていれば使えます（Windows だけ。場所の指定は要りません）。</Text>
+          <Divider />
           <Heading level={3}>書き出し</Heading>
           <ExeField label="FFmpeg" exeName="ffmpeg.exe" value={cfg.ffmpegPath ?? ''} note="空のときは VoxCut に同梱の ffmpeg.exe を使います" onChange={p => setCfg({...cfg, ffmpegPath: p || null})} />
         </VStack>

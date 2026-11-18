@@ -1,53 +1,62 @@
 // キーボードショートカットの一覧（メニューか「?」キーで開く）
 
 import {Fragment} from 'react';
+import {Button} from '@astryxdesign/core/Button';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
-import {Heading} from '@astryxdesign/core/Text';
+import {HStack} from '@astryxdesign/core/Layout';
+import {Heading, Text} from '@astryxdesign/core/Text';
+import {keyLabel, useKeymap, type ActionId} from '../keymap';
 import {setState, useStore} from '../store';
 
 const isMac = navigator.platform.toLowerCase().includes('mac');
 const m = isMac ? '⌘' : 'Ctrl';
 
-const GROUPS: [string, [string, string][]][] = [
+/** 割り当てたキーの表記（いくつかの操作を / でつなぐ。割り当てていなければ「なし」） */
+const k = (...ids: ActionId[]) => ids.map(id => keyLabel(id) || 'なし').join(' / ');
+
+const groups = (): [string, [string, string][]][] => [
   [
     'ファイル',
     [
-      [`${m}+N`, '新規'],
-      [`${m}+O`, '開く'],
-      [`${m}+S`, '保存（Shift も押すと名前を付けて保存）'],
+      [k('new'), '新規'],
+      [k('open'), '開く'],
+      [k('save'), '保存'],
+      [k('saveAs'), '名前を付けて保存'],
     ],
   ],
   [
     '編集',
     [
-      [`${m}+Z`, '元に戻す'],
-      [isMac ? '⇧⌘Z' : 'Ctrl+Y', 'やり直す'],
+      [k('undo'), '元に戻す'],
+      [k('redo'), 'やり直す'],
     ],
   ],
   [
     '再生',
     [
-      ['Space / K', '再生・停止'],
-      ['L / J', '再生・逆再生（押すたびに速く）'],
-      ['← →', '1 コマ戻る・進む（Shift で 1 秒）'],
-      ['↑ ↓', '前・次の編集点へ'],
-      ['Home / End', '先頭・最後へ'],
+      [k('play'), '再生・停止'],
+      [k('stop'), '停止'],
+      [k('shuttleForward', 'shuttleBackward'), '再生・逆再生（押すたびに速く）'],
+      [k('frameBack', 'frameForward'), '1 コマ戻る・進む'],
+      [k('secondBack', 'secondForward'), '1 秒戻る・進む'],
+      [k('prevEdit', 'nextEdit'), '前・次の編集点へ'],
+      [k('toStart', 'toEnd'), '先頭・最後へ'],
     ],
   ],
   [
     'セリフとアイテム',
     [
-      [`${m}+L`, 'セリフ入力欄へ'],
+      [k('focusInput'), 'セリフ入力欄へ'],
       [`${m}+クリック`, '選択に足す・外す'],
       ['Shift+クリック', '同じレイヤーの間をまとめて選ぶ'],
       ['Alt+クリック', 'リンクしたアイテム（セリフの音声と字幕など）の片方だけを選ぶ'],
-      [`${m}+A`, 'すべて選ぶ'],
-      [`${m}+C / X / V`, '写す・切り取る・貼り付ける'],
-      [`${m}+D`, '複製'],
-      ['Delete', '選んだものを消す'],
+      [k('selectAll'), 'すべて選ぶ'],
+      [k('copy', 'cut', 'paste'), '写す・切り取る・貼り付ける'],
+      [k('duplicate'), '複製'],
+      [k('delete'), '選んだものを消す'],
       ['Alt+← → / , .', '選んだものを 1 コマ動かす（Shift で 1 秒）'],
       [`${m}+← →`, '同じレイヤーの前・次のアイテムを選ぶ'],
-      ['S', '素材を再生位置で分ける'],
+      [k('split'), '素材を再生位置で分ける'],
       ['Esc', '選択を外す・全画面をやめる'],
       ['Esc（ドラッグ中）', 'タイムラインやプレビューで動かしている途中なら、やめて元の場所に戻す'],
       ['Alt（ドラッグ中）', 'スナップ・吸着をしない（プレビューの大きさは細かく変える）'],
@@ -64,10 +73,10 @@ const GROUPS: [string, [string, string][]][] = [
       ['Alt+Shift+1〜9', 'ワークスペースを切り替える'],
       ['≡ → 別ウィンドウに切り離す', 'パネルを別のウィンドウへ（2 台目のモニターなど）'],
       ['Enter / F2', '台本の行を書き直す（ダブルクリックでも）'],
-      ['M', '再生位置にマーカーを付ける（目盛りに旗が出る。名前とチャプターは「ファイル → マーカーと概要欄」）'],
+      [k('marker'), '再生位置にマーカーを付ける（目盛りに旗が出る。名前とチャプターは「ファイル → マーカーと概要欄」）'],
       ['Alt+↑ ↓', '台本の行を上下へ入れ替える'],
-      [`${m}+F`, '台本を探す'],
-      [`${m}+H`, '台本の文を置き換える（置き換えた行は音声を作り直す）'],
+      [k('find'), '台本を探す'],
+      [k('replace'), '台本の文を置き換える（置き換えた行は音声を作り直す）'],
     ],
   ],
   [
@@ -88,18 +97,23 @@ const GROUPS: [string, [string, string][]][] = [
 export function ShortcutsDialog() {
   const isOpen = useStore(s => s.shortcutsOpen);
   const close = () => setState({shortcutsOpen: false});
+  useKeymap();
   return (
     <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={880} maxHeight="88dvh" purpose="info">
       <DialogHeader title="キーボードショートカット" onOpenChange={o => !o && close()} />
+      <HStack gap={2} padding={3} vAlign="center" hAlign="between">
+        <Text type="supporting">よく使う操作は、自分の押しやすいキーに変えられます</Text>
+        <Button label="キーを変える…" size="sm" onClick={() => setState({shortcutsOpen: false, keymapOpen: true})} />
+      </HStack>
       <div className="vx-shortcuts-scroll">
         {/* 2 段に組む（1 画面に収まり、キーと説明が離れすぎない）。狭ければ 1 段 */}
         <div className="vx-shortcuts">
-          {GROUPS.map(([title, rows]) => (
+          {groups().map(([title, rows]) => (
             <section key={title} className="vx-shortcuts-group">
               <Heading level={3}>{title}</Heading>
               <dl>
                 {rows.map(([key, what]) => (
-                  <Fragment key={key}>
+                  <Fragment key={key + what}>
                     <dt>
                       <kbd className="vx-kbd">{key}</kbd>
                     </dt>
