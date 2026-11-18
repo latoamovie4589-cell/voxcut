@@ -5,7 +5,7 @@ import {Hint} from '../Hint';
 import {Button} from '@astryxdesign/core/Button';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
 import {Divider} from '@astryxdesign/core/Divider';
-import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
+import {DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
@@ -92,6 +92,16 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   vignette: '周辺減光',
   posterize: 'ポスタリゼーション',
   pixelate: 'ドット絵風',
+  lineArt: '線画風',
+  halftone: '網点（漫画のトーン）',
+  duotone: 'デュオトーン（2 色）',
+  lightLeak: '光漏れ',
+  bloom: 'ブルーム（光のにじみ）',
+  lensFlare: 'レンズフレア',
+  bulge: '魚眼・膨らみ',
+  mirror: '鏡写し・万華鏡',
+  tile: 'タイル（くり返し）',
+  colorKeep: 'パートカラー（1 色だけ残す）',
   jitter: 'ランダム移動',
   oscillate: '反復移動',
   plugin: 'プラグイン',
@@ -106,6 +116,17 @@ function usePlugins() {
   useEffect(reload, []);
   return [list, reload] as const;
 }
+/** エフェクトの「追加」の分け方 */
+const FX_GROUPS: {label: string; kinds: Effect['kind'][]}[] = [
+  {label: '色', kinds: ['color', 'mono', 'invert', 'grade', 'temperature', 'lut', 'threshold', 'posterize', 'duotone', 'colorKeep']},
+  {label: 'ぼかし・縁取り・影', kinds: ['blur', 'radialBlur', 'dirBlur', 'outline', 'shadow']},
+  {label: '光', kinds: ['glow', 'bloom', 'lightLeak', 'lensFlare']},
+  {label: '映像加工（VHS・フィルムなど）', kinds: ['vhs', 'film', 'crt', 'vignette', 'rgbShift', 'glitch', 'noise', 'pixelate']},
+  {label: '漫画・イラスト風', kinds: ['lineArt', 'halftone']},
+  {label: '変形', kinds: ['wave', 'swirl', 'bulge', 'mirror', 'tile']},
+  {label: '動き', kinds: ['shake', 'jitter', 'oscillate', 'blink', 'trail']},
+];
+
 const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   outline: {kind: 'outline', color: '#FFFFFF', width: 6},
   shadow: {kind: 'shadow', color: '#000000', blur: 6, x: 8, y: 8, opacity: 0.6},
@@ -124,6 +145,16 @@ const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   vignette: {kind: 'vignette', amount: 0.6},
   posterize: {kind: 'posterize', levels: 4},
   pixelate: {kind: 'pixelate', size: 12},
+  lineArt: {kind: 'lineArt', amount: 0.5, keepColor: false},
+  halftone: {kind: 'halftone', size: 10, ink: '#1A1A1A'},
+  duotone: {kind: 'duotone', dark: '#2B1055', light: '#FF9E5E', amount: 1},
+  lightLeak: {kind: 'lightLeak', color: '#FF8A3D', amount: 0.6},
+  bloom: {kind: 'bloom', threshold: 0.6, amount: 0.8, radius: 12},
+  lensFlare: {kind: 'lensFlare', x: -0.5, y: -0.5, amount: 0.8, color: '#FFE2A8'},
+  bulge: {kind: 'bulge', amount: 0.5},
+  mirror: {kind: 'mirror', mode: 'left', segments: 6},
+  tile: {kind: 'tile', count: 2, flip: false},
+  colorKeep: {kind: 'colorKeep', color: '#E53935', range: 0.08, soft: 0.06},
   jitter: {kind: 'jitter', amount: 10, speed: 8},
   oscillate: {kind: 'oscillate', x: 0, y: 20, speed: 1},
 };
@@ -494,26 +525,33 @@ export function EffectsEditor({
   const setFx = (i: number, fx: Effect | null) => onChange(fx ? effects.map((e, j) => (j === i ? fx : e)) : effects.filter((_, j) => j !== i));
   const [plugins, reloadPlugins] = usePlugins();
   const withPlugins = !kinds;
+  const addItem = (k: Effect['kind']) => (
+    <DropdownMenuItem
+      key={k}
+      label={EFFECT_LABEL[k] + (k === 'lut' ? '…' : '')}
+      onClick={() => {
+        if (k !== 'lut') return onChange([...effects, newEffect(k)]);
+        // LUT はファイルを選んでから足す
+        void api
+          .then(a => a.pickLutPath())
+          .then(path => {
+            if (path) onChange([...effects, {kind: 'lut', path, strength: 1}]);
+          });
+      }}
+    />
+  );
   return (
     <>
       <HStack hAlign="between" vAlign="center">
         <Heading level={headingLevel}>{title}</Heading>
-        <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={160}>
-          {(kinds ?? (Object.keys(EFFECT_LABEL) as Effect['kind'][]).filter(k => k !== 'plugin')).map(k => (
-            <DropdownMenuItem
-              key={k}
-              label={EFFECT_LABEL[k] + (k === 'lut' ? '…' : '')}
-              onClick={() => {
-                if (k !== 'lut') return onChange([...effects, newEffect(k)]);
-                // LUT はファイルを選んでから足す
-                void api
-                  .then(a => a.pickLutPath())
-                  .then(path => {
-                    if (path) onChange([...effects, {kind: 'lut', path, strength: 1}]);
-                  });
-              }}
-            />
-          ))}
+        <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={220}>
+          {kinds
+            ? kinds.map(addItem)
+            : FX_GROUPS.map(g => (
+                <DropdownMenuSubMenu key={g.label} label={g.label} menuWidth={200}>
+                  {g.kinds.map(addItem)}
+                </DropdownMenuSubMenu>
+              ))}
           {withPlugins &&
             (plugins?.plugins ?? []).flatMap(f =>
               f.plugin
@@ -675,6 +713,152 @@ export function EffectsEditor({
           {fx.kind === 'pixelate' && (
             <VStack gap={2}>
               <Slider label="点の大きさ" value={fx.size} min={2} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
+            </VStack>
+          )}
+          {fx.kind === 'lineArt' && (
+            <VStack gap={2}>
+              <Slider label="線の濃さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Switch label="元の色を残す" value={fx.keepColor} onChange={keepColor => setFx(i, {...fx, keepColor})} labelPosition="start" labelSpacing="spread" width="100%" />
+            </VStack>
+          )}
+          {fx.kind === 'halftone' && (
+            <VStack gap={2}>
+              <Slider label="点の間隔" value={fx.size} min={3} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
+              <Switch label="点を元の色にする" value={!fx.ink} onChange={on => setFx(i, {...fx, ink: on ? '' : '#1A1A1A'})} labelPosition="start" labelSpacing="spread" width="100%" />
+              {!!fx.ink && <ColorRow label="点の色" value={fx.ink} onChange={ink => setFx(i, {...fx, ink})} />}
+            </VStack>
+          )}
+          {fx.kind === 'duotone' && (
+            <VStack gap={2}>
+              <ColorRow label="暗い所の色" value={fx.dark} onChange={dark => setFx(i, {...fx, dark})} />
+              <ColorRow label="明るい所の色" value={fx.light} onChange={light => setFx(i, {...fx, light})} />
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'lightLeak' && (
+            <VStack gap={2}>
+              <ColorRow label="光の色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'bloom' && (
+            <VStack gap={2}>
+              <Slider
+                label="光る明るさ"
+                description="これより明るい所がにじみます"
+                value={fx.threshold}
+                min={0}
+                max={0.95}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={pct}
+                onChange={(threshold: number) => setFx(i, {...fx, threshold})}
+              />
+              <Slider label="強さ" value={fx.amount} min={0} max={2} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Slider label="広がり" value={fx.radius} min={1} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(radius: number) => setFx(i, {...fx, radius})} />
+            </VStack>
+          )}
+          {fx.kind === 'lensFlare' && (
+            <VStack gap={2}>
+              <HStack gap={2}>
+                <Slider
+                  label="光の横の位置"
+                  value={fx.x}
+                  min={-1}
+                  max={1}
+                  step={0.01}
+                  valueDisplay="text"
+                  formatValue={v => (v < -0.05 ? '左' : v > 0.05 ? '右' : '真ん中') + `（${Math.round(v * 100)}）`}
+                  onChange={(x: number) => setFx(i, {...fx, x})}
+                />
+                <Slider
+                  label="光の縦の位置"
+                  value={fx.y}
+                  min={-1}
+                  max={1}
+                  step={0.01}
+                  valueDisplay="text"
+                  formatValue={v => (v < -0.05 ? '上' : v > 0.05 ? '下' : '真ん中') + `（${Math.round(v * 100)}）`}
+                  onChange={(y: number) => setFx(i, {...fx, y})}
+                />
+              </HStack>
+              <ColorRow label="光の色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'bulge' && (
+            <VStack gap={2}>
+              <Slider
+                label="膨らみ"
+                description="マイナスにすると真ん中が縮みます"
+                value={fx.amount}
+                min={-1}
+                max={1}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={pct}
+                onChange={(amount: number) => setFx(i, {...fx, amount})}
+              />
+            </VStack>
+          )}
+          {fx.kind === 'mirror' && (
+            <VStack gap={2}>
+              <Selector
+                label="写し方"
+                value={fx.mode}
+                options={[
+                  {value: 'left', label: '左半分を右へ'},
+                  {value: 'right', label: '右半分を左へ'},
+                  {value: 'top', label: '上半分を下へ'},
+                  {value: 'bottom', label: '下半分を上へ'},
+                  {value: 'quad', label: '左上を 4 つに'},
+                  {value: 'kaleido', label: '万華鏡'},
+                ]}
+                onChange={v => setFx(i, {...fx, mode: v as typeof fx.mode})}
+              />
+              {fx.mode === 'kaleido' && (
+                <Slider
+                  label="分かれる数"
+                  value={fx.segments}
+                  min={2}
+                  max={24}
+                  step={1}
+                  valueDisplay="text"
+                  formatValue={v => `${v} つ`}
+                  onChange={(segments: number) => setFx(i, {...fx, segments})}
+                />
+              )}
+            </VStack>
+          )}
+          {fx.kind === 'tile' && (
+            <VStack gap={2}>
+              <Slider label="縦横の数" value={fx.count} min={2} max={12} step={1} valueDisplay="text" formatValue={v => `${v} × ${v}`} onChange={(count: number) => setFx(i, {...fx, count})} />
+              <Switch
+                label="ひとつおきに裏返す"
+                description="つなぎ目が目立たなくなります"
+                value={fx.flip}
+                onChange={flip => setFx(i, {...fx, flip})}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+              />
+            </VStack>
+          )}
+          {fx.kind === 'colorKeep' && (
+            <VStack gap={2}>
+              <ColorRow label="残す色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <Slider
+                label="色の幅"
+                description="広げると近い色も残ります"
+                value={fx.range}
+                min={0}
+                max={0.5}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={pct}
+                onChange={(range: number) => setFx(i, {...fx, range})}
+              />
+              <Slider label="境目のなめらかさ" value={fx.soft} min={0} max={0.5} step={0.01} valueDisplay="text" formatValue={pct} onChange={(soft: number) => setFx(i, {...fx, soft})} />
             </VStack>
           )}
           {fx.kind === 'jitter' && (
