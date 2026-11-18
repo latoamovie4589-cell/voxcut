@@ -3,6 +3,8 @@
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
 import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
+import {timerStep, timerText, type Marker} from '../model';
+import {animFrameAt, animFrames, animImage, animKey} from './anim';
 import {
   BLEND_CANVAS,
   animStateAt,
@@ -1304,7 +1306,11 @@ export function subtitleImage(v: VoiceClip, sc: SubtitleCustom, visible?: number
 }
 
 /** テキスト・図形の画像（画像・動画は null）。local はアイテムの頭からのフレーム（1 文字ずつ出すテキストで使う） */
-export function itemImage(c: VisualClip, local?: number): HTMLCanvasElement | null {
+export function itemImage(c: VisualClip, local?: number, fps = 30, markers: Marker[] = []): HTMLCanvasElement | null {
+  // 動く図形（粒・進行バー・グラフ）：書き出しで並べる画像と同じコマの絵
+  if (c.type === 'shape' && c.anim) return animImage(c, animFrameAt(c, local ?? 0, fps), fps, markers);
+  // タイマー：その時刻の数字を入れた文
+  if (c.type === 'text' && c.timer) return textImage({...c, charAnim: null, text: timerText(c.timer, c.text, local ?? 0, fps)});
   if (c.type === 'text') return textImage(c, c.charAnim ? {charFrame: local ?? 1e9} : {});
   if (c.type === 'shape') return shapeImage(c);
   return null;
@@ -1333,9 +1339,24 @@ export async function bakeItemImages(project: Project): Promise<Record<string, s
   const out: Record<string, string> = {};
   // 「個別に設定」した字幕（映像トラックのセリフはそのクリップ、分離した字幕は字幕のクリップの id で渡す）。
   // 1 文字ずつ出す字幕は、文字数ごとの画像を id#1, id#2, … で渡す（書き出しの prepare_sequences が順に並べる）
-  const items: {id: string; img: HTMLCanvasElement; key: unknown}[] = [];
+  // 画像はあとで 1 枚ずつ描く（粒などはコマ数が多く、先に全部描くと場所を取る）
+  const items: {id: string; img?: HTMLCanvasElement; make?: () => HTMLCanvasElement; key: unknown}[] = [];
+  const fps = project.video.fps;
   for (const c of project.clips) {
-    if (c.type === 'text' && c.charAnim) {
+    if (c.type === 'shape' && c.anim) {
+      // 動く図形：書き出しの prepare_sequences が ShapeAnim::sequence の間隔で並べる（粒はくり返す）
+      const markers = project.markers ?? [];
+      animFrames(c, fps).forEach((f, k) => items.push({id: `${c.id}#${k + 1}`, make: () => animImage(c, f, fps, markers, false), key: animKey(c, f, fps, markers)}));
+      continue;
+    }
+    if (c.type === 'text' && c.timer) {
+      // タイマー：表示が変わるごとの画像（id#1 = 頭。書き出しの prepare_sequences が timer.step ずつ並べる）
+      const step = timerStep(c.timer, project.video.fps);
+      for (let k = 0; k * step < c.duration; k++) {
+        const t = {...c, charAnim: null, text: timerText(c.timer, c.text, k * step, project.video.fps)};
+        items.push({id: `${c.id}#${k + 1}`, img: textImage(t), key: textKey(t)});
+      }
+    } else if (c.type === 'text' && c.charAnim) {
       // 1 文字ずつ出すテキスト：出きるまでのコマごとの画像（id#1 = 頭のコマ…。書き出しの prepare_sequences が 1 コマずつ並べる）
       const F = Math.min(c.duration, charAnimFrames(c.charAnim, textCharCount(c.text)));
       for (let f = 0; f <= F; f++) items.push({id: `${c.id}#${f + 1}`, img: textImage(c, {charFrame: f}), key: [...textKey(c), f]});
@@ -1353,10 +1374,11 @@ export async function bakeItemImages(project: Project): Promise<Record<string, s
       for (let k = 1; k <= n; k++) items.push({id: `${c.id}#${k}`, img: subtitleImage(v, sc, k), key: [...base, subtitleExtra(sc, k)]});
     } else items.push({id: c.id, img: subtitleImage(v, sc), key: [...base, subtitleExtra(sc)]});
   }
-  for (const {id, img, key} of items) {
+  for (const {id, img: made, make, key} of items) {
     const name = `item-${hashKey(JSON.stringify(key))}`;
     let path = await a.portraitPngPath(name);
     if (!path) {
+      const img = made ?? make!();
       const png = await new Promise<Uint8Array>((resolve, reject) =>
         img.toBlob(b => (b ? b.arrayBuffer().then(x => resolve(new Uint8Array(x)), reject) : reject(new Error('画像にできません'))), 'image/png'),
       );

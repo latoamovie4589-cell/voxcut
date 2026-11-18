@@ -32,6 +32,8 @@ import {
   cameraView,
   groupRanges,
   sceneOf,
+  soundFadeAt,
+  breathScale,
 } from '../model';
 import {distort, drawRegion, drawVisual, itemSource, vizImage, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -531,6 +533,15 @@ export function Preview() {
       const psdFrame = psdPreviewFrame(pt, expressionFor(p, ch, expr), eyes, mouth, projectPath, bump);
       if (!psdFrame) return;
       const tr = tf(key, item.transform);
+      // 呼吸：足もと（伸ばす前の下端）を止めて、縦だけ伸ばす（書き出しの overlay_portrait と同じ）
+      const k = breathScale(pt.breath, playhead / fps);
+      if (k !== 1) {
+        const r0 = placeRect(tr, psdFrame.size, w, h, scale);
+        ctx.save();
+        ctx.translate(0, r0.y + r0.h);
+        ctx.scale(1, k);
+        ctx.translate(0, -(r0.y + r0.h));
+      }
       // エフェクトがあれば書き出しと同じ計算で（preview/visual.ts）
       const rect = effects.length
         ? drawVisual(
@@ -544,6 +555,7 @@ export function Preview() {
             scale,
           )
         : place(ctx, psdFrame.image, tr, w, h, scale, psdFrame.size);
+      if (k !== 1) ctx.restore();
       if (!locked.has(item.trackId)) targets.push({key, kind: 'media', id: item.id, rect, transform: tf(key, item.transform)});
     };
 
@@ -673,7 +685,7 @@ export function Preview() {
             continue;
           }
           if (c.type === 'text' || c.type === 'shape') {
-            const img = itemImage(c, playhead - c.start)!;
+            const img = itemImage(c, playhead - c.start, fps, p.markers)!;
             const key = `m:${c.id}`;
             const rect = put(img, [img.width, img.height], key, c.transform);
             if (!locked.has(c.trackId) && !c.id.includes('~')) targets.push({key, kind: 'media', id: c.id, rect, transform: tf(key, c.transform)});
@@ -712,7 +724,8 @@ export function Preview() {
               // 切り替えで映像だけを延ばした部分は音を出さない
               const voiced = m.audioUntil === undefined || playhead - m.start < m.audioUntil;
               // 音を加工した動画は、加工した音を別に鳴らす（下の <audio>）ので、動画の音は出さない
-              const vol = m.hasAudio && audible.has(t.id) && voiced && !hasAudioFx(m) ? m.volume * duck : 0;
+              const fade = soundFadeAt(m, (playhead - m.start) / fps, (m.audioUntil ?? m.duration) / fps, fps);
+              const vol = m.hasAudio && audible.has(t.id) && voiced && !hasAudioFx(m) ? m.volume * duck * fade : 0;
               // 速さ・逆再生・静止（書き出しと同じ対応。逆再生と静止は止めたままコマを合わせ、音は出さない）
               const sp = speedAt(m, playhead - m.start);
               if (syncVideo(v, srcFrameAt(m, playhead - m.start) / fps, isPlaying, sp > 0 ? vol : 0, playRate * sp)) {
@@ -800,7 +813,8 @@ export function Preview() {
         const t = p.tracks.find(x => x.id === c.trackId);
         const duck = t?.duck ? duckGain(duckIv(), t.duckLevel, playhead / fps) : 1;
         const sp = speedAt(c, playhead - c.start);
-        syncVideo(el, srcFrameAt(c, playhead - c.start) / fps, true, sp > 0 ? c.volume * duck : 0, playRate * sp);
+        const fade = soundFadeAt(c, (playhead - c.start) / fps, (c.audioUntil ?? c.duration) / fps, fps);
+        syncVideo(el, srcFrameAt(c, playhead - c.start) / fps, true, sp > 0 ? c.volume * duck * fade : 0, playRate * sp);
         activeVideos.add(el);
       }
     pauseExcept(activeVideos);

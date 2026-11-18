@@ -7,7 +7,7 @@
 import {api} from '../ipc';
 import type {MediaClip, VoiceClip} from '../model';
 import {scheduleDuck, voiceIntervals} from '../ducking';
-import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed, hasAudioFx} from '../model';
+import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed, hasAudioFx, soundFadeAt, withCrossfades} from '../model';
 import {callRemote, getState, setState} from '../store';
 import {pauseAll} from './video';
 
@@ -110,12 +110,24 @@ function voiceChain(ac: AudioContext, src: AudioNode, c: VoiceClip, vol: number,
   return node;
 }
 
+/** 素材の音のフェード（書き出しの sound_fades と同じ直線）。into はクリップの頭からの秒、at はそれが鳴る時刻 */
+function fadeGain(ac: AudioContext, c: MediaClip, fps: number, into: number, at: number, rate: number): GainNode {
+  const g = ac.createGain();
+  const dur = c.duration / fps;
+  const fi = (c.soundFadeIn ?? 0) / fps;
+  const fo = Math.min(dur, (c.soundFadeOut ?? 0) / fps);
+  g.gain.setValueAtTime(soundFadeAt(c, into, dur, fps), at);
+  for (const tau of [fi, dur - fo, dur].filter(x => x > into).sort((a, b) => a - b)) g.gain.linearRampToValueAtTime(soundFadeAt(c, tau, dur, fps), at + (tau - into) / rate);
+  return g;
+}
+
 /** 再生する。rate は 1・2・4（順方向）か -1・-2・-4（逆方向、音なし） */
 export async function play(rate = 1) {
   // 切り離したウィンドウでは、再生はメインウィンドウで行う
   if (callRemote('play', [rate])) return;
   const s = getState();
-  const p = s.project;
+  // クロスフェードは前の音を延ばして鳴らす（書き出しと同じ）
+  const p = s.project && withCrossfades(s.project);
   if (!p) return;
   cancelAnimationFrame(raf);
   stopSources();
@@ -170,8 +182,12 @@ export async function play(rate = 1) {
         const gain = ac.createGain();
         if (track?.duck && intervals.length) scheduleDuck(gain.gain, intervals, track.duckLevel, c.volume, t0, startFrame / fps, rate);
         else gain.gain.value = c.volume;
-        src.connect(gain).connect(ac.destination);
         const into = Math.max(0, startFrame - c.start);
+        const when0 = t0 + Math.max(0, (c.start - startFrame) / fps / rate);
+        src
+          .connect(gain)
+          .connect(fadeGain(ac, c, fps, into / fps, Math.max(when0, ac.currentTime), rate))
+          .connect(ac.destination);
         const offset = (c.inPoint + into) / fps;
         const when = t0 + Math.max(0, (c.start - startFrame) / fps / rate);
         const at = Math.max(when, ac.currentTime);
