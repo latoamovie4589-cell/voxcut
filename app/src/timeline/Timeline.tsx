@@ -1940,6 +1940,9 @@ export function Timeline() {
             {label: 'グループ制御', onClick: () => addControl('group')},
             {label: 'カメラ', onClick: () => addControl('camera')},
             {label: '調整レイヤー', onClick: () => addControl('adjust')},
+            {label: '画面を VHS 風に', onClick: () => addControl('adjust', [{kind: 'vhs', amount: 0.6}])},
+            {label: '画面を古いフィルムに', onClick: () => addControl('adjust', [{kind: 'film', amount: 0.7}])},
+            {label: '画面をブラウン管に', onClick: () => addControl('adjust', [{kind: 'crt', amount: 0.6}])},
           ],
         },
         {label: 'スタンプを追加', items: STICKERS.map(st => ({label: SHAPE_LABEL[st.kind], onClick: () => addSticker(st.kind)}))},
@@ -2062,6 +2065,9 @@ export function Timeline() {
           <DropdownMenuItem label="グループ制御" description="すぐ下のレイヤーをまとめて動かす" onClick={() => addControl('group')} />
           <DropdownMenuItem label="カメラ" description="下の全部をカメラで撮ったように動かす" onClick={() => addControl('camera')} />
           <DropdownMenuItem label="調整レイヤー" description="下の全部にエフェクトを掛ける" onClick={() => addControl('adjust')} />
+          <DropdownMenuItem label="画面を VHS 風に" description="調整レイヤーで、下の全部をビデオテープ風に" onClick={() => addControl('adjust', [{kind: 'vhs', amount: 0.6}])} />
+          <DropdownMenuItem label="画面を古いフィルムに" description="セピア・ちらつき・傷" onClick={() => addControl('adjust', [{kind: 'film', amount: 0.7}])} />
+          <DropdownMenuItem label="画面をブラウン管に" description="走査線と RGB の縦じま" onClick={() => addControl('adjust', [{kind: 'crt', amount: 0.6}])} />
         </DropdownMenu>
         <DropdownMenu button={{label: '効果音', size: 'sm', variant: 'ghost', icon: <Icon icon={Music2} />, isIconOnly: compact, tooltip: '効果音を再生位置に追加'}} menuWidth={160}>
           {SFX_LIST.map(sx => (
