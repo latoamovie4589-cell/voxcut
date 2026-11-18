@@ -865,6 +865,53 @@ async def main():
             ok, m = min((close_row(r4[y + dy], want, 40, 4) for dy in (0, 1)), key=lambda t: t[1])
             check(f"グリッチノイズ：{y} 行目のずれと色ずれが書き出しと同じ（いちばん大きい差 {m}）", ok, str(r4[y]))
         check("グリッチノイズ：横線のノイズが書き出しと同じ所（22 行目あたり）に出る", any(sum(1 for v in r4[y][12:52] if 30 < v < 225) > 15 for y in (21, 22, 23)), str(r4[22]))
+        r5 = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+  const shot=(iw, ih, fill, look, at)=>{const im=document.createElement('canvas'); im.width=iw; im.height=ih; const g=im.getContext('2d'); fill(g);
+    const L={rotation:0, fadeIn:0, fadeOut:0, ...look}; const tr={x:0,y:0,scale:1,opacity:1}; const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+    const st=v.visualAt(tr, L, at*30, 90, 30, at, [64,36]); const sv=v.itemSource(im, [iw,ih], L, st, at, 1, 30); v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1);
+    const d=x.getImageData(0,0,64,36).data; const gy=(X,Y)=>Math.round(0.299*d[(Y*64+X)*4]+0.587*d[(Y*64+X)*4+1]+0.114*d[(Y*64+X)*4+2]);
+    return {row:y=>Array.from({length:64},(_,X)=>gy(X,y)), col:X=>Array.from({length:36},(_,y)=>gy(X,y)), rgb:(X,Y)=>[d[(Y*64+X)*4],d[(Y*64+X)*4+1],d[(Y*64+X)*4+2]]}};
+  const fill=c=>g=>{g.fillStyle=c; g.fillRect(0,0,99,99)}; const W=fill('#fff');
+  const half=(a,b)=>g=>{g.fillStyle=a; g.fillRect(0,0,20,20); g.fillStyle=b; g.fillRect(20,0,20,20)};
+  const mo=(k,en)=>en?{enter:{kind:k, frames:15}}:{exit:{kind:k, frames:15}}; const fx=e=>({effects:[e]});
+  const o={};
+  let s=shot(40,20,W,mo('spin',true),0.25); o.SPIN18=s.row(18); o.SPIN13=s.row(13);
+  s=shot(20,20,W,mo('bounce',true),0.35); o.BOUNCE18=s.row(18);
+  s=shot(20,20,W,mo('blur',true),0.2); o.BLUR18=s.row(18);
+  s=shot(40,20,W,mo('iris',true),0.25); o.IRIS18=s.row(18); o.IRIS10=s.row(10);
+  s=shot(40,20,W,mo('iris',false),2.75); o.IRISX18=s.row(18);
+  s=shot(20,20,W,fx({kind:'pulse', amount:0.5, bpm:60}),0.05); o.PULSE18=s.row(18);
+  s=shot(20,20,W,fx({kind:'spin', rpm:60}),0.125); o.SPINFX18=s.row(18); o.SPINFX8=s.row(8);
+  s=shot(20,20,W,fx({kind:'bounce', height:10, bpm:60}),0.5); o.BOUNCEFX31=s.col(31);
+  s=shot(20,20,fill('#f00'),fx({kind:'hueCycle', rpm:60, offset:0}),1/3); o.HUE=s.rgb(31,18);
+  s=shot(40,20,half('rgb(150,150,150)','rgb(100,100,100)'),fx({kind:'sharpen', amount:1}),0.1); o.SHARP18=s.row(18);
+  s=shot(20,20,W,fx({kind:'innerShadow', color:'#000000', blur:0, x:3, y:3, opacity:1}),0.1); o.INNER18=s.row(18); o.INNER31=s.col(31);
+  s=shot(20,20,fill('#808080'),fx({kind:'bevel', size:4, strength:1, angle:135}),0.1); o.BEVEL18=s.row(18); o.BEVEL31=s.col(31);
+  s=shot(40,20,half('#fff','#000'),fx({kind:'emboss', amount:1, angle:180, keepColor:false}),0.1); o.EMBOSS18=s.row(18);
+  return o}""")
+        ref5 = {"SPIN18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 160, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "SPIN13": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 201, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "BOUNCE18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "BLUR18": [2, 2, 3, 3, 3, 4, 4, 5, 6, 9, 10, 11, 13, 16, 18, 22, 25, 30, 36, 41, 48, 57, 67, 74, 81, 87, 91, 95, 97, 100, 102, 102, 102, 102, 100, 97, 95, 91, 87, 81, 74, 67, 57, 48, 41, 36, 30, 25, 22, 18, 16, 13, 11, 10, 9, 6, 5, 4, 4, 3, 3, 3, 2, 2], "IRIS18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "IRIS10": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "IRISX18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "PULSE18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "SPINFX18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "SPINFX8": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "BOUNCEFX31": [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "SHARP18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 215, 38, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "INNER18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "INNER31": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0], "BEVEL18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 211, 170, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 85, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "BEVEL31": [0, 0, 0, 0, 0, 0, 0, 0, 255, 211, 170, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 85, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0], "EMBOSS18": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 0, 0, 0, 0, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+        def span(a):
+            s = sum(a) / 255
+            c = sum(i * v for i, v in enumerate(a)) / max(1, sum(a))
+            return s, c
+        for key, (label, how) in {"SPIN18": ["登場「回転しながら」：途中で 90° 回って 4 分の 3 の大きさ", "w"], "SPIN13": ["登場「回転しながら」（上の方の行）", "w"], "BOUNCE18": ["登場「跳ねて」：行きすぎて元より大きい", "w"], "BLUR18": ["登場「ぼかしから」：ぼけて薄い（8 段のぼかし）", "v"], "IRIS18": ["登場「丸く広がる」：真ん中の丸だけ見える", "w"], "IRIS10": ["登場「丸く広がる」：上の方は丸の幅が狭い", "w"], "IRISX18": ["退場「丸く狭まる」", "w"], "PULSE18": ["拍動：拍の頭で大きくなる", "w"], "SPINFX18": ["回り続ける：45° 回る", "w"], "SPINFX8": ["回り続ける：ひし形の上の角", "w"], "BOUNCEFX31": ["跳ねる：上へ 10px", "v"], "SHARP18": ["シャープ：境目がくっきり", "v"], "INNER18": ["内側の影：左の内側が暗い", "v"], "INNER31": ["内側の影：上の内側が暗い", "v"], "BEVEL18": ["ベベル：左は明るく右は暗い縁", "v"], "BEVEL31": ["ベベル：上は明るく下は暗い縁", "v"], "EMBOSS18": ["エンボス：境目だけ浮き出る", "v"]}.items():
+            got, want = r5[key], ref5[key]
+            if how == 'w':
+                (gs, gc), (ws, wc) = span(got), span(want)
+                ok = abs(gs - ws) <= 2.5 and abs(gc - wc) <= 1.5
+                check(f"{label}（書き出しと同じ。幅 {gs:.1f}／{ws:.1f}・真ん中 {gc:.1f}／{wc:.1f}）", ok, str(got))
+            else:
+                ok, m = close_row(got, want, 16, 2)
+                check(f"{label}（書き出しと同じ。いちばん大きい差 {m}）", ok, str(got))
+        check("色相の回転：赤が 1/3 秒で 120° 回って緑に（書き出しは 0・110・0）", abs(r5['HUE'][1] - 110) <= 8 and r5['HUE'][0] < 10 and r5['HUE'][2] < 10, str(r5['HUE']))
+        r6 = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts');
+          const img=(id,start)=>({id, type:'media', trackId:'V1', start, duration:60, src:'/x.png', mediaKind:'image', hasAudio:false, inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, look:{rotation:0, fadeIn:0, fadeOut:0}});
+          const run=kind=>{const p={video:{width:64,height:36,fps:30,sampleRate:48000,background:'#000'}, tracks:[{id:'V1',kind:'video',name:'',muted:false,locked:false,duck:false,duckLevel:0.3}], characters:[], clips:[img('a',0), {...img('b',60), look:{rotation:0, fadeIn:0, fadeOut:0, transition:{kind, frames:20}}}]};
+            const q=m.withTransitions(p); const g=id=>q.clips.find(c=>c.id===id); return {a:[g('a').duration, g('a').look.exit?.kind ?? null, g('a').look.exit?.frames ?? 0], b:[g('b').look.enter?.kind ?? null, g('b').look.enter?.frames ?? 0, !!g('b').look.enter?.smooth], ids:q.clips.map(c=>c.id), gl:g('b~glitch') ? [g('b~glitch').start, g('b~glitch').duration, g('b~glitch').control?.kind, g('b~glitch').look.effects[0].kind] : null}};
+          return {iris:run('iris'), wipe:run('wipeDown'), blur:run('blur'), glitch:run('glitch')}}""")
+        check("切り替え「円形」「ワイプ」：前を延ばして、次の場面を広げる（書き出しの with_transitions と同じ）", r6['iris']['a'][0] == 80 and r6['iris']['b'] == ['iris', 20, True] and r6['wipe']['b'][0] == 'wipeDown', str(r6))
+        check("切り替え「ブラー」：前はぼやけて消え、次はぼやけた所から（半分ずつ）", r6['blur']['a'][1:] == ['blur', 10] and r6['blur']['b'][:2] == ['blur', 10], str(r6['blur']))
+        check("切り替え「グリッチ」：つなぎ目の前後に、乱す調整レイヤーが手前に 1 つ", r6['glitch']['gl'] == [50, 20, 'adjust', 'glitchNoise'] and r6['glitch']['ids'][-1] == 'b~glitch', str(r6['glitch']))
         check("網点：50% の灰色は、点の真ん中を通る列がほぼ黒く、点の境目だけ明るい（書き出しは 129・0…0・129）", sum(v < 60 for v in r3['ht']) >= 14 and max(r3['ht']) >= 100, str(r3['ht']))
         check("光漏れ：書き出しと同じだけ明るくなる（139・109・124）", any(all(abs(a - b) <= 15 for a, b in zip(g, [139, 109, 124])) for g in (r3['ll'], r3['ll1'])), str(r3['ll']) + str(r3['ll1']))
         check("縁取り（書き出しと同じく形のまわり 4px が赤）", r['a'][0] > 200 and r['a'][1] < 60, str(r))
