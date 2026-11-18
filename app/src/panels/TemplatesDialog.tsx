@@ -12,8 +12,21 @@ import {Download, Plus, Upload, X} from 'lucide-react';
 import {api} from '../ipc';
 import type {Notify} from '../actions';
 import {isVisual, type PortraitClip} from '../model';
-import {insertItemTemplate, setState, updateCharacter, updateClip, useStore} from '../store';
-import {itemTemplateName, removeTemplate, renameTemplate, saveTemplate, templatesFromFile, templatesToFile, useTemplates, type Template, type TemplateKind} from '../templates';
+import {insertGroupTemplate, insertItemTemplate, setState, updateCharacter, updateClip, useStore} from '../store';
+import {
+  groupTemplateName,
+  groupable,
+  toGroup,
+  itemTemplateName,
+  removeTemplate,
+  renameTemplate,
+  saveTemplate,
+  templatesFromFile,
+  templatesToFile,
+  useTemplates,
+  type Template,
+  type TemplateKind,
+} from '../templates';
 
 function Rows({kind, list, action, onUse, disabled}: {kind: TemplateKind; list: Template[]; action: string; onUse: (t: Template) => void; disabled?: string | null}) {
   const rows = list.filter(t => t.kind === kind);
@@ -37,6 +50,7 @@ export function TemplatesDialog({notify}: {notify: Notify}) {
   const isOpen = useStore(s => s.templatesOpen);
   const project = useStore(s => s.project);
   const selectedId = useStore(s => s.selectedClipId);
+  const selectedIds = useStore(s => s.selectedClipIds);
   const characterId = useStore(s => s.selectedCharacterId);
   const list = useTemplates();
   const close = () => setState({templatesOpen: false});
@@ -47,6 +61,7 @@ export function TemplatesDialog({notify}: {notify: Notify}) {
   const portraitItem = sel?.type === 'portrait' ? (sel as PortraitClip) : null;
   const ch = project.characters.find(c => c.id === (portraitItem?.characterId ?? characterId)) ?? project.characters[0];
   const placement = portraitItem?.transform ?? ch?.portrait?.transform ?? null;
+  const groupCount = project.clips.filter(c => selectedIds.includes(c.id) && groupable(c)).length;
   const who = ch ? `「${ch.name}」` : '';
 
   return (
@@ -116,6 +131,36 @@ export function TemplatesDialog({notify}: {notify: Notify}) {
                   if (!item) return;
                   const t = saveTemplate('item', itemTemplateName(item), item);
                   notify(`テンプレート「${t.name}」に保存しました`, 'info');
+                }}
+              />
+            </div>
+          </VStack>
+          <VStack gap={2} data-group-templates>
+            <Heading level={3}>まとめたアイテム（オープニング・エンディングなど）</Heading>
+            <Text type="supporting">いくつものアイテムを、並びとタイミングごと取っておけます。セリフと字幕は入りません。</Text>
+            <Rows
+              kind="group"
+              list={list}
+              action="再生位置に置く"
+              onUse={t => {
+                if (t.kind !== 'group') return;
+                const n = insertGroupTemplate(t.data);
+                if (n) notify(`「${t.name}」の ${n} 個を置きました`, 'info');
+                close();
+              }}
+            />
+            <div>
+              <Button
+                label={groupCount >= 2 ? `選んでいる ${groupCount} 個をまとめて保存` : '選んでいるアイテムをまとめて保存'}
+                size="sm"
+                icon={<Icon icon={Plus} />}
+                isDisabled={groupCount < 2}
+                tooltip={groupCount >= 2 ? undefined : 'タイムラインで Shift か Ctrl を押しながら、アイテムを 2 つ以上選んでください'}
+                onClick={() => {
+                  const items = toGroup(project, selectedIds);
+                  if (items.length < 2) return;
+                  const t = saveTemplate('group', groupTemplateName(items), items);
+                  notify(`テンプレート「${t.name}」に ${items.length} 個を保存しました`, 'info');
                 }}
               />
             </div>
