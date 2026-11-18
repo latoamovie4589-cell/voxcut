@@ -3,6 +3,8 @@
 
 import {useSyncExternalStore} from 'react';
 import type {
+  Chart,
+  Particles,
   LineAudio,
   CaptionClip,
   Character,
@@ -23,7 +25,8 @@ import type {
   VoiceParams,
   VoicePreset,
 } from './model';
-import type {DictEntry, MediaInfo} from './ipc';
+import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
+import {PARTICLE_PRESET} from './preview/anim';
 import {
   isPlainLineAudio,
   plainLineAudio,
@@ -73,6 +76,16 @@ export function setInputMode(m: InputMode) {
     // 保存できなくても、この起動中は使える
   }
   setState({inputMode: m});
+}
+
+/** 書き出しの予約 1 件 */
+export interface ExportJob {
+  id: string;
+  out: string;
+  what: 'video' | 'gif' | 'audio' | 'subtitle';
+  options: ExportRequest;
+  /** 一覧に出す説明（形式・範囲） */
+  label: string;
 }
 
 export interface State {
@@ -156,6 +169,14 @@ export interface State {
   missingMedia: string[];
   /** キーボードショートカットの一覧を開いているか */
   shortcutsOpen: boolean;
+  /** キー操作の割り当てを変えるダイアログ */
+  keymapOpen: boolean;
+  /** 以前の版から戻すダイアログ */
+  backupOpen: boolean;
+  /** 画面分割のダイアログ */
+  splitOpen: boolean;
+  /** まとめて書き出す予約（順番に書き出す。保存しない） */
+  exportQueue: ExportJob[];
   /** ファイルをドラッグして画面の上にいるか */
   dropActive: boolean;
   /** 複数選択しているクリップ（selectedClipId も含む） */
@@ -216,6 +237,10 @@ let state: State = {
   mediaOpen: false,
   missingMedia: [],
   shortcutsOpen: false,
+  keymapOpen: false,
+  backupOpen: false,
+  splitOpen: false,
+  exportQueue: [],
   dropActive: false,
   selectedClipIds: [],
   linkedSelection: true,
@@ -1361,6 +1386,75 @@ export function addAudioViz(kind: 'wave' | 'bars'): string | null {
   return id;
 }
 
+/** 紙吹雪・雪・花びら・キラキラを、画面いっぱいに置く */
+export function addParticles(type: Particles['type']): string | null {
+  const p = state.project;
+  const id = addVisualItem('shape', 'rect');
+  const pr = PARTICLE_PRESET[type];
+  if (id && p)
+    updateClip(id, {
+      anim: {kind: 'particles', type, amount: pr.amount, speed: pr.speed, size: pr.size, colors: pr.colors},
+      width: p.video.width,
+      height: p.video.height,
+      fill: '#ffffff',
+      stroke: '',
+      strokeWidth: 0,
+      duration: p.video.fps * 5,
+      transform: {x: 0, y: 0, scale: 1, opacity: 1},
+    } as Partial<Clip>);
+  return id;
+}
+
+/** 進行バー：画面の下に、再生位置から動画の終わりまで（マーカーを章の区切りに） */
+export function addProgressBar(): string | null {
+  const p = state.project;
+  const id = addVisualItem('shape', 'rect');
+  if (id && p) {
+    const h = Math.max(8, Math.round(p.video.height * 0.012));
+    updateClip(id, {
+      anim: {kind: 'progress', trackColor: '#FFFFFF55', chapters: true, labels: false},
+      width: p.video.width,
+      height: h,
+      fill: '#FF3B30',
+      stroke: '#FFFFFF',
+      strokeWidth: 0,
+      duration: Math.max(p.video.fps, projectDuration(p) - state.playhead),
+      transform: {x: 0, y: Math.round(p.video.height / 2 - h / 2), scale: 1, opacity: 1},
+    } as Partial<Clip>);
+  }
+  return id;
+}
+
+/** グラフ：見本の数字で置く（プロパティで数字を入れる） */
+export function addChart(chart: Chart['chart']): string | null {
+  const p = state.project;
+  const id = addVisualItem('shape', 'rect');
+  if (id && p)
+    updateClip(id, {
+      anim: {
+        kind: 'chart',
+        chart,
+        items: [
+          {label: 'A', value: 42, color: '#5AC8FA'},
+          {label: 'B', value: 28, color: '#FF9500'},
+          {label: 'C', value: 18, color: '#34C759'},
+          {label: 'D', value: 12, color: '#FF3B30'},
+        ],
+        grow: p.video.fps,
+        showValues: true,
+        unit: '%',
+        textColor: '#FFFFFF',
+      },
+      width: Math.round(p.video.width * 0.5),
+      height: Math.round(p.video.height * 0.5),
+      fill: '#ffffff',
+      stroke: '',
+      strokeWidth: 0,
+      duration: p.video.fps * 5,
+    } as Partial<Clip>);
+  return id;
+}
+
 /** スタンプを再生位置に置く（大きさと色はスタンプごとの決まり） */
 export function addSticker(kind: ShapeKind): string | null {
   const st = STICKERS.find(x => x.kind === kind);
@@ -1685,12 +1779,13 @@ export function relinkPaths(map: Record<string, string>) {
  * 置くトラック：選んでいるアイテムのトラック（同じ種類で、置く間ずっと空いているとき）→ 置く間ずっと空いている最初のトラック
  * （音声はセリフの無いトラックを先に）→ 無ければ新しく足す。既存のクリップを押し出さない
  */
-export function addMediaClips(items: {path: string; info: MediaInfo}[]) {
+export function addMediaClips(items: {path: string; info: MediaInfo}[], drop?: {frame: number; trackId?: string}) {
   const p = state.project;
   if (!p || !items.length) return;
   const fps = p.video.fps;
-  const sel = p.clips.find(c => c.id === state.selectedClipId);
-  let at = state.playhead;
+  // 落とした所があれば、そのフレーム・そのレイヤーを先に試す（空いていなければ、いつもどおり空いているレイヤーへ）
+  const sel = drop ? (drop.trackId ? {trackId: drop.trackId} : undefined) : p.clips.find(c => c.id === state.selectedClipId);
+  let at = drop ? Math.max(0, Math.round(drop.frame)) : state.playhead;
   const placed = items.map(({path, info}) => {
     const duration = info.durationMs ? Math.max(1, Math.round((info.durationMs * fps) / 1000)) : fps * 5;
     const r = {path, info, start: at, duration, kind: (info.kind === 'audio' ? 'audio' : 'video') as 'video' | 'audio'};
