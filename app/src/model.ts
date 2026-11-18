@@ -913,6 +913,18 @@ export type Effect =
   | {kind: 'dirBlur'; length: number; angle: number}
   /** 二値化（しきい値 0〜1） */
   | {kind: 'threshold'; level: number}
+  /** VHS 風（強さ 0〜1）：横の揺れ・流れる帯・色のにじみ・走査線・ノイズ */
+  | {kind: 'vhs'; amount: number}
+  /** 古いフィルム（強さ 0〜1）：セピア・ちらつき・周辺減光・縦の傷・粒子 */
+  | {kind: 'film'; amount: number}
+  /** ブラウン管（強さ 0〜1）：走査線・RGB の縦じま・周辺減光 */
+  | {kind: 'crt'; amount: number}
+  /** 周辺減光（強さ 0〜1） */
+  | {kind: 'vignette'; amount: number}
+  /** ポスタリゼーション（色の段階の数 2〜16） */
+  | {kind: 'posterize'; levels: number}
+  /** ドット絵風（1 つの点の大きさ px） */
+  | {kind: 'pixelate'; size: number}
   /** ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数） */
   | {kind: 'jitter'; amount: number; speed: number}
   /** 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数） */

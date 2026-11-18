@@ -4,6 +4,7 @@
 import {useSyncExternalStore} from 'react';
 import type {
   Bubble,
+  Effect,
   Chart,
   Lines,
   Particles,
@@ -1284,7 +1285,7 @@ export function addRegion(kind: 'mosaic' | 'blur'): string | null {
  * グループ制御・カメラ・調整レイヤーを再生位置に置く。今見えているアイテムのどれよりも上のレイヤーに置く（下のレイヤーに効くので）。
  * グループ制御は、今見えているアイテムのあるレイヤーをまとめる
  */
-export function addControl(kind: Control['kind']): string | null {
+export function addControl(kind: Control['kind'], effects?: Effect[]): string | null {
   const p = state.project;
   if (!p) return null;
   const id = newId('ct');
@@ -1317,7 +1318,7 @@ export function addControl(kind: Control['kind']): string | null {
       stroke: '',
       strokeWidth: 0,
       transform: {x: 0, y: 0, scale: 1, opacity: 1},
-      look: plainLook(),
+      look: effects ? {...plainLook(), effects: structuredClone(effects)} : plainLook(),
       control: {kind, layers: Math.max(1, ti - Math.max(0, low))},
     };
     return resolveOverlaps({...pr, tracks, clips: [...pr.clips, clip]}, clip.trackId, id);
