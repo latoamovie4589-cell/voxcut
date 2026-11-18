@@ -45,7 +45,18 @@ export interface VisualState {
   rot3d?: [number, number];
   /** 残像（数・間隔フレーム） */
   trail?: [number, number];
+  /** 円形に見せる範囲（アイテムの対角線の半分に対する割合。1 で全部見える） */
+  iris?: number;
 }
+
+/** 拍動の形 exp(−10φ)(1 − exp(−60φ)) のいちばん大きい値が 1 になる倍率（書き出しの PULSE_NORM と同じ） */
+const PULSE_NORM = 1.658;
+/** ぼかしからの登場・退場：いちばん強いぼかし（画面の px）と段の数（書き出しと同じ） */
+const MOTION_BLUR = 24;
+const MOTION_BLUR_STEPS = 8;
+/** 跳ねる登場・退場（行きすぎてから戻る。書き出しと同じ式） */
+const backOut = (p: number) => 1 + 2.70158 * (p - 1) ** 3 + 1.70158 * (p - 1) ** 2;
+const backIn = (p: number) => 2.70158 * p ** 3 - 1.70158 * p ** 2;
 
 /**
  * その時点の見た目。local は アイテムの頭からのフレーム、dur はアイテムの長さ（フレーム）、abs はプロジェクトの頭からの秒
@@ -57,7 +68,7 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
   // 始まり →（キーフレーム…）→ 終わり。区間ごとに動き方を掛ける（書き出しの tween3 と同じ）
   const st = animStateAt(t, l, p);
   const tr: Transform = st.transform;
-  const rotation = st.rotation;
+  let rotation = st.rotation;
   const c01 = (v: number) => Math.min(1, Math.max(0, v));
   let alpha = tr.opacity;
   const sec = local / fps;
@@ -66,10 +77,30 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
   // 登場（残り 1 → 0。だんだん遅く）と退場（進み 0 → 1。だんだん速く）
   const [fw, fh] = frame ?? [1920, 1080];
   const wipe: [number, number, number, number] = [0, 0, 0, 0];
+  let iris = 1;
+  let motionBlur = 0;
   const apply = (m: Look['enter'], k: (len: number) => number, isEnter = false) => {
     if (!m || m.frames <= 0) return;
     const len = Math.min(m.frames / fps, Math.max(1e-3, d));
     const v = k(len);
+    if (m.kind === 'iris') {
+      iris = Math.min(iris, 1 - v);
+      return;
+    }
+    if (m.kind === 'blur') {
+      motionBlur += (MOTION_BLUR * Math.round(v * MOTION_BLUR_STEPS)) / MOTION_BLUR_STEPS;
+      alpha *= 1 - v;
+      return;
+    }
+    if (m.kind === 'bounce') {
+      tr.scale *= isEnter ? backOut(c01(sec / len)) : 1 - backIn(c01((sec - Math.max(0, d - len)) / len));
+      return;
+    }
+    if (m.kind === 'spin') {
+      rotation += (isEnter ? -360 : 360) * v;
+      tr.scale *= 1 - v;
+      return;
+    }
     // クリッピング解除：登場は残り v を、向きの先の側から隠す。退場は進み v を、向きの元の側から隠す（書き出しと同じ）
     if (m.kind.startsWith('wipe')) {
       const side = {wipeRight: [2, 0], wipeLeft: [0, 2], wipeDown: [3, 1], wipeUp: [1, 3]}[m.kind as 'wipeRight'][isEnter ? 0 : 1];
@@ -117,7 +148,13 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
     } else if (fx.kind === 'oscillate') {
       tr.x += fx.x * Math.sin(2 * Math.PI * fx.speed * sec);
       tr.y += fx.y * Math.sin(2 * Math.PI * fx.speed * sec);
-    } else if (fx.kind === 'threshold') filters.push(thresholdFilter(fx.level));
+    } else if (fx.kind === 'pulse' && fx.bpm > 0 && fx.amount > 0) {
+      // 拍動：1 拍の頭でぐっと大きくなり、すぐ戻る
+      const ph = ((((sec * fx.bpm) / 60) % 1) + 1) % 1;
+      tr.scale *= 1 + fx.amount * PULSE_NORM * Math.exp(-10 * ph) * (1 - Math.exp(-60 * ph));
+    } else if (fx.kind === 'spin') rotation += fx.rpm * 6 * sec;
+    else if (fx.kind === 'bounce' && fx.bpm > 0) tr.y -= fx.height * Math.abs(Math.sin((Math.PI * sec * fx.bpm) / 60));
+    else if (fx.kind === 'threshold') filters.push(thresholdFilter(fx.level));
     else if (fx.kind === 'plugin') {
       const f = fx.canvas ? fillTemplate(fx.canvas, fx.values) : null;
       if (f) filters.push(f);
@@ -141,12 +178,13 @@ export function visualAt(t: Transform, look: Look | undefined, local: number, du
     rotation,
     alpha,
     filter: filters.join(' '),
-    blur,
+    blur: blur + motionBlur,
     blend: l?.blend ?? null,
     wipe: wipe.some(v => v > 0) ? wipe : undefined,
     stretch: kx !== 1 || ky !== 1 ? [kx, ky] : undefined,
     rot3d: rot3d[0] || rot3d[1] ? rot3d : undefined,
     trail,
+    iris: iris < 1 ? Math.max(0, iris) : undefined,
   };
 }
 
@@ -451,8 +489,20 @@ export function itemSource(
     x.drawImage(src, 0, 0);
     src = cv;
   }
+  if (st.iris !== undefined) {
+    const iw = (src as HTMLCanvasElement).width || (src as HTMLImageElement).naturalWidth || (src as HTMLVideoElement).videoWidth;
+    const ih = (src as HTMLCanvasElement).height || (src as HTMLImageElement).naturalHeight || (src as HTMLVideoElement).videoHeight;
+    const cv = document.createElement('canvas');
+    cv.width = iw;
+    cv.height = ih;
+    const x = cv.getContext('2d')!;
+    x.arc(iw / 2, ih / 2, (Math.hypot(iw, ih) / 2) * st.iris, 0, Math.PI * 2);
+    x.clip();
+    x.drawImage(src, 0, 0);
+    src = cv;
+  }
   const tl = tilt3d(src, size, st.rot3d);
-  return {img: tl.img, size: tl.size, st: {...st, wipe: undefined}};
+  return {img: tl.img, size: tl.size, st: {...st, wipe: undefined, iris: undefined}};
 }
 
 /**
@@ -741,6 +791,14 @@ export function drawVisual(ctx: CanvasRenderingContext2D, img: CanvasImageSource
     const H = size[1] * s;
     ctx.beginPath();
     ctx.rect(-W / 2 + W * l, -H / 2 + H * t, Math.max(0, W * (1 - l - r)), Math.max(0, H * (1 - t - b)));
+    ctx.clip();
+  }
+  if (st.iris !== undefined) {
+    // 円形：真ん中から、対角線の半分 × iris の丸の中だけ（書き出しと同じ）
+    const W = size[0] * s;
+    const H = size[1] * s;
+    ctx.beginPath();
+    ctx.arc(0, 0, (Math.hypot(W, H) / 2) * st.iris, 0, Math.PI * 2);
     ctx.clip();
   }
   ctx.drawImage(img, (-size[0] * s) / 2, (-size[1] * s) / 2, size[0] * s, size[1] * s);

@@ -6,9 +6,35 @@
 import {hash01, type Effect} from '../model';
 
 type Kinds =
-  'vhs' | 'glitchNoise' | 'film' | 'crt' | 'vignette' | 'posterize' | 'pixelate' | 'lineArt' | 'halftone' | 'duotone' | 'lightLeak' | 'bloom' | 'lensFlare' | 'bulge' | 'mirror' | 'tile' | 'colorKeep';
+  | 'hueCycle'
+  | 'sharpen'
+  | 'innerShadow'
+  | 'bevel'
+  | 'emboss'
+  | 'vhs'
+  | 'glitchNoise'
+  | 'film'
+  | 'crt'
+  | 'vignette'
+  | 'posterize'
+  | 'pixelate'
+  | 'lineArt'
+  | 'halftone'
+  | 'duotone'
+  | 'lightLeak'
+  | 'bloom'
+  | 'lensFlare'
+  | 'bulge'
+  | 'mirror'
+  | 'tile'
+  | 'colorKeep';
 export type RetroEffect = Extract<Effect, {kind: Kinds}>;
 export const RETRO_FX = new Set<string>([
+  'hueCycle',
+  'sharpen',
+  'innerShadow',
+  'bevel',
+  'emboss',
   'vhs',
   'glitchNoise',
   'film',
@@ -41,7 +67,12 @@ export function retroActive(fx: RetroEffect): boolean {
     case 'duotone':
     case 'mirror':
     case 'colorKeep':
+    case 'hueCycle':
+    case 'innerShadow':
+    case 'emboss':
       return true;
+    case 'bevel':
+      return fx.size > 0;
     case 'pixelate':
     case 'halftone':
       return fx.size >= 2;
@@ -75,6 +106,26 @@ const FLARE_GHOSTS: [number, number][] = [
   [1.2, 0.06],
   [1.7, 0.02],
 ];
+/** 色相の回転の行列（CSS の hue-rotate と同じ。書き出しの HUE_ROTATE と同じ）。[定数・cos・sin] × [r, g, b] */
+const HUE_ROTATE = [
+  [
+    [0.213, 0.715, 0.072],
+    [0.787, -0.715, -0.072],
+    [-0.213, -0.715, 0.928],
+  ],
+  [
+    [0.213, 0.715, 0.072],
+    [-0.213, 0.285, -0.072],
+    [0.143, 0.14, -0.283],
+  ],
+  [
+    [0.213, 0.715, 0.072],
+    [-0.213, -0.715, 0.928],
+    [-0.787, 0.715, 0.072],
+  ],
+];
+/** ベベルで縁を読む距離（幅に対する割合。書き出しの BEVEL_STEPS と同じ） */
+const BEVEL_STEPS = [1 / 3, 2 / 3, 1];
 const lum = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 * b;
 const clip01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -164,7 +215,85 @@ export function retroPixels(fx: RetroEffect, d: ImageData, r: number, k: number,
     const p = (xx: number, yy: number) => s[(yy * W + xx) * 4 + c];
     return (1 - fy) * ((1 - fx2) * p(xi, yi) + fx2 * p(xi + 1, yi)) + fy * ((1 - fx2) * p(xi, yi + 1) + fx2 * p(xi + 1, yi + 1));
   };
+  // 不透明度を読む。絵の外は透明（書き出しの alpha_out と同じ）
+  const alphaOut = (xo: number, yo: number) => (xo < 0 || yo < 0 || xo > Wo - 1 || yo > Ho - 1 ? 0 : samp(xo, yo, 3));
   const sampLum = (xo: number, yo: number) => lum(samp(xo, yo, 0), samp(xo, yo, 1), samp(xo, yo, 2));
+  if (fx.kind === 'hueCycle') {
+    const th = ((fx.rpm * 6 * t + fx.offset) * Math.PI) / 180;
+    const c = Math.cos(th);
+    const sn = Math.sin(th);
+    const M = HUE_ROTATE.map(m => [0, 1, 2].map(j => m[0][j] + m[1][j] * c + m[2][j] * sn));
+    for (let i = 0; i < W * H * 4; i += 4) {
+      for (let ch = 0; ch < 3; ch++) out[i + ch] = clip(M[ch][0] * s[i] + M[ch][1] * s[i + 1] + M[ch][2] * s[i + 2]);
+      out[i + 3] = s[i + 3];
+    }
+    return o;
+  }
+  if (fx.kind === 'sharpen') {
+    const a = Math.min(2, fx.amount);
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const y = Y / r;
+        const i = (Y * W + X) * 4;
+        for (let c = 0; c < 3; c++) out[i + c] = clip(s[i + c] * (1 + 4 * a) - a * (samp(x + k, y, c) + samp(x - k, y, c) + samp(x, y + k, c) + samp(x, y - k, c)));
+        out[i + 3] = s[i + 3];
+      }
+    return o;
+  }
+  if (fx.kind === 'bevel' || fx.kind === 'emboss') {
+    const an = (fx.angle * Math.PI) / 180;
+    const lx = Math.cos(an);
+    const ly = -Math.sin(an);
+    for (let Y = 0; Y < H; Y++)
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const y = Y / r;
+        const i = (Y * W + X) * 4;
+        out[i + 3] = s[i + 3];
+        if (fx.kind === 'bevel') {
+          // 光の側の縁を明るく、反対側の縁を暗く（書き出しと同じ式）
+          const s0 = fx.size * k;
+          let dd = 0;
+          for (const tt of BEVEL_STEPS) dd += alphaOut(x - s0 * tt * lx, y - s0 * tt * ly) - alphaOut(x + s0 * tt * lx, y + s0 * tt * ly);
+          dd /= 255 * BEVEL_STEPS.length;
+          const st = clip01(fx.strength);
+          for (let c = 0; c < 3; c++) out[i + c] = clip(s[i + c] + Math.max(dd, 0) * st * (255 - s[i + c]) + Math.min(dd, 0) * st * s[i + c]);
+        } else {
+          const ox = 2 * k * lx;
+          const oy = 2 * k * ly;
+          const v = (sampLum(x - ox, y - oy) - sampLum(x + ox, y + oy)) * (0.5 + 1.5 * clip01(fx.amount));
+          for (let c = 0; c < 3; c++) out[i + c] = clip((fx.keepColor ? s[i + c] : 128) + v);
+        }
+      }
+    return o;
+  }
+  if (fx.kind === 'innerShadow') {
+    // ずらした形の外側を色で塗ってぼかし、形の中にだけ重ねる（書き出しと同じ）
+    const base = document.createElement('canvas');
+    base.width = W;
+    base.height = H;
+    base.getContext('2d')!.putImageData(d, 0, 0);
+    const sh = document.createElement('canvas');
+    sh.width = W;
+    sh.height = H;
+    const sx = sh.getContext('2d')!;
+    sx.globalAlpha = clip01(fx.opacity);
+    sx.fillStyle = fx.color;
+    sx.fillRect(0, 0, W, H);
+    sx.globalAlpha = 1;
+    sx.globalCompositeOperation = 'destination-out';
+    sx.drawImage(base, fx.x * k * r, fx.y * k * r);
+    const res = document.createElement('canvas');
+    res.width = W;
+    res.height = H;
+    const rx = res.getContext('2d', {willReadFrequently: true})!;
+    rx.drawImage(base, 0, 0);
+    rx.globalCompositeOperation = 'source-atop';
+    if (fx.blur > 0) rx.filter = `blur(${fx.blur * k * r}px)`;
+    rx.drawImage(sh, 0, 0);
+    return rx.getImageData(0, 0, W, H);
+  }
   // 読む所を変えるもの（魚眼・鏡写し・タイル）：(x, y) → 読む所
   const remap = (where: (x: number, y: number) => [number, number]) => {
     for (let Y = 0; Y < H; Y++)
