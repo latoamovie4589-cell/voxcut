@@ -925,6 +925,26 @@ export type Effect =
   | {kind: 'posterize'; levels: number}
   /** ドット絵風（1 つの点の大きさ px） */
   | {kind: 'pixelate'; size: number}
+  /** 線画風（線の濃さ 0〜1・元の色を残すか） */
+  | {kind: 'lineArt'; amount: number; keepColor: boolean}
+  /** 網点（点の間隔 px・点の色。空なら元の色） */
+  | {kind: 'halftone'; size: number; ink: string}
+  /** デュオトーン（暗い所の色・明るい所の色・強さ 0〜1） */
+  | {kind: 'duotone'; dark: string; light: string; amount: number}
+  /** 光漏れ（色・強さ 0〜1。ゆっくり動く） */
+  | {kind: 'lightLeak'; color: string; amount: number}
+  /** ブルーム（しきい値 0〜1・強さ 0〜2・広がり px） */
+  | {kind: 'bloom'; threshold: number; amount: number; radius: number}
+  /** レンズフレア（光の位置 -1〜1・強さ 0〜1・色） */
+  | {kind: 'lensFlare'; x: number; y: number; amount: number; color: string}
+  /** 魚眼・膨らみ（-1 で縮む 〜 1 で膨らむ） */
+  | {kind: 'bulge'; amount: number}
+  /** 鏡写し（万華鏡は segments に分かれる） */
+  | {kind: 'mirror'; mode: 'left' | 'right' | 'top' | 'bottom' | 'quad' | 'kaleido'; segments: number}
+  /** タイル（縦横の数・ひとつおきに裏返してつなぐ） */
+  | {kind: 'tile'; count: number; flip: boolean}
+  /** パートカラー（残す色・色の幅 0〜1・境目のなめらかさ 0〜1） */
+  | {kind: 'colorKeep'; color: string; range: number; soft: number}
   /** ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数） */
   | {kind: 'jitter'; amount: number; speed: number}
   /** 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数） */
