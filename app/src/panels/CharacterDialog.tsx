@@ -76,7 +76,7 @@ export function CharacterDialog() {
   // 開いたら、どのソフトの話者も選べるように一覧を読み込んでおく
   useEffect(() => {
     if (!isOpen) return;
-    for (const e of ['voicevox', 'voicepeak', 'aivoice', 'voisona'] as EngineId[]) void loadVoices(e);
+    for (const e of ['voicevox', 'voicepeak', 'aivoice', 'voisona', 'coeiroink', 'aquestalk', 'cevio'] as EngineId[]) void loadVoices(e);
     // プロパティの要約から開いたときは、押した項目のタブで開く
     setTab(getState().inspectorTab);
     // 左の一覧の選び（強調）と右で編集している人をそろえる（タイムラインから開いたときも）
