@@ -1,6 +1,6 @@
 # VoxCut
 
-A.I.VOICE / VOICEPEAK / VoiSona Talk / VOICEVOX と連携する、軽量な動画編集ソフト（Windows 向け、Tauri 2 ＋ React ＋ Astryx）。
+A.I.VOICE / VOICEPEAK / VoiSona Talk / VOICEVOX / COEIROINK / ゆっくりボイス（AquesTalkPlayer）/ CeVIO AI と連携する、軽量な動画編集ソフト（Windows 向け、Tauri 2 ＋ React ＋ Astryx）。
 設計は [ARCHITECTURE.md](ARCHITECTURE.md) を参照。
 
 ## 開発に必要なもの（Windows）
@@ -103,5 +103,13 @@ FFmpeg を同梱するため、インストーラーはおよそ 80〜100MB に�
 - **A.I.VOICE**：プリセット一覧のプロパティ名（`VoicePresetNames`）。A.I.VOICE2 で同じ API が使えるか
 - **VOICEPEAK**：`--speed` / `--pitch` / `-e` の値の範囲。多重起動できないので直列で呼んでいる
 - **音声合成ソフトの自動起動**：セリフを足したときに VOICEVOX・VoiSona Talk が止まっていれば起動する（`core/src/tts/voicevox.rs` の `launch_candidates`、`voisona.rs` の `launch`）。インストール先の候補（`%LOCALAPPDATA%\Programs\VOICEVOX\vv-engine\run.exe` など）が実際の場所と合っているか。合わなければ起動せず、今までどおり「起動してください」と出る
+- **COEIROINK**：v2 の `/v1/speakers`・`/v1/synthesis`（既定のポート 50032）の形が合っているか（`core/src/tts/coeiroink.rs`）
+- **ゆっくりボイス**：AquesTalkPlayer.exe の `/P /T /W` で WAV を書けるか、プリセット名（れいむ・まりさ）が合っているか（`core/src/tts/aquestalk.rs`）
+- **CeVIO AI**：PowerShell から COM（`CeVIO.Talk.RemoteService2.ServiceControl2V40`）で起動・キャスト一覧・WAV 出力ができるか（`core/src/tts/cevio.rs`）。棒読みちゃんは WAV を返す仕組みがないため対応していない
+- **マイクで録音**：WebView2 でマイクの許可が出て、選んだマイクで録れるか（Mac は `src-tauri/Info.plist` のマイクの説明）
+- **背景が透明な書き出し**：MOV（ProRes 4444）と WebM（VP9）を Premiere Pro・DaVinci Resolve・YMM4 に読み込んで、透明が残るか
+- **素材ライブラリ**：アプリのフォルダ（`%APPDATA%` 側の「ライブラリ」）へ写した素材が、再起動後も一覧に出てプレビューで読めるか。WebView2 でタイムラインへのドラッグが効くか
+- **画面録画**：WebView2 で画面・ウィンドウを選ぶ画面が出て、パソコンの音・マイクの声と一緒に録れるか。録った WebM がタイムラインで再生・書き出しできるか
+- **自動バックアップ**：上書き保存のたびに `%APPDATA%` 側の「バックアップ」へ前の内容が残り、「以前の版から戻す」で開けるか
 - **素材を集める**：`collect_media` が Windows のパス（日本語のフォルダ名・別ドライブ）でコピーとパスの書き換えを正しく行うか
 - **静止画の書き出し**：再生位置が後ろのほど時間がかかる（頭からその位置まで描く）。長い動画での待ち時間
