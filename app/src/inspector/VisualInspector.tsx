@@ -87,6 +87,7 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   dirBlur: '方向ブラー',
   threshold: '二値化',
   vhs: 'VHS 風',
+  glitchNoise: 'グリッチノイズ',
   film: '古いフィルム',
   crt: 'ブラウン管',
   vignette: '周辺減光',
@@ -121,7 +122,7 @@ const FX_GROUPS: {label: string; kinds: Effect['kind'][]}[] = [
   {label: '色', kinds: ['color', 'mono', 'invert', 'grade', 'temperature', 'lut', 'threshold', 'posterize', 'duotone', 'colorKeep']},
   {label: 'ぼかし・縁取り・影', kinds: ['blur', 'radialBlur', 'dirBlur', 'outline', 'shadow']},
   {label: '光', kinds: ['glow', 'bloom', 'lightLeak', 'lensFlare']},
-  {label: '映像加工（VHS・フィルムなど）', kinds: ['vhs', 'film', 'crt', 'vignette', 'rgbShift', 'glitch', 'noise', 'pixelate']},
+  {label: '映像加工（VHS・フィルムなど）', kinds: ['glitchNoise', 'glitch', 'vhs', 'film', 'crt', 'vignette', 'rgbShift', 'noise', 'pixelate']},
   {label: '漫画・イラスト風', kinds: ['lineArt', 'halftone']},
   {label: '変形', kinds: ['wave', 'swirl', 'bulge', 'mirror', 'tile']},
   {label: '動き', kinds: ['shake', 'jitter', 'oscillate', 'blink', 'trail']},
@@ -140,6 +141,7 @@ const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   dirBlur: {kind: 'dirBlur', length: 40, angle: 0},
   threshold: {kind: 'threshold', level: 0.5},
   vhs: {kind: 'vhs', amount: 0.6},
+  glitchNoise: {kind: 'glitchNoise', amount: 0.7, rate: 0.35, block: 24},
   film: {kind: 'film', amount: 0.7},
   crt: {kind: 'crt', amount: 0.6},
   vignette: {kind: 'vignette', amount: 0.6},
@@ -713,6 +715,23 @@ export function EffectsEditor({
           {fx.kind === 'pixelate' && (
             <VStack gap={2}>
               <Slider label="点の大きさ" value={fx.size} min={2} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
+            </VStack>
+          )}
+          {fx.kind === 'glitchNoise' && (
+            <VStack gap={2}>
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Slider
+                label="乱れる時間"
+                description="大きく乱れる時間の割合。100% でずっと乱れます"
+                value={fx.rate}
+                min={0}
+                max={1}
+                step={0.01}
+                valueDisplay="text"
+                formatValue={pct}
+                onChange={(rate: number) => setFx(i, {...fx, rate})}
+              />
+              <Slider label="ブロックの大きさ" value={fx.block} min={4} max={120} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(block: number) => setFx(i, {...fx, block})} />
             </VStack>
           )}
           {fx.kind === 'lineArt' && (
