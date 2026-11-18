@@ -85,16 +85,25 @@ pub enum EngineId {
     Voicepeak,
     Voisona,
     Voicevox,
+    /// COEIROINK v2
+    Coeiroink,
+    /// ゆっくりボイス（AquesTalkPlayer）
+    Aquestalk,
+    /// CeVIO AI
+    Cevio,
 }
 
 impl EngineId {
-    pub const ALL: [EngineId; 4] = [EngineId::Aivoice, EngineId::Voicepeak, EngineId::Voisona, EngineId::Voicevox];
+    pub const ALL: [EngineId; 7] = [EngineId::Aivoice, EngineId::Voicepeak, EngineId::Voisona, EngineId::Voicevox, EngineId::Coeiroink, EngineId::Aquestalk, EngineId::Cevio];
     pub fn as_str(&self) -> &'static str {
         match self {
             EngineId::Aivoice => "aivoice",
             EngineId::Voicepeak => "voicepeak",
             EngineId::Voisona => "voisona",
             EngineId::Voicevox => "voicevox",
+            EngineId::Coeiroink => "coeiroink",
+            EngineId::Aquestalk => "aquestalk",
+            EngineId::Cevio => "cevio",
         }
     }
 }
@@ -260,6 +269,30 @@ pub struct Portrait {
     /// PSD 立ち絵。あれば base・eyes・mouth の画像の代わりに、PSD のレイヤーの表示を切り替えて描く
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub psd: Option<PsdPortrait>,
+    /// 呼吸（しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みする）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breath: Option<Breath>,
+}
+
+/// 立ち絵の呼吸。画面側の model.ts の breathScale と同じ式
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Breath {
+    /// 伸びる大きさ（高さの %）
+    pub amount: f64,
+    /// 1 回の呼吸の長さ（秒）
+    pub period: f64,
+}
+
+impl Breath {
+    /// 時刻 t 秒での縦の倍率（1 から 1 + amount% の間を、cos でなめらかに行き来する）
+    pub fn scale_at(&self, t: f64) -> f64 {
+        1.0 + self.amount.clamp(0.0, 20.0) / 100.0 * (1.0 - (2.0 * std::f64::consts::PI * t / self.period.max(0.2)).cos()) / 2.0
+    }
+    /// ffmpeg の式（t はその時刻の秒）
+    pub fn ffmpeg_expr(&self) -> String {
+        format!("(1+{:.5}*(1-cos(2*PI*t/{:.4}))/2)", self.amount.clamp(0.0, 20.0) / 100.0, self.period.max(0.2))
+    }
 }
 
 /// PSD 立ち絵の設定（YMM4・PSDToolKit と同じく、レイヤーの表示・非表示で目パチ・口パク・表情を作る）。
@@ -700,11 +733,39 @@ pub struct SourceFx {
     /// なめらかスロー：遅くしたとき、間のコマを動きから作って補う（書き出しのみ。画面はコマをくり返す）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub smooth: bool,
+    /// 音のフェードイン・フェードアウト（フレーム。音声素材と、音の入った動画）
+    #[serde(default, skip_serializing_if = "is_zero_frame")]
+    pub sound_fade_in: Frame,
+    #[serde(default, skip_serializing_if = "is_zero_frame")]
+    pub sound_fade_out: Frame,
+    /// 同じレイヤーのすぐ前の音声素材と、この長さ（フレーム）だけ重ねてなめらかにつなぐ（クロスフェード。音声素材だけ）
+    #[serde(default, skip_serializing_if = "is_zero_frame")]
+    pub crossfade: Frame,
+}
+
+fn is_zero_frame(v: &Frame) -> bool {
+    *v == 0
 }
 
 impl Default for SourceFx {
     fn default() -> Self {
-        SourceFx { speed: 1.0, speed_to: None, reverse: false, freeze: false, crop: None, mask: None, chroma: None, fill_blur: None, audio_fx: None, stabilize: false, matte: None, smooth: false }
+        SourceFx {
+            speed: 1.0,
+            speed_to: None,
+            reverse: false,
+            freeze: false,
+            crop: None,
+            mask: None,
+            chroma: None,
+            fill_blur: None,
+            audio_fx: None,
+            stabilize: false,
+            matte: None,
+            smooth: false,
+            sound_fade_in: 0,
+            sound_fade_out: 0,
+            crossfade: 0,
+        }
     }
 }
 
@@ -1034,14 +1095,16 @@ impl Project {
     /// 切り替えを、前後のアイテムの登場・退場・フェード（と、暗転・白は画面を覆う図形）に置き換えた写し。
     /// 書き出しはこれを描く。画面側の model.ts の withTransitions と同じ結果になる
     pub fn with_transitions(&self) -> Project {
-        let mut p = self.clone();
+        let mut p = self.with_crossfades();
+        let base = p.clone();
+        let this = &base;
         let jobs: Vec<(usize, usize, Transition)> = self
             .clips
             .iter()
             .enumerate()
             .filter_map(|(bi, b)| {
                 let t = visual_look(b)?.transition.clone()?;
-                let ai = self.prev_adjacent(b)?;
+                let ai = this.prev_adjacent(b)?;
                 Some((ai, bi, t))
             })
             .collect();
@@ -1050,7 +1113,7 @@ impl Project {
         }
         let mut extra: Vec<Clip> = vec![];
         for (ai, bi, t) in jobs {
-            let (a, b) = (&self.clips[ai], &self.clips[bi]);
+            let (a, b) = (&this.clips[ai], &this.clips[bi]);
             let cut = b.start;
             let d = t.frames.min(a.duration * 4 / 5).min(b.duration * 4 / 5).max(2);
             let h = d / 2;
@@ -1099,8 +1162,8 @@ impl Project {
                         link_id: None,
                         body: ClipBody::Shape(ShapeClip {
                             shape: "rect".into(),
-                            width: (self.video.width + 8) as f64,
-                            height: (self.video.height + 8) as f64,
+                            width: (this.video.width + 8) as f64,
+                            height: (this.video.height + 8) as f64,
                             fill: fill.into(),
                             stroke: String::new(),
                             stroke_width: 0.0,
@@ -1110,6 +1173,7 @@ impl Project {
                             control: None,
                             scene: None,
                             viz: None,
+                            anim: None,
                         }),
                     };
                     extra.push(cover(format!("{}~cover1", b.id), cut - out_f, out_f, Look { fade_in: out_f, ..Default::default() }));
@@ -1151,6 +1215,46 @@ impl Project {
         p.clips.extend(extra);
         p
     }
+
+    /// クロスフェード：音声素材 b に crossfade があり、同じレイヤーのすぐ前（2 フレームまでのすき間）に音声素材 a があれば、
+    /// a を後ろへその長さだけ延ばして消していき、b はその長さで大きくする。画面側の model.ts の withCrossfades と同じ
+    pub fn with_crossfades(&self) -> Project {
+        let audio = |c: &Clip| matches!(&c.body, ClipBody::Media(m) if m.media_kind == MediaKind::Audio);
+        let mut p = self.clone();
+        for (bi, b) in self.clips.iter().enumerate() {
+            let ClipBody::Media(bm) = &b.body else { continue };
+            if !audio(b) || bm.src_fx.crossfade <= 0 {
+                continue;
+            }
+            let Some((ai, a)) = self
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.id != b.id && a.track_id == b.track_id && audio(a) && a.start < b.start)
+                .filter(|(_, a)| {
+                    let end = a.start + a.duration;
+                    end <= b.start && end >= b.start - 2
+                })
+                .max_by_key(|(_, a)| (a.start + a.duration, a.start))
+            else {
+                continue;
+            };
+            let d = crossfade_frames(bm.src_fx.crossfade, a.duration, b.duration);
+            p.clips[ai].duration = b.start - a.start + d;
+            if let ClipBody::Media(m) = &mut p.clips[ai].body {
+                m.src_fx.sound_fade_out = m.src_fx.sound_fade_out.max(d);
+            }
+            if let ClipBody::Media(m) = &mut p.clips[bi].body {
+                m.src_fx.sound_fade_in = m.src_fx.sound_fade_in.max(d);
+            }
+        }
+        p
+    }
+}
+
+/// クロスフェードに使う長さ（前後の音の長さの 8 割まで、2 フレーム以上）。画面側の crossfadeFrames と同じ
+pub fn crossfade_frames(want: Frame, a: Frame, b: Frame) -> Frame {
+    want.min(a * 4 / 5).min(b * 4 / 5).max(2)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1393,6 +1497,66 @@ pub struct TextDeco {
     /// 1 文字ずつ出す（画面側がコマごとの画像を用意し、書き出しは 1 コマずつ並べる）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub char_anim: Option<CharAnim>,
+    /// タイマー（カウントダウン・カウントアップ）。文の中の {t} が時間になる（なければ文全体）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer: Option<Timer>,
+}
+
+/// テキストのタイマー。from から to へ、実際の時間の速さで数える（to で止まる）。画面側の model.ts の timerText と同じ
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Timer {
+    /// 始まりの値（秒）
+    pub from: f64,
+    /// 終わりの値（秒）。from より小さければカウントダウン
+    pub to: f64,
+    /// 表し方：s（10）・m:ss（1:05）・h:mm:ss（0:01:05）・m:ss.cc（1:05.30）
+    pub format: String,
+}
+
+impl Timer {
+    /// 表示が変わる間隔（フレーム）。100 分の 1 秒まで出すときは毎コマ
+    pub fn step(&self, fps: u32) -> Frame {
+        if self.format.ends_with(".cc") { 1 } else { fps.max(1) as Frame }
+    }
+    /// アイテムの頭から local フレームでの文字
+    pub fn text_at(&self, template: &str, local: Frame, fps: u32) -> String {
+        let t = local.max(0) as f64 / fps.max(1) as f64;
+        let down = self.to < self.from;
+        let v = if down { (self.from - t).max(self.to) } else { (self.from + t).min(self.to) };
+        let cc = self.format.ends_with(".cc");
+        // カウントダウンは切り上げ（10 から始まり、ちょうど 0 で終わる）、カウントアップは切り捨て
+        let unit = if cc { 100.0 } else { 1.0 };
+        let q = v * unit;
+        let n = (if down { (q - 1e-6).ceil() } else { (q + 1e-6).floor() }).max(0.0) as i64;
+        let (whole, frac) = if cc { (n / 100, n % 100) } else { (n, 0) };
+        let (h, m, sec) = (whole / 3600, whole / 60 % 60, whole % 60);
+        let body = match self.format.as_str() {
+            "s" => whole.to_string(),
+            "h:mm:ss" => format!("{h}:{m:02}:{sec:02}"),
+            "m:ss.cc" => format!("{}:{sec:02}.{frac:02}", whole / 60),
+            _ => format!("{}:{sec:02}", whole / 60),
+        };
+        if template.contains("{t}") { template.replace("{t}", &body) } else { body }
+    }
+}
+
+#[cfg(test)]
+mod timer_tests {
+    use super::Timer;
+    /// e2e の「タイマー」と同じ数
+    #[test]
+    fn counts_down_and_up() {
+        let d = Timer { from: 10.0, to: 0.0, format: "s".into() };
+        assert_eq!([0, 1, 29, 30, 299, 300, 400].map(|f| d.text_at("", f, 30)), ["10", "10", "10", "9", "1", "0", "0"]);
+        let u = Timer { from: 55.0, to: 3700.0, format: "m:ss".into() };
+        assert_eq!([0, 150, 3600].map(|f| u.text_at("残り {t}", f, 30)), ["残り 0:55", "残り 1:00", "残り 2:55"]);
+        let h = Timer { from: 3599.0, to: 4000.0, format: "h:mm:ss".into() };
+        assert_eq!(h.text_at("", 30, 30), "1:00:00");
+        let c = Timer { from: 5.0, to: 0.0, format: "m:ss.cc".into() };
+        assert_eq!([0, 1, 15].map(|f| c.text_at("", f, 30)), ["0:05.00", "0:04.97", "0:04.50"]);
+        assert_eq!((c.step(30), d.step(30)), (1, 30));
+    }
 }
 
 /// テキストの 1 文字ずつの登場（kind：type ＝そのまま出る／fade ＝ふわっと／pop ＝はねる／slideUp ＝下から）
@@ -1451,6 +1615,34 @@ pub struct ShapeClip {
     /// 音声の波形・スペクトラム：動画の音を、図形の大きさ・塗りの色で描く（図形そのものは描かない）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viz: Option<AudioViz>,
+    /// 動く図形（紙吹雪などの粒・進行バー・グラフ）。画面側がコマごとの画像を描き、書き出しはそれを並べる
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<ShapeAnim>,
+}
+
+/// 動く図形。描き方の設定は画面側（preview/anim.ts）が持ち、ここでは画像の並べ方だけを決める（ほかの値はそのまま保つ）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShapeAnim {
+    /// particles（粒）・progress（進行バー）・chart（グラフ）
+    pub kind: String,
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ShapeAnim {
+    /// 粒をくり返す長さ（フレーム）。画面側の particleLoop と同じ
+    pub fn particle_loop(fps: u32) -> Frame {
+        fps.max(1) as Frame * 4
+    }
+    /// 画像の並べ方：（何フレームごとの画像か、くり返すか）。画面側の animStep と同じ
+    pub fn sequence(&self, width: f64, duration: Frame) -> (Frame, bool) {
+        match self.kind.as_str() {
+            "particles" => (1, true),
+            // 進行バー：1 画素ずつ伸びればよいので、長い動画でも画像は幅の数まで
+            "progress" => ((duration / (width.round() as Frame).max(1)).max(1), false),
+            _ => (1, false),
+        }
+    }
 }
 
 /// 音声の見える化（wave ＝波形、bars ＝周波数の棒）
@@ -2373,6 +2565,7 @@ mod tests {
                 visibility: Default::default(),
             }],
             psd: None,
+            breath: None,
         };
         assert_eq!(pt.layers(2, 2, 0), vec!["b.png", "e2.png", "m0.png"]);
         assert_eq!(pt.layers(1, 0, 0), vec!["b.png", "e0.png", "m0.png"]);
@@ -2442,6 +2635,31 @@ mod transition_tests {
     }
     fn look(c: &Clip) -> &Look {
         visual_look(c).unwrap()
+    }
+
+    /// クロスフェード：前の音を延ばしてフェードアウト、次の音はフェードイン（画面側の withCrossfades と同じ数。e2e でも確かめる）
+    #[test]
+    fn crossfades_extend_previous_sound() {
+        let mut p = Project::sample();
+        p.clips = vec![image("a", 0, 30, MediaKind::Audio), image("b", 31, 60, MediaKind::Audio), image("c", 200, 30, MediaKind::Audio)];
+        assert_eq!(p.with_crossfades(), p);
+        let set = |c: &mut Clip, f: Frame| {
+            if let ClipBody::Media(m) = &mut c.body {
+                m.src_fx.crossfade = f;
+            }
+        };
+        set(&mut p.clips[1], 40);
+        set(&mut p.clips[2], 10);
+        let q = p.with_transitions();
+        let fx = |i: usize| match &q.clips.iter().find(|c| c.id == ["a", "b", "c"][i]).unwrap().body {
+            ClipBody::Media(m) => (m.src_fx.sound_fade_in, m.src_fx.sound_fade_out),
+            _ => unreachable!(),
+        };
+        // 長さは前後の 8 割まで（30 の 8 割 = 24）。すき間 1 フレームの分も延ばす。離れている c はつながない
+        assert_eq!(q.clips.iter().find(|c| c.id == "a").unwrap().duration, 31 + 24);
+        assert_eq!((fx(0), fx(1), fx(2)), ((0, 24), (24, 0), (0, 0)));
+        let json = serde_json::to_value(&p.clips[1]).unwrap();
+        assert_eq!(json["crossfade"], 40);
     }
 
     #[test]
