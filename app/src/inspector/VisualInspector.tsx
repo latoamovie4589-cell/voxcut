@@ -86,6 +86,12 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   radialBlur: '放射ブラー',
   dirBlur: '方向ブラー',
   threshold: '二値化',
+  vhs: 'VHS 風',
+  film: '古いフィルム',
+  crt: 'ブラウン管',
+  vignette: '周辺減光',
+  posterize: 'ポスタリゼーション',
+  pixelate: 'ドット絵風',
   jitter: 'ランダム移動',
   oscillate: '反復移動',
   plugin: 'プラグイン',
@@ -112,6 +118,12 @@ const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   radialBlur: {kind: 'radialBlur', amount: 0.3},
   dirBlur: {kind: 'dirBlur', length: 40, angle: 0},
   threshold: {kind: 'threshold', level: 0.5},
+  vhs: {kind: 'vhs', amount: 0.6},
+  film: {kind: 'film', amount: 0.7},
+  crt: {kind: 'crt', amount: 0.6},
+  vignette: {kind: 'vignette', amount: 0.6},
+  posterize: {kind: 'posterize', levels: 4},
+  pixelate: {kind: 'pixelate', size: 12},
   jitter: {kind: 'jitter', amount: 10, speed: 8},
   oscillate: {kind: 'oscillate', x: 0, y: 20, speed: 1},
 };
@@ -467,7 +479,7 @@ export function EffectsEditor({
   effects,
   onChange,
   title = '映像エフェクト',
-  empty = 'ぼかし・揺れ・色調整・縁取り・影・発光・点滅・残像・グリッチなどを付けられます。',
+  empty = 'ぼかし・揺れ・色調整・縁取り・影・発光・点滅・残像・グリッチ・VHS 風・古いフィルムなどを付けられます。',
   headingLevel = 3,
   kinds,
 }: {
@@ -648,6 +660,21 @@ export function EffectsEditor({
           {fx.kind === 'threshold' && (
             <VStack gap={2}>
               <Slider label="しきい値" value={fx.level} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(level: number) => setFx(i, {...fx, level})} />
+            </VStack>
+          )}
+          {(fx.kind === 'vhs' || fx.kind === 'film' || fx.kind === 'crt' || fx.kind === 'vignette') && (
+            <VStack gap={2}>
+              <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'posterize' && (
+            <VStack gap={2}>
+              <Slider label="色の段階" value={fx.levels} min={2} max={16} step={1} valueDisplay="text" formatValue={v => `${v} 段階`} onChange={(levels: number) => setFx(i, {...fx, levels})} />
+            </VStack>
+          )}
+          {fx.kind === 'pixelate' && (
+            <VStack gap={2}>
+              <Slider label="点の大きさ" value={fx.size} min={2} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
             </VStack>
           )}
           {fx.kind === 'jitter' && (
