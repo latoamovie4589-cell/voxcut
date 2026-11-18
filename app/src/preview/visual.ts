@@ -6,6 +6,7 @@ import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom
 import {timerStep, timerText, type Marker} from '../model';
 import {animFrameAt, animFrames, animImage, animKey} from './anim';
 import {bubbleImage} from './bubble';
+import {RETRO_FX, retroActive, retroPad, retroPixels, type RetroEffect} from './retro';
 import {
   BLEND_CANVAS,
   animStateAt,
@@ -167,7 +168,7 @@ const dimsOf = (img: CanvasImageSource): [number, number] => [
 ];
 
 /** 画素を読むエフェクト（書き出しの pixel_effect と同じもの） */
-const PIXEL_FX = new Set(['wave', 'swirl', 'outline', 'shadow', 'glow', 'rgbShift', 'glitch', 'noise', 'radialBlur', 'dirBlur']);
+const PIXEL_FX = new Set(['wave', 'swirl', 'outline', 'shadow', 'glow', 'rgbShift', 'glitch', 'noise', 'radialBlur', 'dirBlur', ...RETRO_FX]);
 /** 縁取りで形を読む向き（書き出しの RING と同じ） */
 const RING = 16;
 
@@ -279,6 +280,17 @@ export function effectsSource(img: CanvasImageSource, size: [number, number], ef
         x.drawImage(base, 0, y, base.width, 1, off * r, y, base.width, 1);
       }
       src = cv;
+    } else if (RETRO_FX.has(fx.kind)) {
+      const rf = fx as RetroEffect;
+      if (!retroActive(rf)) continue;
+      const base = grow(retroPad(rf, k));
+      const x = base.getContext('2d', {willReadFrequently: true})!;
+      try {
+        x.putImageData(retroPixels(rf, x.getImageData(0, 0, base.width, base.height), r, k, t, fps), 0, 0);
+      } catch {
+        continue; // 読めない画像（別のオリジンの動画など）はそのまま
+      }
+      src = base;
     } else if ((fx.kind === 'rgbShift' && fx.amount) || (fx.kind === 'noise' && fx.amount > 0)) {
       const base = fx.kind === 'rgbShift' ? grow(Math.abs(fx.amount * k) + 1) : grow(0);
       const W = base.width;
