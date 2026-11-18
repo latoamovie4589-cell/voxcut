@@ -896,6 +896,20 @@ dialog:not([open])::backdrop {
   overflow-y: auto;
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
+.vx-keymap {
+  display: grid;
+  grid-template-columns: minmax(8em, 1fr) minmax(7em, auto) auto;
+  gap: 6px 12px;
+  align-items: center;
+}
+@media (max-width: 560px) {
+  .vx-keymap {
+    grid-template-columns: 1fr auto;
+  }
+  .vx-keymap > :nth-child(3n) {
+    grid-column: 1 / -1;
+  }
+}
 .vx-shortcuts {
   columns: 2 340px;
   column-gap: 32px;
@@ -1709,4 +1723,83 @@ dialog.astryx-dialog[open] {
 /* フィルターの色見本（空・肌・緑の帯。タイルにそのフィルターを掛けて見せる） */
 .vx-grade-demo {
   background: linear-gradient(180deg, #6fa8dc 0 34%, #e8b48a 34% 67%, #6aa84f 67% 100%);
+}
+
+/* 素材ライブラリ */
+.vx-library {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.vx-library-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  cursor: grab;
+  touch-action: none;
+}
+.vx-library-item:hover {
+  background: var(--color-background-hover, rgba(127, 127, 127, 0.08));
+}
+.vx-library-thumb {
+  width: 44px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(127, 127, 127, 0.12);
+}
+.vx-library-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.vx-library-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vx-library-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1000;
+  pointer-events: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(40, 40, 40, 0.85);
+  color: #fff;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.vx-library-ghost[data-over='1'] {
+  opacity: 1;
+}
+
+/* 画面分割の型 */
+.vx-split-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vx-split-choice[aria-pressed='true'] {
+  border-color: var(--color-accent, #0a84ff);
+  box-shadow: 0 0 0 1px var(--color-accent, #0a84ff);
+}
+.vx-split-choice:focus-visible {
+  outline: 2px solid var(--color-accent, #0a84ff);
+  outline-offset: 2px;
 }

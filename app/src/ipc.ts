@@ -29,6 +29,8 @@ export interface ExportRequest {
   stillFrame?: number;
   /** 一部だけ書き出すときの範囲（始まりと終わりのフレーム） */
   rangeFrames?: [number, number];
+  /** 背景を透明のまま書き出す（.mov は ProRes 4444、.webm は VP9） */
+  transparent?: boolean;
 }
 
 /** x264 は CPU、nvenc は NVIDIA、qsv は Intel、amf は AMD */
@@ -60,6 +62,10 @@ export interface AppConfig {
     aivoiceDir: string | null;
     voisona: {host: string; port: number; user: string; password: string; timeoutSecs: number};
     voicevox: {host: string; port: number};
+    coeiroink: {host: string; port: number};
+    /** AquesTalkPlayer の場所と、足したプリセット名 */
+    aquestalkPath: string | null;
+    aquestalkPresets: string[];
   };
   ffmpegPath: string | null;
   dictionary: DictEntry[];
@@ -108,6 +114,10 @@ export interface Api {
   openPath(path: string): Promise<void>;
   openProject(path: string): Promise<Project>;
   saveProject(path: string, project: Project): Promise<void>;
+  /** 上書き保存する前に残した版（新しい順）。savedMs はその内容を残した時刻 */
+  listBackups(path: string): Promise<{path: string; savedMs: number; size: number}[]>;
+  /** 残した版を読む */
+  readBackup(path: string): Promise<Project>;
   getConfig(): Promise<AppConfig>;
   setConfig(config: AppConfig): Promise<void>;
   engineStatus(): Promise<{engine: EngineId; status: EngineStatus}[]>;
@@ -125,7 +135,7 @@ export interface Api {
   onSynthProgress(cb: (p: SynthProgress) => void): Promise<Unlisten>;
   onExportProgress(cb: (p: ExportProgress) => void): Promise<Unlisten>;
   pickOpenPath(): Promise<string | null>;
-  pickSavePath(kind: 'project' | 'video' | 'gif' | 'audio' | 'subtitle' | 'image', suggested: string): Promise<string | null>;
+  pickSavePath(kind: 'project' | 'video' | 'mov' | 'webm' | 'gif' | 'audio' | 'subtitle' | 'image', suggested: string): Promise<string | null>;
   /** 素材・立ち絵のファイルを選ぶ */
   pickMedia(kind: 'media' | 'image', multiple: boolean): Promise<string[]>;
   /** 実行ファイル（.exe）を選ぶ */
@@ -197,6 +207,17 @@ export interface Api {
   fileStamp(path: string, projectPath: string | null): Promise<string | null>;
   /** 合成した PSD 立ち絵の画像をキャッシュに保存して、パスを返す */
   writePortraitPng(name: string, png: Uint8Array): Promise<string>;
+  /** マイクで録った WAV を保存してパスを返す */
+  writeRecording(wav: Uint8Array): Promise<string>;
+  /** 画面録画（WebM）を保存して、長さを書き込んだ動画のパスを返す */
+  writeCapture(webm: Uint8Array): Promise<string>;
+  /** 素材ライブラリ（プロジェクトをまたいで使う素材）の一覧。新しく入れた順 */
+  libraryList(): Promise<LibraryItem[]>;
+  /** ファイルをライブラリへ写す（同じ中身はもうあるものを返す）。相対パスはプロジェクトのフォルダから */
+  libraryAdd(paths: string[], folder: string, projectPath: string | null): Promise<LibraryItem[]>;
+  libraryUpdate(id: string, patch: {name?: string; folder?: string}): Promise<void>;
+  /** ライブラリから外す（写したファイルも消す） */
+  libraryRemove(id: string): Promise<void>;
   /** キャッシュにある PSD 立ち絵の画像のパス（無ければ null） */
   portraitPngPath(name: string): Promise<string | null>;
   /** 音声合成ソフトを起動する（起動を始めたら true。場所が分からない・起動の要らないソフトは false） */
@@ -206,6 +227,24 @@ export interface Api {
   /** 素材の場所を選び直す（今の名前を見せて、同じ種類のファイルを選ぶ） */
   pickRelink(current: string): Promise<string | null>;
 }
+
+/** 素材ライブラリの 1 つ（Rust の library::LibraryItem と同じ） */
+export interface LibraryItem {
+  id: string;
+  name: string;
+  kind: 'image' | 'video' | 'audio';
+  /** 分類（効果音・BGM・立ち絵など。空なら分類なし） */
+  folder: string;
+  /** 写したファイルの場所 */
+  path: string;
+  hash: string;
+  addedMs: number;
+}
+/** ブラウザで確かめる用の保存した内容とバックアップ */
+const mockSaved = new Map<string, string>();
+const mockBackups = new Map<string, {path: string; savedMs: number; json: string}[]>();
+/** ブラウザで確かめる用のライブラリ */
+const mockLibrary: LibraryItem[] = [];
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'avif'];
 const MEDIA_EXT = [...IMAGE_EXT, 'mp4', 'mov', 'mkv', 'webm', 'avi', 'wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'];
@@ -233,6 +272,8 @@ async function tauriApi(): Promise<Api> {
     },
     openProject: path => invoke('open_project', {path}),
     saveProject: (path, project) => invoke('save_project', {path, project}),
+    listBackups: path => invoke('list_backups', {path}),
+    readBackup: path => invoke('read_backup', {path}),
     getConfig: () => invoke('get_config'),
     setConfig: config => invoke('set_config', {config}),
     engineStatus: () => invoke('engine_status'),
@@ -287,7 +328,11 @@ async function tauriApi(): Promise<Api> {
                   ? {name: 'GIF（動く画像）', extensions: ['gif']}
                   : kind === 'image'
                     ? {name: '画像（PNG・JPEG）', extensions: ['png', 'jpg']}
-                    : {name: 'MP4', extensions: ['mp4']},
+                    : kind === 'mov'
+                      ? {name: 'MOV（ProRes 4444・背景が透明）', extensions: ['mov']}
+                      : kind === 'webm'
+                        ? {name: 'WebM（VP9・背景が透明）', extensions: ['webm']}
+                        : {name: 'MP4', extensions: ['mp4']},
         ],
       });
       if (r) lastSaveDir[kind === 'project' ? 'project' : 'video'] = r.replace(/[\\/][^\\/]*$/, '');
@@ -315,6 +360,12 @@ async function tauriApi(): Promise<Api> {
     readPsd: (path, projectPath) => invoke<ArrayBuffer>('read_psd', {path: resolvePath(path, projectPath)}),
     fileStamp: (path, projectPath) => invoke<string | null>('file_stamp', {path: resolvePath(path, projectPath)}),
     writePortraitPng: (name, png) => invoke<string>('write_portrait_png', png, {headers: {'x-name': name}}),
+    writeRecording: wav => invoke<string>('write_recording', wav),
+    writeCapture: webm => invoke<string>('write_capture', webm),
+    libraryList: () => invoke('library_list'),
+    libraryAdd: (paths, folder, projectPath) => invoke('library_add', {paths, folder, projectPath}),
+    libraryUpdate: (id, patch) => invoke('library_update', {id, name: patch.name ?? null, folder: patch.folder ?? null}),
+    libraryRemove: id => invoke('library_remove', {id}),
     portraitPngPath: name => invoke<string | null>('portrait_png_path', {name}),
     launchEngine: engine => invoke<boolean>('launch_engine', {engine}),
     collectMedia: (project, projectPath) => invoke('collect_media', {project, projectPath}),
@@ -412,6 +463,9 @@ const MOCK_VOICES: Record<EngineId, VoiceInfo[]> = {
     ['2', '四国めたん', 'ノーマル'],
     ['8', '春日部つむぎ', 'ノーマル'],
   ].map(([id, n, st]) => ({engine: 'voicevox', speaker: id, displayName: `${n}（${st}）`, emotions: [], credit: `VOICEVOX:${n}`})),
+  coeiroink: [{engine: 'coeiroink', speaker: '3c37646f-3881-5374-2a83-149267990abc:0', displayName: 'つくよみちゃん（れいせい）', emotions: [], credit: 'COEIROINK:つくよみちゃん'}],
+  aquestalk: ['れいむ', 'まりさ'].map(s => ({engine: 'aquestalk', speaker: s, displayName: s, emotions: [], credit: null})),
+  cevio: [{engine: 'cevio', speaker: 'さとうささら', displayName: 'さとうささら', emotions: ['普通', '元気', '怒り', '哀しみ'], credit: null}],
 };
 
 /** 空のプロジェクト（Rust の Project::new と同じ：レイヤー 1〜6、キャラクターなし） */
@@ -515,6 +569,9 @@ function mockApi(): Api {
       aivoiceDir: null,
       voisona: {host: '127.0.0.1', port: 32766, user: '', password: '', timeoutSecs: 60},
       voicevox: {host: '127.0.0.1', port: 50021},
+      coeiroink: {host: '127.0.0.1', port: 50032},
+      aquestalkPath: null,
+      aquestalkPresets: [],
     },
     ffmpegPath: null,
     dictionary: [],
@@ -545,7 +602,20 @@ function mockApi(): Api {
     exportSrt: async () => {},
     openPath: async () => {},
     openProject: async () => mockProject(),
-    saveProject: async () => {},
+    // ブラウザで確かめる用：上書きする前の内容を版として覚える（Rust の backup::before_save と同じく、同じ中身は増やさない）
+    saveProject: async (path, project) => {
+      const json = JSON.stringify(project);
+      const prev = mockSaved.get(path);
+      const list = mockBackups.get(path) ?? [];
+      if (prev !== undefined && list[0]?.json !== prev) list.unshift({path: `/backup/${list.length + 1}.voxcut`, savedMs: Date.now() + list.length, json: prev});
+      mockBackups.set(path, list.slice(0, 30));
+      mockSaved.set(path, json);
+    },
+    listBackups: async path => (mockBackups.get(path) ?? []).map(b => ({path: b.path, savedMs: b.savedMs, size: b.json.length})),
+    readBackup: async path => {
+      for (const l of mockBackups.values()) for (const b of l) if (b.path === path) return JSON.parse(b.json);
+      throw new Error('バックアップではありません');
+    },
     getConfig: async () => config,
     setConfig: async c => {
       config = c;
@@ -556,6 +626,9 @@ function mockApi(): Api {
         {engine: 'voicepeak', status: {state: 'ready', version: null}},
         {engine: 'voisona', status: {state: 'notRunning', detail: 'VoiSona Talk を起動し、API を有効にしてください'}},
         {engine: 'voicevox', status: {state: 'ready', version: '0.99.0'}},
+        {engine: 'coeiroink', status: {state: 'notRunning', detail: 'COEIROINK v2 を起動してください'}},
+        {engine: 'aquestalk', status: {state: 'notFound', detail: '設定で AquesTalkPlayer の場所を選んでください'}},
+        {engine: 'cevio', status: {state: 'notFound', detail: 'CeVIO AI が見つかりません'}},
       ],
     listVoices: async engine => MOCK_VOICES[engine],
     synthesize: synth,
@@ -629,6 +702,50 @@ function mockApi(): Api {
     pickPsd: async () => (window as unknown as {__mockPsd?: string}).__mockPsd ?? null,
     readPsd: async path => (await fetch(path)).arrayBuffer(),
     fileStamp: async path => ((globalThis as {__mockMissing?: string[]}).__mockMissing?.includes(path) ? null : 'mock'),
+    // ブラウザで確かめる用：録った WAV は覚えておくだけ（window.__lastRecording で読める）
+    writeCapture: async webm => {
+      (globalThis as {__lastCapture?: Uint8Array}).__lastCapture = webm;
+      return '/rec/画面録画.webm';
+    },
+    writeRecording: async wav => {
+      (globalThis as {__lastRecording?: Uint8Array}).__lastRecording = wav;
+      return '/rec/録音.wav';
+    },
+    libraryList: async () => [...mockLibrary].sort((a, b) => b.addedMs - a.addedMs),
+    libraryAdd: async (paths, folder) => {
+      const out: LibraryItem[] = [];
+      for (const path of paths) {
+        const ext = path.split('.').pop()?.toLowerCase() ?? '';
+        const kind = IMAGE_EXT.includes(ext) ? 'image' : ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'].includes(ext) ? 'audio' : MEDIA_EXT.includes(ext) ? 'video' : null;
+        if (!kind) continue;
+        const had = mockLibrary.find(i => i.hash === path);
+        if (had) {
+          out.push(had);
+          continue;
+        }
+        const it: LibraryItem = {
+          id: `lib${mockLibrary.length + 1}`,
+          name: (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]+$/, ''),
+          kind,
+          folder,
+          path,
+          hash: path,
+          addedMs: Date.now() + mockLibrary.length,
+        };
+        mockLibrary.push(it);
+        out.push(it);
+      }
+      return out;
+    },
+    libraryUpdate: async (id, patch) => {
+      const it = mockLibrary.find(i => i.id === id);
+      if (it && patch.name?.trim()) it.name = patch.name.trim();
+      if (it && patch.folder !== undefined) it.folder = patch.folder.trim();
+    },
+    libraryRemove: async id => {
+      const i = mockLibrary.findIndex(x => x.id === id);
+      if (i >= 0) mockLibrary.splice(i, 1);
+    },
     writePortraitPng: async (name, png) => {
       mockPngs.set(name, png);
       return `/mock-cache/${name}.png`;

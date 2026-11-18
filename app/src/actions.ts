@@ -58,7 +58,7 @@ export async function addMedia() {
 }
 
 /** パスを指定して素材を追加（選んだ・ドロップしたファイル） */
-export async function addMediaPaths(paths: string[]) {
+export async function addMediaPaths(paths: string[], drop?: {frame: number; trackId?: string}) {
   const a = await api;
   const items: {path: string; info: MediaInfo}[] = [];
   for (const path of paths) {
@@ -68,7 +68,7 @@ export async function addMediaPaths(paths: string[]) {
       notifyRef(friendlyError(e), 'error');
     }
   }
-  addMediaClips(items);
+  addMediaClips(items, drop);
   for (const it of items) if (it.info.kind === 'video') void ensureProxy(it.path);
 }
 
@@ -783,10 +783,12 @@ export async function cancelExport() {
 export type ExportKind = 'video' | 'gif' | 'audio' | 'subtitle';
 const EXT: Record<ExportKind, string> = {video: 'mp4', gif: 'gif', audio: 'wav', subtitle: 'srt'};
 
-export async function pickExportPath(kind: ExportKind = 'video'): Promise<string | null> {
+export async function pickExportPath(kind: ExportKind = 'video', alpha?: 'mov' | 'webm'): Promise<string | null> {
   const s = getState();
   const a = await api;
   const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : (s.project?.name ?? 'video');
+  // 背景が透明な動画は .mov（ProRes 4444）か .webm（VP9）
+  if (kind === 'video' && alpha) return a.pickSavePath(alpha, `${base}.${alpha}`);
   return a.pickSavePath(kind, `${base}.${EXT[kind]}`);
 }
 
@@ -1024,6 +1026,23 @@ async function offerRestore(notify: Notify) {
     notify('前回の作業を戻しました。保存してください');
   } else {
     await a.autosaveClear();
+  }
+}
+
+/** 残した版を開く（元のプロジェクトとして。保存すると元の場所に上書きし、今の内容も版として残る） */
+export async function openBackup(notify: Notify, backupPath: string, savedMs: number) {
+  const s = getState();
+  const a = await api;
+  if (s.dirty && !(await a.ask('保存していない変更があります。破棄して、以前の版を開きますか？', '以前の版を開く'))) return false;
+  try {
+    const project = await a.readBackup(backupPath);
+    await loadProject(project, s.projectPath, true);
+    const when = new Date(savedMs).toLocaleString('ja-JP', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+    notify(`${when} より前の版を開きました。保存すると今のファイルを置き換えます（今のファイルも版として残ります）`);
+    return true;
+  } catch (e) {
+    notify(friendlyError(e), 'error');
+    return false;
   }
 }
 

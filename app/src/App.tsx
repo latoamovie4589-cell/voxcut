@@ -4,6 +4,7 @@ import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {setHintsShown, useHintsShown} from './hints';
 import {setThemeMode, useThemeMode, type ThemeMode} from './theme';
+import {ACTION, actionFor, keyLabel, useKeymap, type ActionId} from './keymap';
 import {modalOpen, onControl, startSpaceGuard} from './keys';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
@@ -41,6 +42,10 @@ import {TemplatesDialog} from './panels/TemplatesDialog';
 import {MediaDialog} from './panels/MediaDialog';
 import {PasteScriptDialog} from './panels/PasteScriptDialog';
 import {DictionaryDialog} from './panels/DictionaryDialog';
+import {KeymapDialog} from './panels/KeymapDialog';
+import {BackupDialog} from './panels/BackupDialog';
+import {SplitDialog} from './panels/SplitDialog';
+import {LibraryPanel} from './panels/LibraryPanel';
 import {ShortcutsDialog} from './panels/ShortcutsDialog';
 import {useFileDrop} from './drop';
 import {api, setDirtyGetter} from './ipc';
@@ -278,22 +283,24 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
   const themeMode = useThemeMode();
   const canPaste = useStore(s => s.clipboardCount > 0);
   const maxH = Math.max(320, (typeof window === 'undefined' ? 800 : window.innerHeight) - 80);
+  useKeymap();
   const key = (k: string) => <Text type="supporting">{k}</Text>;
   const menu = (label: string) => ({label, variant: 'ghost' as const, size: 'sm' as const});
   return (
     <HStack gap={0} vAlign="center" role="menubar" aria-label="メニュー">
       <DropdownMenu button={menu('ファイル')} hasChevron={false} menuWidth={260} menuMaxHeight={maxH}>
-        <DropdownMenuItem label="新規" endContent={key(`${mod}N`)} onClick={() => void newProjectAction(notify)} />
+        <DropdownMenuItem label="新規" endContent={key(keyLabel('new'))} onClick={() => void newProjectAction(notify)} />
         <DropdownMenuItem label="サンプルを開く" description="キャラクターとセリフの入った見本" onClick={() => void newProjectAction(notify, true)} />
-        <DropdownMenuItem label="開く…" endContent={key(`${mod}O`)} onClick={() => void openProject(notify)} />
+        <DropdownMenuItem label="開く…" endContent={key(keyLabel('open'))} onClick={() => void openProject(notify)} />
         <DropdownMenuSubMenu label="最近使ったファイル" isDisabled={!recent.length}>
           {recent.map(path => (
             <DropdownMenuItem key={path} label={path.split(/[\\/]/).pop() ?? path} description={path} onClick={() => void openProject(notify, path)} />
           ))}
         </DropdownMenuSubMenu>
         <DropdownMenuDivider />
-        <DropdownMenuItem label="保存" endContent={key(`${mod}S`)} onClick={() => void saveProject(notify)} />
-        <DropdownMenuItem label="名前を付けて保存…" endContent={key(isMac ? '⇧⌘S' : 'Ctrl+Shift+S')} onClick={() => void saveProject(notify, true)} />
+        <DropdownMenuItem label="保存" endContent={key(keyLabel('save'))} onClick={() => void saveProject(notify)} />
+        <DropdownMenuItem label="名前を付けて保存…" endContent={key(keyLabel('saveAs'))} onClick={() => void saveProject(notify, true)} />
+        <DropdownMenuItem label="以前の版から戻す…" description="上書き保存するたびに、前の内容を残しています" onClick={() => setState({backupOpen: true})} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="動画を書き出す…" isDisabled={busy} onClick={openExport} />
         <DropdownMenuItem label="この場面を画像で書き出す…" description="再生位置の画面を 1 枚の画像に（サムネイル用）" isDisabled={busy || empty} onClick={() => void exportStill(notify)} />
@@ -304,18 +311,19 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="合成ソフトの設定…" onClick={openSettings} />
       </DropdownMenu>
       <DropdownMenu button={menu('編集')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
-        <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={key(`${mod}Z`)} onClick={undo} />
-        <DropdownMenuItem label="やり直す" isDisabled={!canRedo} endContent={key(isMac ? '⇧⌘Z' : 'Ctrl+Y')} onClick={redo} />
+        <DropdownMenuItem label="元に戻す" isDisabled={!canUndo} endContent={key(keyLabel('undo'))} onClick={undo} />
+        <DropdownMenuItem label="やり直す" isDisabled={!canRedo} endContent={key(keyLabel('redo'))} onClick={redo} />
         <DropdownMenuDivider />
-        <DropdownMenuItem label="切り取り" isDisabled={!hasSel} endContent={key(`${mod}X`)} onClick={() => cutSelection()} />
-        <DropdownMenuItem label="コピー" isDisabled={!hasSel} endContent={key(`${mod}C`)} onClick={() => copySelection()} />
-        <DropdownMenuItem label="貼り付け" isDisabled={!canPaste} endContent={key(`${mod}V`)} onClick={() => pasteClipboard()} />
-        <DropdownMenuItem label="複製" isDisabled={!hasSel} endContent={key(`${mod}D`)} onClick={() => duplicateSelection()} />
-        <DropdownMenuItem label="削除" isDisabled={!hasSel} endContent={key('Delete')} onClick={() => deleteClips(editableSelection().map(c => c.id))} />
+        <DropdownMenuItem label="切り取り" isDisabled={!hasSel} endContent={key(keyLabel('cut'))} onClick={() => cutSelection()} />
+        <DropdownMenuItem label="コピー" isDisabled={!hasSel} endContent={key(keyLabel('copy'))} onClick={() => copySelection()} />
+        <DropdownMenuItem label="貼り付け" isDisabled={!canPaste} endContent={key(keyLabel('paste'))} onClick={() => pasteClipboard()} />
+        <DropdownMenuItem label="複製" isDisabled={!hasSel} endContent={key(keyLabel('duplicate'))} onClick={() => duplicateSelection()} />
+        <DropdownMenuItem label="画面分割…" description="選んだ 2〜4 個の素材を、左右・上下・4 分割などに並べる" onClick={() => setState({splitOpen: true})} />
+        <DropdownMenuItem label="削除" isDisabled={!hasSel} endContent={key(keyLabel('delete'))} onClick={() => deleteClips(editableSelection().map(c => c.id))} />
         <DropdownMenuDivider />
-        <DropdownMenuItem label="すべて選択" endContent={key(`${mod}A`)} onClick={() => selectAllClips()} />
+        <DropdownMenuItem label="すべて選択" endContent={key(keyLabel('selectAll'))} onClick={() => selectAllClips()} />
         <DropdownMenuDivider />
-        <DropdownMenuItem label="再生位置にマーカーを付ける" endContent={key('M')} onClick={() => markHere(notify)} />
+        <DropdownMenuItem label="再生位置にマーカーを付ける" endContent={key(keyLabel('marker'))} onClick={() => markHere(notify)} />
       </DropdownMenu>
       <DropdownMenu button={menu('表示')} hasChevron={false} menuWidth={240} menuMaxHeight={maxH}>
         <WindowMenu />
@@ -358,7 +366,8 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="音声合成ソフトの接続を確認" onClick={() => void refreshEngines()} />
       </DropdownMenu>
       <DropdownMenu button={menu('ヘルプ')} hasChevron={false} menuWidth={240}>
-        <DropdownMenuItem label="キーボードショートカット" endContent={key('?')} onClick={() => setState({shortcutsOpen: true})} />
+        <DropdownMenuItem label="キーボードショートカット" endContent={key(keyLabel('shortcuts'))} onClick={() => setState({shortcutsOpen: true})} />
+        <DropdownMenuItem label="キー操作の割り当て…" onClick={() => setState({keymapOpen: true})} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="VoxCut について" onClick={() => notify(`VoxCut ${__APP_VERSION__}　A.I.VOICE・VOICEPEAK・VoiSona Talk・VOICEVOX と連携する動画編集ソフト`, 'info')} />
       </DropdownMenu>
@@ -538,6 +547,7 @@ export function usePanels(notify: Notify): Registry {
       ),
     },
     inspector: {render: () => <Inspector notify={notify} />, scroll: true},
+    library: {render: () => <LibraryPanel />, scroll: true},
   };
 }
 
@@ -589,6 +599,93 @@ export function useNotify(): {notify: Notify; dismissers: React.MutableRefObject
     [showToast],
   );
   return {notify, dismissers};
+}
+
+/** 割り当てたキーで動かす操作 */
+function runAction(act: ActionId, notify: (m: string) => void) {
+  const fps = getState().project?.video.fps ?? 30;
+  switch (act) {
+    case 'new':
+      return void newProjectAction(notify);
+    case 'open':
+      return void openProject(notify);
+    case 'save':
+      return void saveProject(notify);
+    case 'saveAs':
+      return void saveProject(notify, true);
+    case 'undo':
+      return undo();
+    case 'redo':
+      return redo();
+    case 'focusInput':
+      return document.querySelector<HTMLInputElement>('[data-script-input] input')?.focus();
+    case 'find':
+    case 'replace':
+      // 台本を探す・置き換える：台本パネルを出して、探す欄へ（今は隠れていて、まだ作られていないこともある）
+      showPanel('script');
+      setTimeout(() => {
+        // 台本パネルが「文書で書く」なら一覧へ戻す（探す欄は一覧にある）
+        window.dispatchEvent(new Event('vx-open-search'));
+        if (act === 'replace') window.dispatchEvent(new Event('vx-open-replace'));
+      }, 80);
+      setTimeout(() => document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus(), 160);
+      return;
+    case 'shortcuts':
+      return setState({shortcutsOpen: true});
+    case 'play':
+      return toggle();
+    case 'stop':
+      return stop();
+    case 'shuttleForward':
+      return shuttleForward();
+    case 'shuttleBackward':
+      return shuttleBackward();
+    case 'frameBack':
+      return step(-1);
+    case 'frameForward':
+      return step(1);
+    case 'secondBack':
+      return step(-fps);
+    case 'secondForward':
+      return step(fps);
+    case 'prevEdit':
+      return jumpToEdit(-1);
+    case 'nextEdit':
+      return jumpToEdit(1);
+    case 'toStart':
+      return jumpTo('start');
+    case 'toEnd':
+      return jumpTo('end');
+    case 'marker':
+      return markHere(notify);
+    case 'split':
+      if (!splitClip(getState().selectedClipId!, getState().playhead)) notify('素材を再生位置で分けられます（セリフは分けられません）');
+      return;
+    case 'delete': {
+      const ids = editableSelection().map(c => c.id);
+      if (ids.length) deleteClips(ids);
+      else notify('ロックしたレイヤーのアイテムは消せません');
+      return;
+    }
+    case 'selectAll':
+      return selectAllClips();
+    case 'copy': {
+      const n = copySelection();
+      if (n) notify(`${n} 個を写しました`);
+      return;
+    }
+    case 'cut': {
+      const n = cutSelection();
+      if (n) notify(`${n} 個を切り取りました`);
+      return;
+    }
+    case 'paste':
+      if (!hasClipboard()) notify('貼り付けるものがありません。台本の文を貼るときは、メニューの「台本を貼り付け」を使ってください');
+      else pasteClipboard();
+      return;
+    case 'duplicate':
+      return duplicateSelection();
+  }
 }
 
 export function App() {
@@ -650,35 +747,20 @@ export function App() {
       const m = e.metaKey || e.ctrlKey;
       // ダイアログを開いている間は、後ろの編集画面のショートカットを効かせない（Delete で後ろのセリフが消える、Space で再生が始まる等を防ぐ）。
       // 保存（Ctrl+S）だけは通す
-      if (modalOpen() && !(m && e.key.toLowerCase() === 's')) return;
+      if (modalOpen() && !['save', 'saveAs'].includes(actionFor(e) ?? '')) return;
       // ボタン・メニュー項目・タブ・スイッチなどにフォーカスがあるときの Space は、その部品の操作（押す・チェック）に使う
       if (e.key === ' ' && onControl(t)) return;
-      if (m && e.key.toLowerCase() === 's') {
+      // 割り当てたキーの操作（設定の「キー操作の割り当て」で変えられる）
+      const act = actionFor(e);
+      if (act && (!typing || ACTION[act].whileTyping) && !(ACTION[act].nav && inPanel)) {
+        // S（分ける）は、選んだものがなければ何もしない（ほかで使うかもしれないので止めない）
+        if (act === 'split' && !getState().selectedClipId) return;
+        if (act === 'delete' && !getState().selectedClipIds.length) return;
         e.preventDefault();
-        void saveProject(notify, e.shiftKey);
-      } else if (m && e.key.toLowerCase() === 'l') {
-        // セリフ入力欄へ
-        e.preventDefault();
-        document.querySelector<HTMLInputElement>('[data-script-input] input')?.focus();
-      } else if (m && e.key.toLowerCase() === 'o') {
-        e.preventDefault();
-        void openProject(notify);
-      } else if (m && e.key.toLowerCase() === 'n') {
-        e.preventDefault();
-        void newProjectAction(notify);
-      } else if (m && !e.shiftKey && (e.key.toLowerCase() === 'f' || e.key.toLowerCase() === 'h')) {
-        // 台本を探す（Ctrl+F）・置き換える（Ctrl+H）：台本パネルを出して、探す欄へ
-        e.preventDefault();
-        showPanel('script');
-        const replace = e.key.toLowerCase() === 'h';
-        // パネルが出てから（今は隠れていて、まだ作られていないこともある）
-        setTimeout(() => {
-          // 台本パネルが「文書で書く」なら一覧へ戻す（探す欄は一覧にある）
-          window.dispatchEvent(new Event('vx-open-search'));
-          if (replace) window.dispatchEvent(new Event('vx-open-replace'));
-        }, 80);
-        setTimeout(() => document.querySelector<HTMLInputElement>('[data-script-search] input')?.focus(), 160);
-      } else if (e.key === 'Escape' && getState().previewFull) {
+        runAction(act, notify);
+        return;
+      }
+      if (e.key === 'Escape' && getState().previewFull) {
         e.preventDefault();
         void toggleFullscreen();
       } else if (typing) {
@@ -687,62 +769,6 @@ export function App() {
         // Shift+1〜5：パネルへ移る（Premiere Pro と同じく Shift+3 がタイムライン）
         e.preventDefault();
         focusPanel(PANEL_KEYS[e.code]);
-      } else if (e.key === '?' || (m && e.key === '/')) {
-        e.preventDefault();
-        setState({shortcutsOpen: true});
-      } else if (m && e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-      } else if (m && e.key.toLowerCase() === 'y') {
-        e.preventDefault();
-        redo();
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        toggle();
-      } else if (!m && !e.altKey && ['j', 'k', 'l'].includes(e.key.toLowerCase())) {
-        // J/K/L：逆再生・停止・再生（押すたびに速く）
-        e.preventDefault();
-        const k = e.key.toLowerCase();
-        if (k === 'k') stop();
-        else if (k === 'l') shuttleForward();
-        else shuttleBackward();
-      } else if (!inPanel && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-        // ←→：1 コマ（Shift で 1 秒）
-        e.preventDefault();
-        const fps = getState().project?.video.fps ?? 30;
-        step((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? fps : 1));
-      } else if (!inPanel && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-        // ↑↓：前後の編集点へ
-        e.preventDefault();
-        jumpToEdit(e.key === 'ArrowDown' ? 1 : -1);
-      } else if (!inPanel && (e.key === 'Home' || e.key === 'End')) {
-        e.preventDefault();
-        jumpTo(e.key === 'Home' ? 'start' : 'end');
-      } else if (!m && !e.altKey && e.key.toLowerCase() === 'm') {
-        // M：再生位置にマーカー
-        e.preventDefault();
-        markHere(notify);
-      } else if (e.key.toLowerCase() === 's' && getState().selectedClipId) {
-        if (!splitClip(getState().selectedClipId!, getState().playhead)) notify('素材を再生位置で分けられます（セリフは分けられません）');
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && getState().selectedClipIds.length) {
-        const ids = editableSelection().map(c => c.id);
-        if (ids.length) deleteClips(ids);
-        else notify('ロックしたレイヤーのアイテムは消せません');
-      } else if (m && !e.shiftKey && ['c', 'x', 'v', 'd', 'a'].includes(e.key.toLowerCase())) {
-        const k = e.key.toLowerCase();
-        e.preventDefault();
-        if (k === 'a') selectAllClips();
-        else if (k === 'c') {
-          const n = copySelection();
-          if (n) notify(`${n} 個を写しました`);
-        } else if (k === 'x') {
-          const n = cutSelection();
-          if (n) notify(`${n} 個を切り取りました`);
-        } else if (k === 'v') {
-          if (!hasClipboard()) notify('貼り付けるものがありません。台本の文を貼るときは、メニューの「台本を貼り付け」を使ってください');
-          else pasteClipboard();
-        } else if (k === 'd') duplicateSelection();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -774,6 +800,9 @@ export function App() {
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />
       <ShortcutsDialog />
+      <KeymapDialog />
+      <BackupDialog notify={notify} />
+      <SplitDialog />
       {dropActive && (
         <div className="vx-drop" aria-hidden>
           <div className="vx-drop-card">
