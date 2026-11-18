@@ -5,7 +5,7 @@
   2. `python3 app/scripts/e2e-regress.py`  （Playwright と Chrome が必要。CHROME で実行ファイルを指定できる）
 失敗があれば「NG」と内容を出して、終了コード 1 で終わる。
 """
-import asyncio, os, sys
+import asyncio, re, os, sys
 from playwright.async_api import async_playwright
 
 URL = os.environ.get("VOXCUT_URL", "http://localhost:5173/")
@@ -893,6 +893,172 @@ async def main():
           out.push(document.body.textContent.includes('1 文字ずつ出す'));
           s.setState({project:keep, selectedClipId:null, playhead:0}); return [out, inScene]}""")
         check("グループ制御・カメラ・調整レイヤー・波形・シーン・1 文字ずつのプロパティが開ける", r[1] and r[0][5] is True and r[0][6] is True, str(r))
+        # ── キー操作の割り当て（変えたキーで動き、元のキーは効かなくなる。同じキーはほかの操作から外す）
+        r = await q.evaluate(r"""async()=>{const k=await import('/src/keymap.ts'); const s=await import('/src/store.ts');
+          const ev=(key, code, o={})=>({key, code, ctrlKey:false, metaKey:false, altKey:false, shiftKey:false, ...o});
+          const combos=[k.comboOf(ev('s','KeyS',{ctrlKey:true, shiftKey:true})), k.comboOf(ev('?','Slash',{shiftKey:true})), k.comboOf(ev(' ','Space')), k.comboOf(ev('Shift','ShiftLeft',{shiftKey:true}))];
+          k.resetKeys(); const keep=structuredClone(s.getState().project); s.setState({project:{...keep, markers:[]}, playhead:5, selectedClipId:null, selectedClipIds:[]}); const before=0;
+          const press=async(key, code)=>{document.body.dispatchEvent(new KeyboardEvent('keydown',{key, code, bubbles:true, cancelable:true})); await new Promise(r=>setTimeout(r,80))};
+          const taken=k.assignKey('marker','J');
+          await press('q','KeyQ'); const afterQ=s.getState().project.markers?.length ?? 0;
+          await press('j','KeyJ'); const afterJ=s.getState().project.markers?.length ?? 0;
+          await press('m','KeyM'); const afterM=s.getState().project.markers?.length ?? 0;
+          const shuttle=k.keysFor('shuttleBackward'); const label=k.keyLabel('marker'); const stored=JSON.parse(localStorage.getItem('vx-keymap'));
+          k.resetKeys(); s.setState({project:keep, playhead:0});
+          return {combos, taken, n:[before, afterQ, afterJ, afterM], shuttle, label, stored, back:k.keysFor('shuttleBackward')}}""")
+        check("キー操作：押したキーを Mod+Shift+S・?・Space の形で読む（修飾キーだけは読まない）", r['combos'] == ['Mod+Shift+S', '?', 'Space', None], str(r))
+        check("キー操作：マーカーを J に変えると J で付き、元の M では付かない", r['n'][2] == r['n'][0] + 1 and r['n'][3] == r['n'][2], str(r))
+        check("キー操作：J を使っていた逆再生からは外し、変えた分だけ覚える", r['taken'] == ['shuttleBackward'] and r['shuttle'] == [] and r['label'] == 'J' and r['stored']['marker'] == ['J'] and r['back'] == ['J'], str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({keymapOpen:true})}")
+        await q.wait_for_timeout(400)
+        await q.locator('[data-keymap-change="split"]').click(); await q.wait_for_timeout(100)
+        await q.keyboard.press("Control+Shift+X"); await q.wait_for_timeout(200)
+        r = await q.evaluate(r"""async()=>{const k=await import('/src/keymap.ts'); const t=document.querySelector('[data-keymap-keys="split"]')?.textContent; const ks=k.keysFor('split'); const cut=k.keysFor('cut'); k.resetKeys(); return {t, ks, cut, open:!!document.querySelector('dialog[open]')}}""")
+        check("キー操作の割り当て画面：「変える」を押してからキーを押すと、そのキーになる", r['ks'] == ['Mod+Shift+X'] and 'X' in (r['t'] or '') and r['cut'] == ['Mod+X'] and r['open'], str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(300)
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({keymapOpen:false})}")
+        # ── マイクの録音（16bit の WAV にする）・新しい音声合成ソフト・透明な書き出し
+        r = await q.evaluate(r"""async()=>{const rec=await import('/src/record.ts'); const w=rec.encodeWav(new Float32Array([0, 1, -1, 0.5]), 48000); const d=new DataView(w.buffer);
+          const tag=(o)=>String.fromCharCode(...w.slice(o,o+4)); const m=await import('/src/model.ts'); const ipc=await import('/src/ipc.ts'); const a=await ipc.api;
+          const st=await a.engineStatus(); const p=await a.writeRecording(w);
+          return {riff:tag(0), wave:tag(8), len:w.length, rate:d.getUint32(24,true), bits:d.getUint16(34,true), s1:d.getInt16(46,true), s2:d.getInt16(48,true), labels:['coeiroink','aquestalk','cevio'].map(e=>m.ENGINE_LABEL[e]), st:JSON.stringify(st), p}}""")
+        check("録音：16bit モノラルの WAV（44 バイトの頭と、-1〜1 の音）", r['riff'] == 'RIFF' and r['wave'] == 'WAVE' and r['len'] == 52 and r['rate'] == 48000 and r['bits'] == 16 and r['s1'] == 32767 and r['s2'] <= -32767, str(r))
+        check("音声合成ソフト：COEIROINK・ゆっくりボイス・CeVIO AI を選べる", r['labels'] == ['COEIROINK', 'ゆっくりボイス（AquesTalk）', 'CeVIO AI'] and all(f'"{e}"' in r['st'] for e in ['coeiroink', 'aquestalk', 'cevio']), str(r))
+        await q.get_by_role("button", name="録音").first.click(); await q.wait_for_timeout(500)
+        r = await q.evaluate("()=>({open:!!document.querySelector('dialog[open]'), t:document.querySelector('dialog[open]')?.textContent?.slice(0,200) ?? ''})")
+        check("録音の画面が開く", r['open'] and '録音' in r['t'], str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(300)
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({settingsOpen:true})}"); await q.wait_for_timeout(500)
+        r = await q.evaluate("()=>{const t=document.querySelector('dialog[open]')?.textContent ?? ''; return ['COEIROINK','ゆっくりボイス','CeVIO AI','AquesTalkPlayer'].map(x=>t.includes(x))}")
+        check("設定：COEIROINK・ゆっくりボイス・CeVIO AI の欄がある", all(r), str(r))
+        await q.evaluate("async()=>{const s=await import('/src/store.ts'); s.setState({settingsOpen:false})}"); await q.wait_for_timeout(300)
+        await q.get_by_role("button", name="書き出す").first.click(); await q.wait_for_timeout(500)
+        r = await q.evaluate("()=>{const t=document.querySelector('dialog[open]')?.textContent ?? ''; return [t.includes('背景'), t.includes('MP4（H.264')]}")
+        check("書き出し：背景を選ぶ欄があり、はじめは MP4", all(r), str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(300)
+        # ── 音のクロスフェード（core/src/model.rs の crossfades_extend_previous_sound と同じ数）・音のフェード
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts');
+          const au=(id,start,duration,cf)=>({id, type:'media', trackId:'A1', start, duration, src:id+'.wav', mediaKind:'audio', hasAudio:true, inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}, ...(cf?{crossfade:cf}:{})});
+          const p={tracks:[], clips:[au('a',0,30), au('b',31,60,40), au('c',200,30,10)]};
+          const q=m.withTransitions(p); const g=id=>q.clips.find(c=>c.id===id);
+          const f=au('x',0,30); f.soundFadeIn=10; f.soundFadeOut=6;
+          return {same:m.withCrossfades({tracks:[], clips:[au('a',0,30), au('b',31,60)]}).clips[0].duration, a:[g('a').duration, g('a').soundFadeOut??0], b:g('b').soundFadeIn, c:[g('c').soundFadeIn??0, g('c').duration],
+            fade:[m.soundFadeAt(f,0,1,30), m.soundFadeAt(f,1/6,1,30), m.soundFadeAt(f,0.5,1,30), m.soundFadeAt(f,0.9,1,30)]}}""")
+        check("クロスフェード：前の音を 8 割まで延ばして消し、次の音は大きくする（書き出しと同じ数）", r['same'] == 30 and r['a'] == [55, 24] and r['b'] == 24 and r['c'] == [0, 30], str(r))
+        check("音のフェード：頭から大きくなり、終わりで小さくなる（直線）", abs(r['fade'][0]) < 1e-9 and abs(r['fade'][1] - 0.5) < 1e-6 and r['fade'][2] == 1 and abs(r['fade'][3] - 0.5) < 1e-6, str(r))
+        # ── 素材ライブラリ：入れる・同じものは増やさない・分類で絞る・押すと再生位置に置く・タイムラインへ落とすとそこに置く
+        await q.evaluate("async()=>{const l=await import('/src/dock/layout.ts'); l.showPanel('library')}"); await q.wait_for_timeout(500)
+        r = await q.evaluate(r"""async()=>{const ipc=await import('/src/ipc.ts'); const a=await ipc.api; const lp=await import('/src/panels/LibraryPanel.tsx'); const s=await import('/src/store.ts');
+          const got=await a.libraryAdd(['/m/ポン.wav','/m/bg.png','/m/memo.txt'], '効果音', null); await a.libraryAdd(['/m/ポン.wav'], '', null); lp.libraryChanged();
+          await new Promise(r=>setTimeout(r,400));
+          const rows=[...document.querySelectorAll('[data-library-item]')].map(e=>e.textContent);
+          const keep=structuredClone(s.getState().project); s.setState({playhead:12});
+          const n0=s.getState().project.clips.length;
+          [...document.querySelectorAll('[data-library-item]')].find(e=>e.textContent.includes('ポン')).querySelector('button:nth-last-of-type(2)').click();
+          await new Promise(r=>setTimeout(r,400));
+          const added=s.getState().project.clips.slice(n0); const placed=added.map(c=>[c.src, c.start]);
+          s.setState({project:keep, playhead:0});
+          return {kinds:got.map(i=>i.kind), n:(await a.libraryList()).length, rows, placed}}""")
+        check("ライブラリ：画像・音声だけ入れ、同じものは増やさない", r['kinds'] == ['audio', 'image'] and r['n'] == 2 and len(r['rows']) == 2, str(r))
+        check("ライブラリ：「置く」で再生位置に置く", r['placed'] == [['/m/ポン.wav', 12]], str(r))
+        await q.evaluate("async()=>{const l=await import('/src/dock/layout.ts'); l.showPanel('timeline')}"); await q.wait_for_timeout(300)
+        await q.evaluate("async()=>{const l=await import('/src/dock/layout.ts'); l.showPanel('library')}"); await q.wait_for_timeout(400)
+        item = q.locator('[data-library-item]', has_text="bg").first
+        tl = q.locator('.vx-timeline-scroll').first
+        ib = await item.bounding_box(); tb = await tl.bounding_box()
+        n0 = await q.evaluate("async()=>{const s=await import('/src/store.ts'); window.__keepP=structuredClone(s.getState().project); return s.getState().project.clips.length}")
+        await q.mouse.move(ib['x'] + 20, ib['y'] + ib['height'] / 2); await q.mouse.down()
+        tx, ty = tb['x'] + tb['width'] * 0.6, tb['y'] + 40
+        await q.mouse.move(tx, ty, steps=8)
+        hit0 = await q.evaluate("async([x,y])=>{const t=await import('/src/timeline/Timeline.tsx'); return [t.timelineHit.current(x,y), document.querySelector('.vx-library-ghost')?.dataset.over]}", [tx, ty])
+        await q.mouse.up(); await q.wait_for_timeout(500)
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const t=await import('/src/timeline/Timeline.tsx'); const st=s.getState();
+          const added=st.project.clips.slice(%d); const out={added:added.map(c=>[c.src, c.start, c.trackId]), ghost:!!document.querySelector('.vx-library-ghost'), busy:window.__keepP.clips.filter(c=>added[0] && c.start < added[0].start+added[0].duration && c.start+c.duration > added[0].start).map(c=>c.trackId)};
+          s.setState({project:window.__keepP}); return out}""" % n0)
+        r['hit'], r['over'] = hit0
+        check("ライブラリ：タイムラインへドラッグすると、落とした所のフレーム・レイヤーに置く（ふさがっていれば空いたレイヤー）", len(r['added']) == 1 and r['added'][0][0] == '/m/bg.png' and abs(r['added'][0][1] - round(r['hit']['frame'])) <= 1 and (r['added'][0][2] == r['hit']['trackId'] or r['hit']['trackId'] in r['busy']) and r['over'] == '1' and not r['ghost'], str(r))
+        # ── まとめて書き出し：予約に足す・マーカーで分けて予約・順番に書き出す
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const keep=structuredClone(s.getState().project); window.__keepP=keep;
+          s.setState({project:{...keep, markers:[{id:'mk1', frame:30, name:'a'},{id:'mk2', frame:60, name:'b'}]}, exportQueue:[]}); return true}""")
+        await q.get_by_role("button", name="書き出す").first.click(); await q.wait_for_timeout(500)
+        await q.get_by_role("button", name="予約に足す…").click(); await q.wait_for_timeout(300)
+        await q.get_by_role("button", name=re.compile("マーカーで .* 本に分けて予約")).click(); await q.wait_for_timeout(300)
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); return {q:s.getState().exportQueue.map(j=>[j.out, j.options.rangeFrames ?? null]), list:document.querySelector('[data-export-queue]')?.textContent ?? ''}}""")
+        check("まとめて書き出し：予約に足し、マーカーで区切って _01・_02… に分ける", len(r['q']) == 4 and r['q'][0][1] is None and [x[1] for x in r['q'][1:]][:2] == [[0, 30], [30, 60]] and r['q'][1][0].endswith('_01.mp4') and '予約（4 件）' in r['list'], str(r))
+        await q.get_by_role("button", name=re.compile("予約した 4 件を順番に書き出す")).click()
+        await q.wait_for_selector('[data-export-results]', timeout=30000); await q.wait_for_timeout(300)
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const t=document.querySelector('[data-export-results]').textContent; const left=s.getState().exportQueue.length; s.setState({project:window.__keepP, exportQueue:[]}); return {t, left, banner:document.querySelector('dialog[open]').textContent.includes('4 件を書き出しました')}}""")
+        check("まとめて書き出し：順番に全部書き出し、書き出したものは予約から外す", r['banner'] and r['left'] == 0 and r['t'].count('書き出し済み') == 4, str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(300)
+        # ── 立ち絵の呼吸（Rust の Breath::scale_at と同じ）・タイマー（Rust の Timer::text_at と同じ数）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); const v=await import('/src/preview/visual.ts'); const b={amount:20, period:2};
+          const d={from:10, to:0, format:'s'}, u={from:55, to:3700, format:'m:ss'}, h={from:3599, to:4000, format:'h:mm:ss'}, c={from:5, to:0, format:'m:ss.cc'};
+          const tx={id:'tm', type:'text', trackId:'V1', start:0, duration:90, text:'残り {t}', fontFamily:'sans-serif', fontSize:40, color:'#fff', outlineColor:'#000', outlineWidth:0, bold:false, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}, timer:d};
+          const p={video:{width:320, height:180, fps:30, background:'#000', sampleRate:48000}, tracks:[], characters:[], clips:[tx]};
+          const baked=await v.bakeItemImages(p);
+          return {b:[m.breathScale(b,0), m.breathScale(b,0.5), m.breathScale(b,1), m.breathScale(null,1)],
+            d:[0,1,29,30,299,300,400].map(f=>m.timerText(d,'',f,30)), u:[0,150,3600].map(f=>m.timerText(u,'残り {t}',f,30)), h:m.timerText(h,'',30,30), c:[0,1,15].map(f=>m.timerText(c,'',f,30)),
+            step:[m.timerStep(c,30), m.timerStep(d,30)], baked:Object.keys(baked).sort(), w:[v.itemImage(tx,0,30).width > v.itemImage({...tx, timer:{...d, from:1}},0,30).width]}}""")
+        check("立ち絵の呼吸：1 から 1.2 倍までなめらかに（書き出しと同じ式）", [round(x, 6) for x in r['b']] == [1, 1.1, 1.2, 1], str(r))
+        check("タイマー：カウントダウン・カウントアップ・表し方（書き出しと同じ数）", r['d'] == ['10', '10', '10', '9', '1', '0', '0'] and r['u'] == ['残り 0:55', '残り 1:00', '残り 2:55'] and r['h'] == '1:00:00' and r['c'] == ['0:05.00', '0:04.97', '0:04.50'] and r['step'] == [1, 30], str(r))
+        check("タイマー：書き出しは 1 秒ごとの画像（id#1〜）を渡し、プレビューは数字で幅が変わる", r['baked'] == ['tm#1', 'tm#2', 'tm#3'] and r['w'] == [True], str(r))
+        # ── 自動バックアップ：上書き保存の前の内容を残し、一覧から開ける（保存先は元のまま）
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const a=await import('/src/actions.ts'); const ipc=await import('/src/ipc.ts'); const api=await ipc.api;
+          const keep=structuredClone(s.getState().project); const keepPath=s.getState().projectPath; const notify=()=>{};
+          s.setState({projectPath:'/p/作品.voxcut', project:{...keep, name:'一回目'}, dirty:true}); await a.saveProject(notify);
+          s.setState({project:{...keep, name:'二回目'}, dirty:true}); await a.saveProject(notify);
+          s.setState({project:{...keep, name:'三回目'}, dirty:true}); await a.saveProject(notify);
+          const list=await api.listBackups('/p/作品.voxcut');
+          s.setState({backupOpen:true}); await new Promise(r=>setTimeout(r,500));
+          const rows=document.querySelectorAll('[data-backups] button').length;
+          document.querySelectorAll('[data-backups] button')[1].click(); await new Promise(r=>setTimeout(r,500));
+          const st=s.getState(); const out={n:list.length, rows, name:st.project.name, path:st.projectPath, dirty:st.dirty, open:st.backupOpen};
+          s.setState({project:keep, projectPath:keepPath, dirty:false}); return out}""")
+        check("自動バックアップ：上書きする前の内容を新しい順に残す", r['n'] == 2 and r['rows'] == 2, str(r))
+        check("自動バックアップ：古い版を開くと、保存先は元のファイルのまま・未保存になる", r['name'] == '一回目' and r['path'] == '/p/作品.voxcut' and r['dirty'] and not r['open'], str(r))
+        # ── 画面録画：画面が開き、録ったものを保存して置ける
+        await q.get_by_role("button", name="画面録画").first.click(); await q.wait_for_timeout(400)
+        r = await q.evaluate(r"""async()=>{const c=await import('/src/capture.ts'); const t=document.querySelector('dialog[open]')?.textContent ?? '';
+          return {open:t.includes('画面を録画') && t.includes('パソコンの音も録る'), mime:c.captureMime(), status:!!document.querySelector('[data-capture-status]')}}""")
+        check("画面録画：画面が開き、WebM で録れる", r['open'] and r['status'] and r['mime'].startswith('video/webm'), str(r))
+        await q.keyboard.press("Escape"); await q.wait_for_timeout(300)
+        # ── 動く図形：粒（4 秒でつなぎ目なくくり返す）・進行バー・グラフ（書き出しの ShapeAnim::sequence と同じ並べ方）
+        r = await q.evaluate(r"""async()=>{const an=await import('/src/preview/anim.ts'); const v=await import('/src/preview/visual.ts');
+          const sh=(id,w,h,dur,anim)=>({id, type:'shape', trackId:'V1', start:0, duration:dur, shape:'rect', width:w, height:h, fill:'#f00', stroke:'', strokeWidth:0, transform:{x:0,y:0,scale:1,opacity:1}, anim});
+          const pt=sh('pt',160,90,300,{kind:'particles', type:'confetti', amount:40, speed:2, size:12, colors:['#f00','#0f0']});
+          const pg=sh('pg',100,10,1000,{kind:'progress', trackColor:'#333', chapters:true, labels:false});
+          const ch=sh('ch',200,120,150,{kind:'chart', chart:'bar', items:[{label:'A',value:3,color:'#f00'},{label:'B',value:5,color:'#0f0'}], grow:30, showValues:true, unit:'', textColor:'#fff'});
+          const px=c=>Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data);
+          const same=(a,b)=>{const x=px(a), y=px(b); let d=0; for(let i=0;i<x.length;i++) d=Math.max(d,Math.abs(x[i]-y[i])); return d};
+          const p={video:{width:320,height:180,fps:30,background:'#000',sampleRate:48000}, tracks:[], characters:[], clips:[pt,pg,ch], markers:[{id:'m',frame:500,name:'後半'}]};
+          const baked=await v.bakeItemImages(p); const count=id=>Object.keys(baked).filter(k=>k.startsWith(id+'#')).length;
+          // 進行バー：真ん中のマーカーの所にすき間、半分で半分まで伸びる
+          const bar=an.animImage(pg, 500, 30, p.markers); const d=bar.getContext('2d').getImageData(0,5,100,1).data; const alpha=i=>d[i*4+3]; const red=i=>d[i*4]>200&&d[i*4+1]<50;
+          const chart0=px(an.animImage(ch,0,30)).filter((x,i)=>i%4===3&&x>0).length, chart1=px(an.animImage(ch,30,30)).filter((x,i)=>i%4===3&&x>0).length;
+          return {loop:an.particleLoop(30), seam:same(an.animImage(pt,0,30,[],false), an.animImage(pt,120,30,[],false)), moves:same(an.animImage(pt,0,30,[],false), an.animImage(pt,30,30,[],false)),
+            step:[an.animStep(pg.anim,100,1000), an.animStep(pt.anim,160,300), an.animStep(ch.anim,200,150)], at:[an.animFrameAt(pt,121,30), an.animFrameAt(pg,519,30), an.animFrameAt(ch,99,30)],
+            counts:[count('pt'), count('pg'), count('ch')], gap:[alpha(49), alpha(50), alpha(51)].some(a=>a===0), half:[red(30), red(70)], grow:[chart0, chart1]}}""")
+        check("粒：4 秒でつなぎ目なく元に戻り、その間は動く", r['loop'] == 120 and r['seam'] <= 2 and r['moves'] > 50, str(r))
+        check("動く図形：書き出しの並べ方と同じ（進行バーは幅ぶん、粒はくり返し、グラフは伸びきったら止まる）", r['step'] == [{'step': 10, 'loop': False}, {'step': 1, 'loop': True}, {'step': 1, 'loop': False}] and r['at'] == [1, 510, 30] and r['counts'] == [120, 100, 31], str(r))
+        check("進行バー：マーカーの所で区切り、半分で半分まで伸びる。グラフは伸びていく", r['gap'] and r['half'] == [True, False] and r['grow'][0] < r['grow'][1], str(r))
+        # ── 画面分割：2 つの動画を左右に（はみ出す分は真ん中を残して切り抜く）・小窓
+        r = await q.evaluate(r"""async()=>{const sp=await import('/src/split.ts');
+          const lr=sp.splitPlacement('lr', [[1920,1080],[1920,1080]], {width:1920,height:1080}, 0);
+          const pip=sp.splitPlacement('pip', [[1920,1080],[1920,1080]], {width:1920,height:1080}, 0);
+          const g4=sp.splitPlacement('grid4', [[1080,1080],[1080,1080],[1080,1080],[1080,1080]], {width:1920,height:1080}, 20);
+          return {lr, pip, g4:g4.map(x=>[x.transform.x, x.transform.y, x.transform.scale, x.crop]), n:[2,3,4].map(n=>sp.layoutsFor(n))}}""")
+        lr = r['lr']
+        check("画面分割：左右は半分ずつ。真ん中を残して左右を 4 分の 1 ずつ切る", lr[0]['transform'] == {'x': -480, 'y': 0, 'scale': 1} and lr[1]['transform']['x'] == 480 and lr[0]['crop'] == {'left': 0.25, 'right': 0.25, 'top': 0, 'bottom': 0}, str(r))
+        check("画面分割：小窓は切り抜かずに右下へ、4 分割はすき間を空ける", r['pip'][1]['crop'] is None and r['pip'][1]['transform']['x'] > 0 and r['pip'][1]['transform']['y'] > 0 and abs(r['g4'][0][0] - (-475)) < 1 and r['n'] == [['lr', 'tb', 'pip'], ['l1r2', 't1b2', 'row3'], ['grid4']], str(r))
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const keep=structuredClone(s.getState().project); window.__keepP=keep;
+          const m=(id,src)=>({id, type:'media', trackId:id==='a'?'V1':'V2', start:0, duration:90, src, mediaKind:'video', hasAudio:false, inPoint:0, volume:1, transform:{x:0,y:0,scale:1,opacity:1}});
+          s.setState({project:{...keep, clips:[...keep.clips, m('a','/v/a.mp4'), m('b','/v/b.mp4')]}, media:{...s.getState().media, '/v/a.mp4':{kind:'video',hasAudio:false,durationMs:3000,width:1920,height:1080}, '/v/b.mp4':{kind:'video',hasAudio:false,durationMs:3000,width:1920,height:1080}}, selectedClipIds:['a','b'], selectedClipId:'a', splitOpen:true}); return true}""")
+        await q.wait_for_timeout(400)
+        await q.locator('[data-layout="tb"]').click(); await q.wait_for_timeout(100)
+        await q.get_by_role("button", name="並べる").click(); await q.wait_for_timeout(300)
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts'); const st=s.getState(); const g=id=>st.project.clips.find(c=>c.id===id); const vh=st.project.video.height;
+          const out={a:[g('a').transform.y, g('a').crop], b:g('b').transform.y, vh, open:st.splitOpen}; s.setState({project:window.__keepP, selectedClipIds:[], selectedClipId:null}); return out}""")
+        check("画面分割：ダイアログで「上下」を選んで並べると、上と下に収まる（すき間 8px）", abs(r['a'][0] + r['vh'] / 4) <= 8 and r['b'] == -r['a'][0] and r['a'][1] is not None and not r['open'], str(r))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
