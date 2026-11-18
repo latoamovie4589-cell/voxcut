@@ -5,10 +5,12 @@
 
 import {hash01, type Effect} from '../model';
 
-type Kinds = 'vhs' | 'film' | 'crt' | 'vignette' | 'posterize' | 'pixelate' | 'lineArt' | 'halftone' | 'duotone' | 'lightLeak' | 'bloom' | 'lensFlare' | 'bulge' | 'mirror' | 'tile' | 'colorKeep';
+type Kinds =
+  'vhs' | 'glitchNoise' | 'film' | 'crt' | 'vignette' | 'posterize' | 'pixelate' | 'lineArt' | 'halftone' | 'duotone' | 'lightLeak' | 'bloom' | 'lensFlare' | 'bulge' | 'mirror' | 'tile' | 'colorKeep';
 export type RetroEffect = Extract<Effect, {kind: Kinds}>;
 export const RETRO_FX = new Set<string>([
   'vhs',
+  'glitchNoise',
   'film',
   'crt',
   'vignette',
@@ -28,7 +30,7 @@ export const RETRO_FX = new Set<string>([
 
 /** 先に四方に足す余白（元の px。書き出しの pad と同じ） */
 export function retroPad(fx: RetroEffect, k: number): number {
-  return fx.kind === 'vhs' ? 31 * Math.min(1, fx.amount) * k + 1 : 0;
+  return fx.kind === 'vhs' ? 31 * Math.min(1, fx.amount) * k + 1 : fx.kind === 'glitchNoise' ? 48 * Math.min(1, fx.amount) * k + 1 : 0;
 }
 
 /** 掛かるか（強さ 0 などは何もしない。書き出しと同じ条件） */
@@ -100,6 +102,34 @@ export function retroPixels(fx: RetroEffect, d: ImageData, r: number, k: number,
     const g = (xx: number) => (xx < 0 || xx >= W ? 0 : s[(Y * W + xx) * 4 + c]);
     return g(x0) * (1 - f) + g(x0 + 1) * f;
   };
+  if (fx.kind === 'glitchNoise') {
+    // 1 秒に 12 回、乱れ方が変わる。rate の割合の時間だけ大きく乱れる（書き出しと同じ乱数）
+    const a = Math.min(1, fx.amount);
+    const step = Math.floor(t * 12);
+    const I = a * (0.15 + 0.85 * (hash01(step, 1) < Math.min(1, Math.max(0, fx.rate)) ? 1 : 0) * (0.5 + 0.5 * hash01(step, 2)));
+    const b = Math.max(2, fx.block) * k;
+    const bh = Math.max(1, b * 0.5);
+    const bw = Math.max(1, b * 2);
+    for (let Y = 0; Y < H; Y++) {
+      const y = Y / r;
+      const band = Math.floor(y / bh);
+      const off = (hash01(band, step + 3) > 0.55 ? 1 : 0) * I * 40 * k * (hash01(band, step + 4) * 2 - 1);
+      const cr = I * 8 * k * hash01(band, step + 5);
+      const cb = I * 8 * k * hash01(band, step + 6);
+      const line = hash01(Math.floor(y / k), N + 9) > 1 - 0.05 * I;
+      for (let X = 0; X < W; X++) {
+        const x = X / r;
+        const xs = x - off;
+        const corrupt = hash01(Math.floor(x / bw) + band * 31.7, step + 7) > 1 - 0.1 * I ? 1 : 0;
+        const i = (Y * W + X) * 4;
+        const v = [at((xs - cr) * r, Y, 0), at(xs * r, Y, 1), at((xs + cb) * r, Y, 2)];
+        const nz = hash01(x + y * 0.37, N + 11) * 255;
+        for (let j = 0; j < 3; j++) out[i + j] = clip(line ? nz : v[j] + corrupt * (255 - 2 * v[j]));
+        out[i + 3] = Math.max(at((xs - cr) * r, Y, 3), at(xs * r, Y, 3), at((xs + cb) * r, Y, 3));
+      }
+    }
+    return o;
+  }
   if (fx.kind === 'vhs') {
     const a = Math.min(1, fx.amount);
     const bp = (mod(t * 0.23, 1) * 1.2 - 0.1) * Ho;
