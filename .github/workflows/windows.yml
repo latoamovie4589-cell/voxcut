@@ -36,6 +36,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # 前回のキャッシュが、今の実行環境にないコンパイラー（Visual Studio の別の版）を指していたら、
+      # その C++ のビルド（whisper.cpp など）だけ消して作り直す
+      - name: 古いコンパイラーを指す C++ のビルドを消す
+        shell: pwsh
+        run: |
+          Get-ChildItem target -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue | ForEach-Object {
+            $bad = Select-String -Path $_.FullName -Pattern '^\w+:FILEPATH=(.*Microsoft Visual Studio.*)$' | Where-Object { -not (Test-Path $_.Matches[0].Groups[1].Value.Trim()) }
+            if (-not $bad) { return }
+            # target/<debug|release>/build/<クレート>(-<ハッシュ>)/… のクレート名を探す
+            $d = $_.Directory
+            while ($d -and $d.Parent -and $d.Parent.Parent -and -not ($d.Parent.Name -eq 'build' -and $d.Parent.Parent.Name -in 'debug', 'release')) { $d = $d.Parent }
+            if (-not $d -or -not $d.Parent -or -not $d.Parent.Parent -or $d.Parent.Parent.Name -notin 'debug', 'release') { return }
+            $crate = $d.Name -replace '-[0-9a-f]{16}$', ''
+            $prof = $d.Parent.Parent.FullName
+            Write-Host "作り直す: $crate（$prof）"
+            Remove-Item -Recurse -Force "$prof/build/$crate*", "$prof/.fingerprint/$crate*" -ErrorAction SilentlyContinue
+          }
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
