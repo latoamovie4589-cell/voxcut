@@ -952,6 +952,17 @@ pub enum TransitionKind {
     SlideUp,
     SlideDown,
     Zoom,
+    /// ワイプ（次の場面が、その向きへ広がって前の場面を覆う）
+    WipeRight,
+    WipeLeft,
+    WipeDown,
+    WipeUp,
+    /// 円形（次の場面が、真ん中から丸く広がる）
+    Iris,
+    /// ブラー（前の場面がぼやけて消え、次の場面がぼやけた所から出る）
+    Blur,
+    /// グリッチ（つなぎ目の前後で画面がデジタルに乱れる）
+    Glitch,
 }
 
 /// 登場・退場の動き
@@ -980,6 +991,14 @@ pub enum MotionKind {
     WipeLeft,
     WipeDown,
     WipeUp,
+    /// 回転しながら（大きくなって出る・小さくなって消える）
+    Spin,
+    /// 跳ねて（少し大きくなりすぎてから戻る）
+    Bounce,
+    /// ぼかしから（ぼやけた所からくっきり出る・ぼやけて消える）
+    Blur,
+    /// 円形（真ん中から丸く広がって出る・丸く狭まって消える）
+    Iris,
 }
 
 impl Look {
@@ -1187,6 +1206,60 @@ impl Project {
                     set_b(&mut p, &|l| {
                         l.enter = Some(Motion { kind: MotionKind::Zoom, frames: in_f, smooth: false });
                         l.fade_in = in_f;
+                    });
+                }
+                TransitionKind::WipeRight | TransitionKind::WipeLeft | TransitionKind::WipeDown | TransitionKind::WipeUp | TransitionKind::Iris => {
+                    // 前の場面を後ろへ延ばして、その上に次の場面を広げていく
+                    let kind = match t.kind {
+                        TransitionKind::WipeRight => MotionKind::WipeRight,
+                        TransitionKind::WipeLeft => MotionKind::WipeLeft,
+                        TransitionKind::WipeDown => MotionKind::WipeDown,
+                        TransitionKind::WipeUp => MotionKind::WipeUp,
+                        _ => MotionKind::Iris,
+                    };
+                    extend_a(&mut p);
+                    set_a(&mut p, &|l| {
+                        l.exit = None;
+                        l.fade_out = 0;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = Some(Motion { kind, frames: d, smooth: true });
+                        l.fade_in = 0;
+                    });
+                }
+                TransitionKind::Blur => {
+                    set_a(&mut p, &|l| {
+                        l.exit = Some(Motion { kind: MotionKind::Blur, frames: out_f, smooth: false });
+                        l.fade_out = 0;
+                    });
+                    set_b(&mut p, &|l| {
+                        l.enter = Some(Motion { kind: MotionKind::Blur, frames: in_f, smooth: false });
+                        l.fade_in = 0;
+                    });
+                }
+                TransitionKind::Glitch => {
+                    // つなぎ目の前後に、下の全部を乱す調整レイヤーを置く（同じレイヤーの上に重ねる）
+                    extra.push(Clip {
+                        id: format!("{}~glitch", b.id),
+                        track_id: b.track_id.clone(),
+                        start: cut - out_f,
+                        duration: d,
+                        link_id: None,
+                        body: ClipBody::Shape(ShapeClip {
+                            shape: "rect".into(),
+                            width: 200.0,
+                            height: 120.0,
+                            fill: "#5AC8FA".into(),
+                            stroke: String::new(),
+                            stroke_width: 0.0,
+                            transform: Transform::default(),
+                            look: Look { effects: vec![Effect::GlitchNoise { amount: 1.0, rate: 1.0, block: 32.0 }], ..Default::default() },
+                            region: None,
+                            control: Some(Control { kind: ControlKind::Adjust, layers: 1 }),
+                            scene: None,
+                            viz: None,
+                            anim: None,
+                        }),
                     });
                 }
                 k => {
@@ -1415,6 +1488,27 @@ pub enum Effect {
     },
     /// パートカラー（残す色・色の幅 0〜1・境目のなめらかさ 0〜1）
     ColorKeep { color: String, range: f64, soft: f64 },
+    /// 拍動（ドクンと大きくなる。大きくなる割合 0〜1・1 分間の回数）
+    Pulse { amount: f64, bpm: f64 },
+    /// 回り続ける（1 分間に回る回数。マイナスで左回り）
+    Spin { rpm: f64 },
+    /// 跳ねる（跳ねる高さ px・1 分間の回数）
+    Bounce { height: f64, bpm: f64 },
+    /// 色相の回転（虹色に色が変わり続ける。1 分間に一周する回数・ずらす角度）
+    HueCycle { rpm: f64, offset: f64 },
+    /// シャープ（くっきり。強さ 0〜2）
+    Sharpen { amount: f64 },
+    /// 内側の影（色・ぼかし px・ずれ px・濃さ 0〜1）
+    InnerShadow { color: String, blur: f64, x: f64, y: f64, opacity: f64 },
+    /// ベベル（縁の幅 px・強さ 0〜1・光の向き 度）
+    Bevel { size: f64, strength: f64, angle: f64 },
+    /// エンボス（浮き彫り。強さ 0〜1・光の向き 度・元の色を残す）
+    Emboss {
+        amount: f64,
+        angle: f64,
+        #[serde(default, rename = "keepColor")]
+        keep_color: bool,
+    },
     /// ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数）
     Jitter { amount: f64, speed: f64 },
     /// 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数）
@@ -2761,6 +2855,23 @@ mod transition_tests {
         let ids: Vec<_> = q.clips.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(&ids[3..], ["b~cover1", "b~cover2"]);
         assert_eq!((get(&q, "b~cover1").start, get(&q, "b~cover1").duration, get(&q, "b~cover2").start, get(&q, "b~cover2").duration), (50, 10, 60, 11));
+        // ワイプ・円形：前を延ばして、その上に次の場面を広げる
+        set(&mut p, "b", TransitionKind::Iris, 20);
+        let q = p.with_transitions();
+        assert_eq!(get(&q, "a").duration, 80);
+        assert_eq!(look(&get(&q, "b")).enter, Some(Motion { kind: MotionKind::Iris, frames: 20, smooth: true }));
+        set(&mut p, "b", TransitionKind::WipeDown, 20);
+        assert_eq!(look(&get(&p.with_transitions(), "b")).enter.as_ref().map(|m| m.kind), Some(MotionKind::WipeDown));
+        // ブラー：前はぼやけて消え、次はぼやけた所から出る（半分ずつ）
+        set(&mut p, "b", TransitionKind::Blur, 20);
+        let q = p.with_transitions();
+        assert_eq!((look(&get(&q, "a")).exit.as_ref().map(|m| (m.kind, m.frames)), look(&get(&q, "b")).enter.as_ref().map(|m| (m.kind, m.frames))), (Some((MotionKind::Blur, 10)), Some((MotionKind::Blur, 10))));
+        // グリッチ：つなぎ目の前後に、乱す調整レイヤーが 1 つ（最後に＝手前に）
+        set(&mut p, "b", TransitionKind::Glitch, 20);
+        let q = p.with_transitions();
+        let g = get(&q, "b~glitch");
+        assert_eq!((g.start, g.duration, q.clips.last().unwrap().id.as_str()), (50, 20, "b~glitch"));
+        assert!(matches!(&g.body, ClipBody::Shape(s) if s.control.as_ref().is_some_and(|k| k.kind == ControlKind::Adjust) && matches!(s.look.effects[..], [Effect::GlitchNoise { .. }])));
         // 短いアイテムでは長さの 8 割まで
         set(&mut p, "b", TransitionKind::Zoom, 200);
         let q = p.with_transitions();
