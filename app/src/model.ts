@@ -915,6 +915,8 @@ export type Effect =
   | {kind: 'threshold'; level: number}
   /** VHS 風（強さ 0〜1）：横の揺れ・流れる帯・色のにじみ・走査線・ノイズ */
   | {kind: 'vhs'; amount: number}
+  /** グリッチノイズ（強さ 0〜1・乱れる時間の割合 0〜1・ブロックの大きさ px）：ブロックのずれ・色ずれ・色の反転・横線のノイズ */
+  | {kind: 'glitchNoise'; amount: number; rate: number; block: number}
   /** 古いフィルム（強さ 0〜1）：セピア・ちらつき・周辺減光・縦の傷・粒子 */
   | {kind: 'film'; amount: number}
   /** ブラウン管（強さ 0〜1）：走査線・RGB の縦じま・周辺減光 */
