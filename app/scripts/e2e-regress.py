@@ -796,6 +796,24 @@ async def main():
           const j=shot(2,2,white,fx({kind:'jitter', amount:10, speed:2}),1.0);
           const tl=shot(4,4,white,{anim:{to:{x:170,y:0,scale:1,opacity:1}, rotation:0, ease:'linear'}, effects:[{kind:'trail', count:2, interval:6}]},0.6,{x:-30,y:0,scale:1,opacity:1});
           return {a, b:[b(42,18),b(46,18)], c:[c(38,18),c(39,18)], d:[d1,d2], e:[e(38,18),e(25,18)], f:[f(38,18)[0],f(31,18)[0]], g:[g1,g2], o:[o(42,18)[0],o(32,18)[0]], j:[jx,jy,j(Math.round(31+jx)+1, Math.round(18+jy-1))[0]], t:[tl(42,18)[0],tl(29,18)[0],tl(15,18)[0]], h:m.hash01(3,4)}}""")
+        r2 = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts');
+          const shot=(iw, ih, fill, look, at=0.1)=>{const im=document.createElement('canvas'); im.width=iw; im.height=ih; const g=im.getContext('2d'); fill(g);
+            const L={rotation:0, fadeIn:0, fadeOut:0, ...look}; const tr={x:0,y:0,scale:1,opacity:1}; const c=document.createElement('canvas'); c.width=64; c.height=36; const x=c.getContext('2d'); x.fillStyle='#000'; x.fillRect(0,0,64,36);
+            const st=v.visualAt(tr, L, at*30, 90, 30, at, [64,36]); const sv=v.itemSource(im, [iw,ih], L, st, at, 1, 30); v.drawVisual(x, sv.img, sv.size, sv.st, 64, 36, 1);
+            const d=x.getImageData(0,0,64,36).data; return (X,Y)=>[d[(Y*64+X)*4], d[(Y*64+X)*4+1], d[(Y*64+X)*4+2]]};
+          const fill=c=>g=>{g.fillStyle=c; g.fillRect(0,0,99,99)}; const fx=e=>({effects:[e]});
+          const grad=g=>{for(let X=0;X<10;X++){g.fillStyle=`rgb(${X*25},${X*25},${X*25})`; g.fillRect(X,0,1,10)}};
+          const vg=shot(10,10,fill('#fff'),fx({kind:'vignette', amount:1})), fm=shot(10,10,fill('#808080'),fx({kind:'film', amount:1})), ct=shot(10,10,fill('#fff'),fx({kind:'crt', amount:1}));
+          const ps=shot(10,10,fill('#999'),fx({kind:'posterize', levels:3})), dt=shot(10,10,grad,fx({kind:'pixelate', size:5})), vh=shot(10,10,fill('#fff'),fx({kind:'vhs', amount:1}));
+          const plain=shot(10,10,fill('#fff'),{});
+          const row=f=>Array.from({length:30},(_,i)=>f(17+i,18)); return {vg:[vg(27,18),vg(32,18)], fm:fm(32,18), ct:[ct(27,18),ct(29,18),ct(31,18)], ps:ps(32,18), dt:[25,27,28,31,32,36,37].map(X=>dt(X,18)[0]), vh:[row(vh).slice(0,10), row(vh).slice(20), plain(20,18)]}}""")
+        near = lambda a, b, d: all(abs(x - y) <= d for x, y in zip(a, b))
+        check("周辺減光（書き出しと同じ：辺の真ん中 159、真ん中 253。画面は 1px 右）", abs(r2['vg'][0][0] - 159) <= 8 and r2['vg'][1][0] >= 245, str(r2))
+        check("古いフィルム（書き出しと同じセピア：199・180・145）", near(r2['fm'], [199, 180, 145], 10), str(r2))
+        check("ブラウン管（2px ごとに赤・緑・青の縦じま）", [max(range(3), key=lambda i: c[i]) for c in r2['ct']] == [0, 1, 2], str(r2))
+        check("ポスタリゼーション（3 段階で 60% の灰色は真ん中の 128）", near(r2['ps'], [128, 128, 128], 3), str(r2))
+        check("ドット絵風（5px の点は同じ色。書き出しは 50・180 の 2 段）", r2['dt'][1] == r2['dt'][3] and r2['dt'][4] == r2['dt'][5] and r2['dt'][4] > r2['dt'][1] + 100 and r2['dt'][0] == 0, str(r2))
+        check("VHS 風（色がにじんで、左の外は青、右の外は赤）", any(c[2] > c[0] + 80 for c in r2['vh'][0]) and any(c[0] > c[2] + 80 for c in r2['vh'][1]) and r2['vh'][2] == [0, 0, 0], str(r2))
         check("縁取り（書き出しと同じく形のまわり 4px が赤）", r['a'][0] > 200 and r['a'][1] < 60, str(r))
         check("ドロップシャドウ（右へ 8px）", r['b'][0][0] > 200 and r['b'][0][1] < 60 and r['b'][1][0] < 30, str(r))
         check("発光（すぐ外が赤みがかる。書き出しは 53・46）", 35 < r['c'][0][0] < 140 and r['c'][0][1] < 30 and r['c'][1][0] > 20, str(r))
