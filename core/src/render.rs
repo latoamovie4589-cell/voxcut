@@ -3252,7 +3252,7 @@ mod tests {
         use crate::model::{Clip, ShapeClip};
         let d = tempfile::tempdir().unwrap();
         let shape = d.path().join("r.png");
-        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1"]).arg(&shape).status().unwrap().success());
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1"]).arg(&shape).output().unwrap().status.success());
         let ass = d.path().join("s.ass");
         std::fs::write(&ass, "[Script Info]\nPlayResX: 160\nPlayResY: 90\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: D,DejaVu Sans,30,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,8,0,0,2,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:05.00,D,,0,0,0,,HH\n").unwrap();
         let mut p = Project::sample();
@@ -3291,24 +3291,28 @@ mod tests {
         use crate::model::Clip;
         let d = tempfile::tempdir().unwrap();
         let tone = d.path().join("t.wav");
-        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=4:sample_rate=48000", "-ac", "1"]).arg(&tone).status().unwrap().success());
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=4"]).arg(&tone).output().unwrap().status.success());
+        // 無音の素材（同じ音を 0 倍にしたもの）
+        let silent = d.path().join("s.wav");
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=4", "-af", "volume=0"]).arg(&silent).output().unwrap().status.success());
         let rms = |cf: Frame, a_tone: bool| {
             let mut p = Project::sample();
             p.clips.clear();
+            if !p.tracks.iter().any(|t| t.id == "A1") {
+                let mut t = p.tracks[0].clone();
+                t.id = "A1".into();
+                p.tracks.push(t);
+            }
             let mut fx = SourceFx::default();
             let clip = |id: &str, start: Frame, src: &Path, fx: SourceFx| Clip {
                 id: id.into(),
-                track_id: "V6".into(),
+                track_id: "A1".into(),
                 start,
                 duration: 30,
                 link_id: None,
                 body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }),
             };
             // 片方だけ音を入れ、もう片方は無音の素材にする
-            let silent = d.path().join("s.wav");
-            if !silent.exists() {
-                assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "4"]).arg(&silent).status().unwrap().success());
-            }
             let (sa, sb) = if a_tone { (&tone, &silent) } else { (&silent, &tone) };
             p.clips.push(clip("a", 0, sa, SourceFx::default()));
             fx.crossfade = cf;
@@ -3318,7 +3322,7 @@ mod tests {
             let args = build_args(&p, &|_: &str| None, &[], &[], &opt).unwrap();
             let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
             assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-            let raw = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&out).args(["-ac", "1", "-ar", "48000", "-f", "f32le", "-"]).output().unwrap().stdout;
+            let raw = std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-i"]).arg(&out).args(["-ac", "1", "-ar", "48000", "-f", "f32le", "-"]).output().unwrap().stdout;
             let x: Vec<f32> = raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
             // 30 フレーム目（1 秒）がつなぎ目。前後 0.1 秒ずつの窓で測る
             move |t: f64| {
@@ -3345,7 +3349,7 @@ mod tests {
     fn portrait_breath_stretches_up_from_the_feet_with_real_ffmpeg() {
         let d = tempfile::tempdir().unwrap();
         let png = d.path().join("t.png");
-        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x80,format=rgba", "-frames:v", "1"]).arg(&png).status().unwrap().success());
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x80,format=rgba", "-frames:v", "1"]).arg(&png).output().unwrap().status.success());
         let concat = d.path().join("p.ffconcat");
         std::fs::write(&concat, format!("ffconcat version 1.0\nfile {}\nduration 3\nfile {}\n", concat_quote(&png), concat_quote(&png))).unwrap();
         let mut p = Project::sample();
@@ -3358,7 +3362,7 @@ mod tests {
         let out = d.path().join("o.mp4");
         let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
         let dark = d.path().join("k.png");
-        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=2x2", "-frames:v", "1"]).arg(&dark).status().unwrap().success());
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=2x2", "-frames:v", "1"]).arg(&dark).output().unwrap().status.success());
         opt.item_images.insert("z".into(), dark);
         let args = build_args(&p, &|_: &str| None, &[pi], &[], &opt).unwrap();
         let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();

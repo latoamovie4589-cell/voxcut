@@ -12,8 +12,8 @@ pub fn looks_like_video(b: &[u8]) -> bool {
 
 /// 録った動画 raw を out へ詰め直す。うまくいかなければ raw をそのまま使う（返すのは使うファイル）
 pub fn finish(ffmpeg: &Path, raw: &Path, out: &Path) -> Result<PathBuf> {
-    let st = hidden_command(ffmpeg).args(["-v", "error", "-y", "-fflags", "+genpts", "-i"]).arg(raw).args(["-c", "copy"]).arg(out).status();
-    if matches!(st, Ok(s) if s.success()) && out.is_file() {
+    let st = hidden_command(ffmpeg).args(["-nostdin", "-v", "error", "-y", "-fflags", "+genpts", "-i"]).arg(raw).args(["-c", "copy"]).arg(out).output();
+    if matches!(st, Ok(ref o) if o.status.success()) && out.is_file() {
         let _ = std::fs::remove_file(raw);
         return Ok(out.to_path_buf());
     }
@@ -30,10 +30,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let raw = d.path().join("raw.webm");
         let ok = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=64x36:r=10:d=1", "-f", "lavfi", "-i", "sine=d=1", "-c:v", "libvpx", "-c:a", "libopus", "-shortest"])
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=64x36:r=10:d=1", "-f", "lavfi", "-i", "sine=d=1", "-c:v", "libvpx", "-c:a", "libopus", "-shortest"])
             .arg(&raw)
-            .status()
+            .output()
             .unwrap()
+            .status
             .success();
         assert!(ok);
         assert!(looks_like_video(&std::fs::read(&raw).unwrap()));
