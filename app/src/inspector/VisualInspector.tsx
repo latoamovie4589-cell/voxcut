@@ -103,6 +103,14 @@ const EFFECT_LABEL: Record<Effect['kind'], string> = {
   mirror: '鏡写し・万華鏡',
   tile: 'タイル（くり返し）',
   colorKeep: 'パートカラー（1 色だけ残す）',
+  pulse: '拍動（ドクンと大きく）',
+  spin: '回り続ける',
+  bounce: '跳ねる',
+  hueCycle: '色相の回転（虹色）',
+  sharpen: 'シャープ（くっきり）',
+  innerShadow: '内側の影',
+  bevel: 'ベベル（縁の立体感）',
+  emboss: 'エンボス（浮き彫り）',
   jitter: 'ランダム移動',
   oscillate: '反復移動',
   plugin: 'プラグイン',
@@ -119,13 +127,14 @@ function usePlugins() {
 }
 /** エフェクトの「追加」の分け方 */
 const FX_GROUPS: {label: string; kinds: Effect['kind'][]}[] = [
-  {label: '色', kinds: ['color', 'mono', 'invert', 'grade', 'temperature', 'lut', 'threshold', 'posterize', 'duotone', 'colorKeep']},
-  {label: 'ぼかし・縁取り・影', kinds: ['blur', 'radialBlur', 'dirBlur', 'outline', 'shadow']},
+  {label: '色', kinds: ['color', 'mono', 'invert', 'grade', 'temperature', 'lut', 'threshold', 'posterize', 'duotone', 'colorKeep', 'hueCycle']},
+  {label: 'ぼかし・くっきり', kinds: ['blur', 'radialBlur', 'dirBlur', 'sharpen']},
+  {label: '縁取り・影・立体感', kinds: ['outline', 'shadow', 'innerShadow', 'bevel', 'emboss']},
   {label: '光', kinds: ['glow', 'bloom', 'lightLeak', 'lensFlare']},
   {label: '映像加工（VHS・フィルムなど）', kinds: ['glitchNoise', 'glitch', 'vhs', 'film', 'crt', 'vignette', 'rgbShift', 'noise', 'pixelate']},
   {label: '漫画・イラスト風', kinds: ['lineArt', 'halftone']},
   {label: '変形', kinds: ['wave', 'swirl', 'bulge', 'mirror', 'tile']},
-  {label: '動き', kinds: ['shake', 'jitter', 'oscillate', 'blink', 'trail']},
+  {label: '動き', kinds: ['pulse', 'spin', 'bounce', 'shake', 'jitter', 'oscillate', 'blink', 'trail']},
 ];
 
 const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
@@ -157,6 +166,14 @@ const NEW_FX: Partial<Record<Effect['kind'], Effect>> = {
   mirror: {kind: 'mirror', mode: 'left', segments: 6},
   tile: {kind: 'tile', count: 2, flip: false},
   colorKeep: {kind: 'colorKeep', color: '#E53935', range: 0.08, soft: 0.06},
+  pulse: {kind: 'pulse', amount: 0.15, bpm: 70},
+  spin: {kind: 'spin', rpm: 30},
+  bounce: {kind: 'bounce', height: 40, bpm: 90},
+  hueCycle: {kind: 'hueCycle', rpm: 12, offset: 0},
+  sharpen: {kind: 'sharpen', amount: 0.6},
+  innerShadow: {kind: 'innerShadow', color: '#000000', blur: 6, x: 4, y: 4, opacity: 0.6},
+  bevel: {kind: 'bevel', size: 6, strength: 0.6, angle: 135},
+  emboss: {kind: 'emboss', amount: 0.5, angle: 135, keepColor: false},
   jitter: {kind: 'jitter', amount: 10, speed: 8},
   oscillate: {kind: 'oscillate', x: 0, y: 20, speed: 1},
 };
@@ -458,6 +475,10 @@ const ENTER_LABEL: Record<MotionKind, string> = {
   wipeLeft: 'クリッピング解除（右から左へ）',
   wipeDown: 'クリッピング解除（上から下へ）',
   wipeUp: 'クリッピング解除（下から上へ）',
+  spin: '回転しながら出る',
+  bounce: '跳ねて出る',
+  blur: 'ぼかしから出る',
+  iris: '真ん中から丸く広がる',
 };
 const EXIT_LABEL: Record<MotionKind, string> = {
   slideLeft: '左へ出る',
@@ -469,6 +490,10 @@ const EXIT_LABEL: Record<MotionKind, string> = {
   wipeLeft: 'クリッピング（右から左へ消える）',
   wipeDown: 'クリッピング（上から下へ消える）',
   wipeUp: 'クリッピング（下から上へ消える）',
+  spin: '回転しながら消える',
+  bounce: '跳ねて消える',
+  blur: 'ぼやけて消える',
+  iris: '丸く狭まって消える',
 };
 
 /** 登場・退場（場面の切り替わりで、画面の外から滑り込む・出ていく） */
@@ -715,6 +740,90 @@ export function EffectsEditor({
           {fx.kind === 'pixelate' && (
             <VStack gap={2}>
               <Slider label="点の大きさ" value={fx.size} min={2} max={80} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
+            </VStack>
+          )}
+          {fx.kind === 'pulse' && (
+            <VStack gap={2}>
+              <Slider label="大きくなる量" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+              <Slider label="速さ" value={fx.bpm} min={10} max={240} step={1} valueDisplay="text" formatValue={v => `1 分間に ${v} 回`} onChange={(bpm: number) => setFx(i, {...fx, bpm})} />
+            </VStack>
+          )}
+          {fx.kind === 'spin' && (
+            <VStack gap={2}>
+              <Slider
+                label="速さ"
+                description="マイナスにすると左回り"
+                value={fx.rpm}
+                min={-240}
+                max={240}
+                step={1}
+                valueDisplay="text"
+                formatValue={v => (v < 0 ? '左回り' : '右回り') + `・1 分間に ${Math.abs(v)} 回転`}
+                onChange={(rpm: number) => setFx(i, {...fx, rpm})}
+              />
+            </VStack>
+          )}
+          {fx.kind === 'bounce' && (
+            <VStack gap={2}>
+              <Slider label="跳ねる高さ" value={fx.height} min={0} max={400} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(height: number) => setFx(i, {...fx, height})} />
+              <Slider label="速さ" value={fx.bpm} min={10} max={240} step={1} valueDisplay="text" formatValue={v => `1 分間に ${v} 回`} onChange={(bpm: number) => setFx(i, {...fx, bpm})} />
+            </VStack>
+          )}
+          {fx.kind === 'hueCycle' && (
+            <VStack gap={2}>
+              <Slider
+                label="速さ"
+                description="0 にすると色がずれたまま止まります"
+                value={fx.rpm}
+                min={-120}
+                max={120}
+                step={1}
+                valueDisplay="text"
+                formatValue={v => (v ? `1 分間に ${Math.abs(v)} 周` : '止める')}
+                onChange={(rpm: number) => setFx(i, {...fx, rpm})}
+              />
+              <Slider label="色のずれ" value={fx.offset} min={0} max={359} step={1} valueDisplay="text" formatValue={v => `${v}°`} onChange={(offset: number) => setFx(i, {...fx, offset})} />
+            </VStack>
+          )}
+          {fx.kind === 'sharpen' && (
+            <VStack gap={2}>
+              <Slider label="強さ" value={fx.amount} min={0} max={2} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+            </VStack>
+          )}
+          {fx.kind === 'innerShadow' && (
+            <VStack gap={2}>
+              <ColorRow label="色" value={fx.color} onChange={color => setFx(i, {...fx, color})} />
+              <HStack gap={2}>
+                <NumberInput label="横のずれ" units="px" value={fx.x} min={-100} max={100} onChange={x => setFx(i, {...fx, x})} />
+                <NumberInput label="縦のずれ" units="px" value={fx.y} min={-100} max={100} onChange={y => setFx(i, {...fx, y})} />
+              </HStack>
+              <Slider label="ぼかし" value={fx.blur} min={0} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(blur: number) => setFx(i, {...fx, blur})} />
+              <Slider label="濃さ" value={fx.opacity} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(opacity: number) => setFx(i, {...fx, opacity})} />
+            </VStack>
+          )}
+          {(fx.kind === 'bevel' || fx.kind === 'emboss') && (
+            <VStack gap={2}>
+              {fx.kind === 'bevel' ? (
+                <>
+                  <Slider label="縁の幅" value={fx.size} min={1} max={60} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(size: number) => setFx(i, {...fx, size})} />
+                  <Slider label="強さ" value={fx.strength} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(strength: number) => setFx(i, {...fx, strength})} />
+                </>
+              ) : (
+                <>
+                  <Slider label="強さ" value={fx.amount} min={0} max={1} step={0.01} valueDisplay="text" formatValue={pct} onChange={(amount: number) => setFx(i, {...fx, amount})} />
+                  <Switch label="元の色を残す" value={fx.keepColor} onChange={keepColor => setFx(i, {...fx, keepColor})} labelPosition="start" labelSpacing="spread" width="100%" />
+                </>
+              )}
+              <Slider
+                label="光の向き"
+                value={fx.angle}
+                min={0}
+                max={359}
+                step={1}
+                valueDisplay="text"
+                formatValue={v => `${['右', '右上', '上', '左上', '左', '左下', '下', '右下'][Math.round(v / 45) % 8]}から（${v}°）`}
+                onChange={(angle: number) => setFx(i, {...fx, angle})}
+              />
             </VStack>
           )}
           {fx.kind === 'glitchNoise' && (

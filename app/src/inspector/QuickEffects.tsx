@@ -132,6 +132,10 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     enterPreset('in-up', '上から', 'slideUp', false),
     enterPreset('in-down', '下から', 'slideDown', false),
     enterPreset('in-wipe', 'クリッピング解除', 'wipeRight', false),
+    enterPreset('in-spin', '回転しながら', 'spin', false),
+    enterPreset('in-bounce', '跳ねて', 'bounce', false),
+    enterPreset('in-blur', 'ぼかしから', 'blur', false),
+    enterPreset('in-iris', '丸く広がる', 'iris', false),
   ],
   out: [
     exitPreset('out-none', 'なし', null, false),
@@ -143,6 +147,10 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     exitPreset('out-up', '上へ', 'slideUp', false),
     exitPreset('out-down', '下へ', 'slideDown', false),
     exitPreset('out-wipe', 'クリッピング', 'wipeRight', false),
+    exitPreset('out-spin', '回転しながら', 'spin', false),
+    exitPreset('out-bounce', '跳ねて', 'bounce', false),
+    exitPreset('out-blur', 'ぼやけて', 'blur', false),
+    exitPreset('out-iris', '丸く狭まる', 'iris', false),
   ],
   move: [
     movePreset('mv-none', 'なし', null),
@@ -167,6 +175,10 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     fxPreset('fx-shake', '揺れ', {kind: 'shake', amount: 8, speed: 6}),
     fxPreset('fx-wave', '波', {kind: 'wave', amount: 12, length: 160, speed: 1}),
     fxPreset('fx-swirl', '渦巻き', {kind: 'swirl', angle: 180}),
+    fxPreset('fx-pulse', 'ドクン', {kind: 'pulse', amount: 0.15, bpm: 70}),
+    fxPreset('fx-spin', '回り続ける', {kind: 'spin', rpm: 30}),
+    fxPreset('fx-bounce', '跳ね続ける', {kind: 'bounce', height: 40, bpm: 90}),
+    fxPreset('fx-rainbow', '虹色', {kind: 'hueCycle', rpm: 12, offset: 0}),
   ],
   filter: [
     {id: 'gr-none', label: 'なし', on: c => !(c.look.effects ?? []).some(e => e.kind === 'grade'), apply: c => ({...c.look, effects: (c.look.effects ?? []).filter(e => e.kind !== 'grade')})},
@@ -182,6 +194,13 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     transPreset('tr-up', '上へ流す', 'slideUp'),
     transPreset('tr-down', '下へ流す', 'slideDown'),
     transPreset('tr-zoom', 'ズーム', 'zoom'),
+    transPreset('tr-wipe', 'ワイプ（右へ）', 'wipeRight'),
+    transPreset('tr-wipe-left', 'ワイプ（左へ）', 'wipeLeft'),
+    transPreset('tr-wipe-down', 'ワイプ（下へ）', 'wipeDown'),
+    transPreset('tr-wipe-up', 'ワイプ（上へ）', 'wipeUp'),
+    transPreset('tr-iris', '円形', 'iris'),
+    transPreset('tr-blur', 'ブラー', 'blur'),
+    transPreset('tr-glitch', 'グリッチ', 'glitch'),
   ],
 };
 
