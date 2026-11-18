@@ -1311,6 +1311,10 @@ pub enum Ease {
     InOut,
 }
 
+fn six() -> u32 {
+    6
+}
+
 /// 映像エフェクト。画面（Canvas の filter）と書き出し（FFmpeg）で同じ効き方になるようにそろえる
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1373,6 +1377,42 @@ pub enum Effect {
     Posterize { levels: f64 },
     /// ドット絵風（1 つの点の大きさ px）
     Pixelate { size: f64 },
+    /// 線画風（線の濃さ 0〜1・元の色を残すか）
+    LineArt {
+        amount: f64,
+        #[serde(default, rename = "keepColor")]
+        keep_color: bool,
+    },
+    /// 網点（点の間隔 px・点の色。空なら元の色）
+    Halftone {
+        size: f64,
+        #[serde(default)]
+        ink: String,
+    },
+    /// デュオトーン（暗い所の色・明るい所の色・強さ 0〜1）
+    Duotone { dark: String, light: String, amount: f64 },
+    /// 光漏れ（色・強さ 0〜1。ゆっくり動く）
+    LightLeak { color: String, amount: f64 },
+    /// ブルーム（しきい値 0〜1・強さ 0〜2・広がり px）
+    Bloom { threshold: f64, amount: f64, radius: f64 },
+    /// レンズフレア（光の位置 -1〜1・強さ 0〜1・色）
+    LensFlare { x: f64, y: f64, amount: f64, color: String },
+    /// 魚眼・膨らみ（-1 で縮む 〜 1 で膨らむ）
+    Bulge { amount: f64 },
+    /// 鏡写し（left / right / top / bottom / quad / kaleido・万華鏡の分かれる数）
+    Mirror {
+        mode: String,
+        #[serde(default = "six")]
+        segments: u32,
+    },
+    /// タイル（縦横の数・ひとつおきに裏返してつなぐ）
+    Tile {
+        count: u32,
+        #[serde(default)]
+        flip: bool,
+    },
+    /// パートカラー（残す色・色の幅 0〜1・境目のなめらかさ 0〜1）
+    ColorKeep { color: String, range: f64, soft: f64 },
     /// ランダム移動（振れ幅 px・1 秒あたりに跳ぶ回数）
     Jitter { amount: f64, speed: f64 },
     /// 反復移動（横・縦の振れ幅 px・1 秒あたりの往復の回数）

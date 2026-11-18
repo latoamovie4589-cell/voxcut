@@ -1510,6 +1510,25 @@ fn average_geq(pts: &[String]) -> String {
     format!("geq=r='{}':g='{}':b='{}':a='({sa})/{n}'", ch("r"), ch("g"), ch("b"))
 }
 
+/// 明るさ（0〜255）を、ある点（「X,Y」の形の式）で読む式
+fn lum_at(p: &str) -> String {
+    format!("(0.299*r({p})+0.587*g({p})+0.114*b({p}))")
+}
+
+/// 色相（ラジアン。画面の preview/retro.ts の hueOf と同じ式）
+pub(crate) fn hue_of(r: f64, g: f64, b: f64) -> f64 {
+    (1.7320508 * (g - b)).atan2(2.0 * r - g - b)
+}
+
+/// レンズフレアのゴースト（真ん中への進み具合・半径。画面と同じ）
+pub(crate) const FLARE_GHOSTS: [(f64, f64); 3] = [(0.5, 0.03), (1.2, 0.06), (1.7, 0.02)];
+
+/// スクリーン合成で光を足す（light(i) は i 番目の色の光の式、0〜255）
+fn screen_geq(light: &dyn Fn(usize) -> String) -> String {
+    let ch = |f: &str, i: usize| format!("255-(255-{f}(X,Y))*(255-{})/255", light(i));
+    format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r", 0), ch("g", 1), ch("b", 2))
+}
+
 /// 真ん中からの離れ方（真ん中 0・角 1）。周辺減光に使う（画面の preview/retro.ts と同じ）
 const D2: &str = "((X/W-0.5)*(X/W-0.5)+(Y/H-0.5)*(Y/H-0.5))*2";
 
@@ -1638,6 +1657,132 @@ pub(crate) fn pixel_effect(fx: &Effect, k: f64, tag: &str) -> Vec<String> {
         Effect::Posterize { levels } => {
             let q = levels.round().clamp(2.0, 16.0) - 1.0;
             let ch = |f: &str| format!("round({f}(X,Y)/255*{q})*255/{q}");
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::LineArt { amount, keep_color } => {
+            // 明るさの差（左右・上下に画面の 1px ずつ）が大きい所に黒い線
+            let d = k;
+            let e = format!(
+                "clip((abs({}-{})+abs({}-{}))*{:.4}/255,0,1)",
+                lum_at(&format!("X+{d:.4},Y")),
+                lum_at(&format!("X-{d:.4},Y")),
+                lum_at(&format!("X,Y+{d:.4}")),
+                lum_at(&format!("X,Y-{d:.4}")),
+                1.0 + 7.0 * amount.clamp(0.0, 1.0)
+            );
+            let ch = |f: &str| if *keep_color { format!("{f}(X,Y)*(1-{e})") } else { format!("255*(1-{e})") };
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
+        }
+        Effect::Halftone { size, ink } if *size >= 2.0 => {
+            let c = size * k;
+            let (cx, cy) = (format!("((floor(X/{c:.4})+0.5)*{c:.4})"), format!("((floor(Y/{c:.4})+0.5)*{c:.4})"));
+            let at = format!("{cx},{cy}");
+            // 暗い所ほど大きな点（面積が暗さに比例）。縁は 1px でなめらかに
+            let cov = format!("clip({:.4}*sqrt(max(0,1-{}/255))-hypot(X-{cx},Y-{cy})+0.5,0,1)", c * std::f64::consts::FRAC_1_SQRT_2, lum_at(&at));
+            let ink = if ink.is_empty() { None } else { Some(rgb255(ink)) };
+            let ch = |f: &str, i: usize| {
+                let v = ink.map(|c| c[i].to_string()).unwrap_or_else(|| format!("{f}({at})"));
+                format!("255+({v}-255)*{cov}")
+            };
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r", 0), ch("g", 1), ch("b", 2))]
+        }
+        Effect::Duotone { dark, light, amount } => {
+            let (d, l) = (rgb255(dark), rgb255(light));
+            let t = format!("({}/255)", lum_at("X,Y"));
+            let ch = |f: &str, i: usize| format!("{f}(X,Y)+({}+{}*{t}-{f}(X,Y))*{:.4}", d[i], l[i] as i32 - d[i] as i32, amount.clamp(0.0, 1.0));
+            vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r", 0), ch("g", 1), ch("b", 2))]
+        }
+        Effect::LightLeak { color, amount } if *amount > 0.0 => {
+            let c = rgb255(color);
+            let g = |cx: &str, cy: &str, s: f64| format!("exp(-(pow(X-{cx},2)+pow(Y-{cy},2))/(2*pow({s}*max(W,H),2)))");
+            let i = format!(
+                "clip({:.4}*(0.9*{}+0.6*{}),0,1)",
+                amount.min(1.0),
+                g("W*(0.1+0.15*sin(T*0.4))", "H*(0.25+0.1*sin(T*0.31))", 0.3),
+                g("W*(0.9-0.1*sin(T*0.27+1))", "H*(0.8+0.1*cos(T*0.35))", 0.22)
+            );
+            vec![screen_geq(&|j| format!("{}*{i}", c[j]))]
+        }
+        Effect::Bloom { threshold, amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+            let th = threshold.clamp(0.0, 0.99) * 255.0;
+            let m = format!("clip(({}-{th:.3})/{:.3},0,1)*{:.4}", lum_at("X,Y"), 255.0 - th + 1.0, amount.min(2.0));
+            let ch = |f: &str| format!("{f}(X,Y)*{m}");
+            vec![format!(
+                "split[bl{tag}a][bl{tag}b];[bl{tag}b]geq=r='{}':g='{}':b='{}':a='0',gblur=sigma={:.3}[bl{tag}c];[bl{tag}a][bl{tag}c]blend=all_mode=addition,format=rgba",
+                ch("r"),
+                ch("g"),
+                ch("b"),
+                radius * k
+            )]
+        }
+        Effect::LensFlare { x, y, amount, color } if *amount > 0.0 => {
+            let c = rgb255(color);
+            let (px, py) = (format!("(W/2*(1+{:.4}))", x.clamp(-1.0, 1.0)), format!("(H/2*(1+{:.4}))", y.clamp(-1.0, 1.0)));
+            let d2 = |ax: &str, ay: &str| format!("(pow(X-{ax},2)+pow(Y-{ay},2))");
+            let gs = |d: &str, s: f64| format!("exp(-{d}/(2*pow({s}*max(W,H),2)))");
+            let p0 = d2(&px, &py);
+            let mut parts = vec![gs(&p0, 0.04), format!("0.35*{}", gs(&p0, 0.15))];
+            // 横の光の筋
+            parts.push(format!("0.6*exp(-pow(Y-{py},2)/(2*pow(0.006*max(W,H),2)))*exp(-pow(X-{px},2)/(2*pow(0.35*max(W,H),2)))"));
+            // 真ん中をはさんだ反対側に、丸いゴースト
+            for (t, r) in FLARE_GHOSTS {
+                let (gx, gy) = (format!("({px}+(W/2-{px})*{t})"), format!("({py}+(H/2-{py})*{t})"));
+                parts.push(format!("0.18*clip(({r}*max(W,H)-sqrt({}))/(0.01*max(W,H)),0,1)", d2(&gx, &gy)));
+            }
+            let i = format!("({:.4}*({}))", amount.min(1.0), parts.join("+"));
+            let core = format!("{:.3}*{}", amount.min(1.0) * 255.0 * 0.6, gs(&p0, 0.04));
+            vec![screen_geq(&|j| format!("min(255,{}*{i}+{core})", c[j]))]
+        }
+        Effect::Bulge { amount } if amount.abs() > 0.0 => {
+            let a = 0.9 * amount.clamp(-1.0, 1.0);
+            let rr = "(hypot(X-W/2,Y-H/2)/(min(W,H)/2))";
+            let f = format!("(1-{a:.4}*pow(max(0,1-{rr}),2))");
+            let at = format!("W/2+(X-W/2)*{f},H/2+(Y-H/2)*{f}");
+            vec![format!("geq=r='r({at})':g='g({at})':b='b({at})':a='alpha({at})'")]
+        }
+        Effect::Mirror { mode, segments } => {
+            let at = match mode.as_str() {
+                "left" => "min(X,W-1-X),Y".to_string(),
+                "right" => "max(X,W-1-X),Y".to_string(),
+                "top" => "X,min(Y,H-1-Y)".to_string(),
+                "bottom" => "X,max(Y,H-1-Y)".to_string(),
+                "quad" => "min(X,W-1-X),min(Y,H-1-Y)".to_string(),
+                _ => {
+                    // 万華鏡：真ん中を中心に、扇形を折り返してくり返す
+                    let seg = std::f64::consts::TAU / (*segments).clamp(2, 24) as f64;
+                    let (dx, dy) = ("(X-(W-1)/2)", "(Y-(H-1)/2)");
+                    let a = format!("({:.6}-abs(mod(atan2({dy},{dx}),{seg:.6})-{:.6}))", seg / 2.0, seg / 2.0);
+                    format!("(W-1)/2+hypot({dx},{dy})*cos({a}),(H-1)/2+hypot({dx},{dy})*sin({a})")
+                }
+            };
+            vec![format!("geq=r='r({at})':g='g({at})':b='b({at})':a='alpha({at})'")]
+        }
+        Effect::Tile { count, flip } if *count >= 2 => {
+            let n = (*count).min(12);
+            let axis = |v: &str, d: &str| {
+                let u = format!("({v}*{n}/{d})");
+                let f = format!("mod({u},1)");
+                if *flip {
+                    format!("({f}+mod(floor({u}),2)*(1-2*{f}))*{d}")
+                } else {
+                    format!("{f}*{d}")
+                }
+            };
+            let at = format!("{},{}", axis("X", "W"), axis("Y", "H"));
+            vec![format!("geq=r='r({at})':g='g({at})':b='b({at})':a='alpha({at})'")]
+        }
+        Effect::ColorKeep { color, range, soft } => {
+            let c = rgb255(color);
+            let h0 = hue_of(c[0] as f64, c[1] as f64, c[2] as f64);
+            let h = "atan2(1.7320508*(g(X,Y)-b(X,Y)),2*r(X,Y)-g(X,Y)-b(X,Y))";
+            let diff = format!("(abs(mod({h}-{h0:.6}+PI,2*PI)-PI)/PI)");
+            let mx = "max(max(r(X,Y),g(X,Y)),b(X,Y))";
+            let mn = "min(min(r(X,Y),g(X,Y)),b(X,Y))";
+            let sat = format!("(({mx}-{mn})/max({mx},1))");
+            let sf = soft.clamp(0.0, 1.0).max(0.001);
+            let keep = format!("(clip(({:.4}-{diff})/{sf:.4},0,1)*clip({sat}*4,0,1))", range.clamp(0.0, 1.0) + sf);
+            let l = lum_at("X,Y");
+            let ch = |f: &str| format!("{l}+({f}(X,Y)-{l})*{keep}");
             vec![format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", ch("r"), ch("g"), ch("b"))]
         }
         Effect::Pixelate { size } if *size >= 2.0 => {
@@ -2667,10 +2812,55 @@ mod tests {
         let dt = shot_look(grad, fx(Effect::Pixelate { size: 5.0 }), Transform::default(), 0.1);
         let row = &dt[18 * 64 + 26..18 * 64 + 36];
         assert!(row[0] == row[4] && row[5] == row[9] && row[5] > row[0] + 60, "{row:?}");
-        // 放射ブラー・ノイズ・グリッチは掛かる（元と変わる）
+        // 漫画・光・変形・パートカラー（e2e で画面の同じ所と比べる。四角の左上は x = 26 − 幅/2 + 5）
         let half = "nullsrc=s=40x20,geq=lum='if(lt(X,20),235,16)':cb=128:cr=128";
+        let at = |g: &[u8], x: usize| g[18 * 64 + x];
+        // 線画風：境目（x = 32 あたり）だけ黒い線、ほかは白
+        let la = shot_look(half, fx(Effect::LineArt { amount: 1.0, keep_color: false }), Transform::default(), 0.1);
+        assert!(at(&la, 31).min(at(&la, 32)) < 60 && at(&la, 20) > 220 && at(&la, 45) > 220, "{:?}", &la[18 * 64 + 12..18 * 64 + 52]);
+        // 網点（10px）：50% の灰色は、点の真ん中が黒く、点の間が白い
+        let ht = shot_look("color=c=0x808080:s=20x20", fx(Effect::Halftone { size: 10.0, ink: "#000000".into() }), Transform::default(), 0.1);
+        assert!(ht[13 * 64 + 27] < 60 && ht[8 * 64 + 22] > 200, "{} {}", ht[13 * 64 + 27], ht[8 * 64 + 22]);
+        // デュオトーン：白は明るい所の色（黄）、黒は暗い所の色（紺）
+        let du = |c: &str| shot_rgb(&format!("color=c={c}:s=10x10"), fx(Effect::Duotone { dark: "#000080".into(), light: "#FFFF00".into(), amount: 1.0 }), 0.1);
+        let (dw, db) = (px(&du("white"), 31, 18), px(&du("black"), 31, 18));
+        assert!(dw[0] > 220 && dw[2] < 60 && db[2] > 100 && db[0] < 40, "{dw:?} {db:?}");
+        // 光漏れ・ブルーム・レンズフレア：光が足されて明るくなる
+        let gray = "color=c=0x404040:s=20x20";
+        let base = shot_look(gray, Look::default(), Transform::default(), 0.1);
+        let ll = shot_look(gray, fx(Effect::LightLeak { color: "#FF9A3C".into(), amount: 1.0 }), Transform::default(), 0.1);
+        assert!(ll[8 * 64 + 22] > base[8 * 64 + 22] + 30, "{} {}", ll[8 * 64 + 22], base[8 * 64 + 22]);
+        let lf = shot_look(gray, fx(Effect::LensFlare { x: 0.0, y: 0.0, amount: 1.0, color: "#FFE0A0".into() }), Transform::default(), 0.1);
+        assert!(lf[18 * 64 + 31] > base[18 * 64 + 31] + 100, "{}", lf[18 * 64 + 31]);
         let plain = shot_look(half, Look::default(), Transform::default(), 0.1);
-        for e in [Effect::RadialBlur { amount: 0.5 }, Effect::Noise { amount: 0.5 }, Effect::Glitch { amount: 8.0, band: 2.0, speed: 10.0 }, Effect::Vhs { amount: 1.0 }] {
+        let bl = shot_look(half, fx(Effect::Bloom { threshold: 0.5, amount: 1.0, radius: 4.0 }), Transform::default(), 0.1);
+        assert!(at(&bl, 34) > at(&plain, 34) + 15 && at(&bl, 45) < at(&plain, 45) + 10, "{:?}", &bl[18 * 64 + 12..18 * 64 + 52]);
+        // 鏡写し（左を右へ）：右も白。タイル 2：白・黒・白・黒
+        let mi = shot_look(half, fx(Effect::Mirror { mode: "left".into(), segments: 6 }), Transform::default(), 0.1);
+        assert!(at(&mi, 45) > 200, "{:?}", &mi[18 * 64 + 12..18 * 64 + 52]);
+        let ti = shot_look(half, fx(Effect::Tile { count: 2, flip: false }), Transform::default(), 0.1);
+        assert!(at(&ti, 17) > 200 && at(&ti, 27) < 40 && at(&ti, 37) > 200 && at(&ti, 47) < 40, "{:?}", &ti[18 * 64 + 12..18 * 64 + 52]);
+        // 魚眼：横の明るさの坂が、真ん中の近くでゆるやかになる（真ん中の色に近づく）
+        let ramp = "nullsrc=s=40x20,geq=lum='16+X*5':cb=128:cr=128";
+        let (r0, r1) = (shot_look(ramp, Look::default(), Transform::default(), 0.1), shot_look(ramp, fx(Effect::Bulge { amount: 1.0 }), Transform::default(), 0.1));
+        assert!(at(&r1, 36) + 4 < at(&r0, 36) && at(&r1, 27) > at(&r0, 27) + 4, "{:?} {:?}", &r0[18 * 64 + 12..18 * 64 + 52], &r1[18 * 64 + 12..18 * 64 + 52]);
+        // パートカラー（赤を残す）：赤はそのまま、緑は灰色
+        let rg = "color=c=red:s=20x20[a];color=c=0x00ff00:s=20x20[b];[a][b]hstack";
+        let ck = shot_rgb(rg, fx(Effect::ColorKeep { color: "#FF0000".into(), range: 0.1, soft: 0.1 }), 0.1);
+        let (kr, kg) = (px(&ck, 20, 18), px(&ck, 44, 18));
+        assert!(kr[0] > 200 && kr[1] < 60 && (kg[0] as i32 - kg[1] as i32).abs() < 20 && kg[1] > 80, "{kr:?} {kg:?}");
+        // 放射ブラー・ノイズ・グリッチは掛かる（元と変わる）
+        let plain = shot_look(half, Look::default(), Transform::default(), 0.1);
+        for e in [
+            Effect::RadialBlur { amount: 0.5 },
+            Effect::Noise { amount: 0.5 },
+            Effect::Glitch { amount: 8.0, band: 2.0, speed: 10.0 },
+            Effect::Vhs { amount: 1.0 },
+            Effect::Mirror { mode: "kaleido".into(), segments: 6 },
+            Effect::Tile { count: 3, flip: true },
+            Effect::LineArt { amount: 0.5, keep_color: true },
+            Effect::Halftone { size: 6.0, ink: String::new() },
+        ] {
             let h = shot_look(half, fx(e.clone()), Transform::default(), 0.1);
             assert!(h != plain, "{e:?}");
         }
