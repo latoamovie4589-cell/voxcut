@@ -536,9 +536,30 @@ pub struct LineAudio {
     /// エコー（1 回だけ遅れて重なる）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub echo: Option<Echo>,
+    /// リバーブ（部屋・ホールの響き。エコーの後ろに掛ける）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb: Option<Reverb>,
     /// 音声エフェクト（上から順に掛ける）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<AudioFilter>,
+}
+
+/// リバーブ（部屋の響き）。短い反射をいくつか重ねる（画面は同じ遅れ・大きさの DelayNode を並べる）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reverb {
+    /// 部屋の広さ（0〜1。広いほど反射が遅れて長く続く）
+    pub size: f64,
+    /// 響きの残り方（0〜1）
+    pub decay: f64,
+    /// 響きの混ざる量（0〜1。0 で元の声のまま）
+    pub wet: f64,
+}
+
+impl Default for Reverb {
+    fn default() -> Self {
+        Self { size: 0.5, decay: 0.5, wet: 0.35 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -558,6 +579,38 @@ pub enum AudioFilter {
     Highpass { hz: f64 },
     /// これより高い音を削る
     Lowpass { hz: f64 },
+    /// イコライザー：低音（200Hz 以下）・中音（中心 mid_hz）・高音（5kHz 以上）を上げ下げする（dB）
+    Eq {
+        #[serde(default, rename = "lowDb")]
+        low_db: f64,
+        #[serde(default, rename = "midDb")]
+        mid_db: f64,
+        #[serde(default, rename = "highDb")]
+        high_db: f64,
+        #[serde(default = "default_mid_hz", rename = "midHz")]
+        mid_hz: f64,
+    },
+    /// コンプレッサー：threshold_db を超えた大きな音を 1/ratio に抑えて、声の大小をならす。makeup_db で全体を持ち上げる
+    Compressor {
+        #[serde(rename = "thresholdDb")]
+        threshold_db: f64,
+        ratio: f64,
+        #[serde(rename = "attackMs")]
+        attack_ms: f64,
+        #[serde(rename = "releaseMs")]
+        release_ms: f64,
+        #[serde(default, rename = "makeupDb")]
+        makeup_db: f64,
+    },
+    /// リミッター：ceiling_db を超えないよう、音割れを防ぐ
+    Limiter {
+        #[serde(rename = "ceilingDb")]
+        ceiling_db: f64,
+    },
+}
+
+fn default_mid_hz() -> f64 {
+    1000.0
 }
 
 impl VoiceClip {
@@ -1710,7 +1763,7 @@ mod timer_tests {
     }
 }
 
-/// テキストの 1 文字ずつの登場（kind：type ＝そのまま出る／fade ＝ふわっと／pop ＝はねる／slideUp ＝下から）
+/// テキストの 1 文字ずつの登場（kind：type ＝そのまま出る／fade ＝ふわっと／pop ＝はねる／slideUp・slideDown・slideLeft・slideRight ＝その向きから／zoom ＝大きいところから縮む／spin ＝回りながら／blur ＝ぼけから／shake ＝揺れながら／drop ＝上から落ちて弾む／karaoke ＝最初から出ていて、文字ごとに色が塗られる）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CharAnim {
@@ -1720,6 +1773,9 @@ pub struct CharAnim {
     /// 1 文字が出きるまでのフレーム
     #[serde(default = "char_len")]
     pub length: Frame,
+    /// カラオケ（kind が karaoke）で塗っていく色。空なら黄色
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 fn char_len() -> Frame {

@@ -1,7 +1,9 @@
 //! セリフから ASS 字幕を作る（FFmpeg の ass フィルタで焼き込む）。
 
 use crate::model::{Clip, Frame, Project, SubtitleAnimation, SubtitlePosition, SubtitleStyle, KARAOKE_COLOR};
-use crate::text::{parse_ruby, RubySeg};
+use crate::text::{parse_markup, RubySeg, Span};
+#[cfg(test)]
+use crate::text::parse_ruby;
 use std::fmt::Write;
 
 /// "#RRGGBB" → ASS の "&H00BBGGRR"
@@ -154,12 +156,47 @@ pub fn karaoke_bounds(chars: &[char], duration: Frame, fps: u32) -> Vec<u32> {
     out
 }
 
-/// カラオケの ASS（1 文字ずつ \kf。塗る色を主の色、塗る前を副の色にする）
-fn karaoke_ass(text: &str, duration: Frame, fps: u32, color: &str, kara: &str) -> String {
-    let chars: Vec<char> = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
-    let b = karaoke_bounds(&chars, duration, fps);
-    let mut out = format!("{{\\1c{}&\\2c{}&}}", ass_color(kara), ass_color(color));
-    let mut i = 0;
+/// 一部の文字の飾り（色・大きさ）を ASS にするための材料。styles は文字ごと（改行は数えない）
+struct Deco<'a> {
+    styles: &'a [Option<Span>],
+    /// 飾りのない文字の色（"#RRGGBB"）と大きさ
+    color: &'a str,
+    font_size: u32,
+    /// カラオケでは、塗る前の色（副の色）を飾りの色にする（塗ったあとは塗る色）
+    karaoke: bool,
+    /// ルビのある字幕では大きさを変えない（ルビの位置がずれるため）
+    ignore_size: bool,
+}
+
+impl Deco<'_> {
+    /// 飾りを持つ文字があるか
+    fn any(&self) -> bool {
+        self.styles.iter().any(Option::is_some)
+    }
+
+    /// 文字 i の飾り（大きさを使わないときは外す）
+    fn at(&self, i: usize) -> Option<Span> {
+        self.styles.get(i).cloned().flatten().map(|s| Span { size: if self.ignore_size { None } else { s.size }, ..s }).filter(|s| s.color.is_some() || s.size.is_some())
+    }
+
+    /// 前の文字の飾り prev から cur に変わるときのタグ（変わらなければ空）。飾りなしに戻るときは元の色・大きさを明示する
+    fn tags(&self, prev: &Option<Span>, cur: &Option<Span>) -> String {
+        if prev == cur {
+            return String::new();
+        }
+        let col = cur.as_ref().and_then(|s| s.color.as_deref()).unwrap_or(self.color);
+        let size = cur.as_ref().and_then(|s| s.size).map_or(self.font_size as f64, |k| self.font_size as f64 * k);
+        let which = if self.karaoke { "2c" } else { "1c" };
+        format!("\\{which}{}&\\fs{:.0}", ass_color(col), size.max(1.0))
+    }
+}
+
+/// 飾りを付けた ASS のテキスト（改行は \N）。first は text の頭が全文の何文字目か、hide_from 文字目からは透明にする
+fn styled_text(text: &str, first: usize, hide_from: usize, d: &Deco) -> String {
+    let mut out = String::new();
+    let mut prev: Option<Span> = None;
+    let mut i = first;
+    let mut hidden = false;
     for ch in text.chars() {
         if ch == '\r' {
             continue;
@@ -168,7 +205,41 @@ fn karaoke_ass(text: &str, duration: Frame, fps: u32, color: &str, kara: &str) -
             out.push_str("\\N");
             continue;
         }
-        out.push_str(&format!("{{\\kf{}}}{}", b[i + 1] - b[i], escape_text(&ch.to_string())));
+        let cur = d.at(i);
+        let mut tags = d.tags(&prev, &cur);
+        if !hidden && i >= hide_from {
+            hidden = true;
+            tags.push_str("\\alpha&HFF&");
+        }
+        if !tags.is_empty() {
+            let _ = write!(out, "{{{tags}}}");
+        }
+        out.push_str(&escape_text(&ch.to_string()));
+        prev = cur;
+        i += 1;
+    }
+    out
+}
+
+/// カラオケの ASS（1 文字ずつ \kf。塗る色を主の色、塗る前を副の色にする）。d があれば、文字ごとの飾りも付ける
+fn karaoke_ass(text: &str, duration: Frame, fps: u32, color: &str, kara: &str, d: Option<&Deco>) -> String {
+    let chars: Vec<char> = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    let b = karaoke_bounds(&chars, duration, fps);
+    let mut out = format!("{{\\1c{}&\\2c{}&}}", ass_color(kara), ass_color(color));
+    let mut i = 0;
+    let mut prev: Option<Span> = None;
+    for ch in text.chars() {
+        if ch == '\r' {
+            continue;
+        }
+        if ch == '\n' {
+            out.push_str("\\N");
+            continue;
+        }
+        let cur = d.and_then(|d| d.at(i));
+        let tags = d.map(|d| d.tags(&prev, &cur)).unwrap_or_default();
+        out.push_str(&format!("{{\\kf{}{tags}}}{}", b[i + 1] - b[i], escape_text(&ch.to_string())));
+        prev = cur;
         i += 1;
     }
     out
@@ -279,7 +350,7 @@ pub fn ruby_rows(segs: &[RubySeg], wrapped: &str) -> Vec<RubyRow> {
 /// ルビ付きの字幕の ASS テキスト。ルビは行の上に小さい行として置き、横の位置は透明な文字で合わせる
 /// （地の文は同じ文字を透明・高さ 1% で、語の左右のすき間は全角の空白の幅を変えて。どちらもフォントの字幅に従う）。
 /// pop はポップの長さ（ミリ秒）、count は見せる文字数（1 文字ずつ出すとき。ルビは語の頭が出たら出す）
-fn ruby_ass(rows: &[RubyRow], font_size: u32, pop: Option<u32>, count: usize) -> String {
+fn ruby_ass(rows: &[RubyRow], font_size: u32, pop: Option<u32>, count: usize, deco: Option<&Deco>) -> String {
     let fs = font_size.max(1) as f64;
     let rs = (fs * 0.5).round().max(1.0);
     let tags = |sx: f64, sy: f64| match pop {
@@ -317,6 +388,10 @@ fn ruby_ass(rows: &[RubyRow], font_size: u32, pop: Option<u32>, count: usize) ->
         let text: String = row.iter().map(|(t, _, _)| t.as_str()).collect();
         let start = row.first().map(|(_, _, at)| *at).unwrap_or(0);
         let k = count.saturating_sub(start).min(text.chars().count());
+        if let Some(d) = deco {
+            out.push(format!("{{\\r{}}}{}", tags(100.0, 100.0), styled_text(&text, start, start + k, d)));
+            continue;
+        }
         let (a, b): (String, String) = (text.chars().take(k).collect(), text.chars().skip(k).collect());
         let rest = if b.is_empty() { String::new() } else { format!("{{{hide}}}{}", escape_text(&b)) };
         out.push(format!("{{\\r{}}}{}{rest}", tags(100.0, 100.0), escape_text(&a)));
@@ -389,12 +464,15 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             Some(ov) => ov.apply(&ch.subtitle),
             None => ch.subtitle.clone(),
         });
+        // 飾りのない文字の色
+        let eff_color = eff.as_ref().map_or("#FFFFFF".to_string(), |st| st.color.clone());
         // カラオケの色（塗る前は文字の色）
         let (kara_from, kara_to) = eff.as_ref().map_or(("#FFFFFF".to_string(), KARAOKE_COLOR.to_string()), |st| {
             (st.color.clone(), if st.karaoke_color.is_empty() { KARAOKE_COLOR.to_string() } else { st.karaoke_color.clone() })
         });
-        // ルビの書き方を外した文で改行する
-        let segs = parse_ruby(text);
+        // ルビと飾りの書き方を外した文で改行する
+        let mk = parse_markup(text);
+        let segs = mk.segs;
         let base: String = segs.iter().map(|s| s.base.as_str()).collect();
         let font_size = eff.as_ref().map(|st| st.font_size).unwrap_or(56);
         let wrapped = eff.map(|st| wrap_subtitle(&base, st.font_size, p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| base.clone());
@@ -402,6 +480,11 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
         let wrapped = if has_ruby { keep_ruby_words(&segs, &wrapped) } else { wrapped };
         let text = wrapped.as_str();
         let rows = has_ruby.then(|| ruby_rows(&segs, text));
+        // 一部の文字の飾り（色・大きさ）。ルビのある字幕では大きさを使わない
+        let base_color = eff_color.clone();
+        let deco = Deco { styles: &mk.styles, color: &base_color, font_size, karaoke: false, ignore_size: has_ruby };
+        let deco_kara = Deco { karaoke: true, ..Deco { styles: &mk.styles, color: &base_color, font_size, karaoke: false, ignore_size: has_ruby } };
+        let decorated = deco.any();
         // 出し方：分離した字幕で上書きしていればそれ
         let anim = c
             .as_caption()
@@ -412,8 +495,9 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
         let ms = (p.video.frames_to_secs(anim_frames(p.video.fps)) * 1000.0).round() as u32;
         // ルビがあれば、ルビの行を足した文にする（ないときは今までどおり）
         let body = |pop: Option<u32>, count: usize| match &rows {
-            Some(r) => ruby_ass(r, font_size, pop, count),
-            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", escape_text(text)),
+            Some(r) => ruby_ass(r, font_size, pop, count, decorated.then_some(&deco)),
+            None if pop.is_some() => format!("{{\\fscx85\\fscy85\\t(0,{ms},0.5,\\fscx100\\fscy100)}}{}", if decorated { styled_text(text, 0, usize::MAX, &deco) } else { escape_text(text) }),
+            None if decorated => styled_text(text, 0, count, &deco),
             None if count == usize::MAX => escape_text(text),
             None => reveal_text(text, count),
         };
@@ -428,7 +512,7 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
             }
             // ルビのある字幕は塗らない（ふつうに出す）
             SubtitleAnimation::Karaoke if rows.is_some() => dialogue(&mut out, p, c.start, c.end(), &style, &body(None, usize::MAX)),
-            SubtitleAnimation::Karaoke => dialogue(&mut out, p, c.start, c.end(), &style, &karaoke_ass(text, c.duration, p.video.fps, &kara_from, &kara_to)),
+            SubtitleAnimation::Karaoke => dialogue(&mut out, p, c.start, c.end(), &style, &karaoke_ass(text, c.duration, p.video.fps, &kara_from, &kara_to, decorated.then_some(&deco_kara))),
             SubtitleAnimation::Typewriter => {
                 // 表示文字数が変わるフレームごとに 1 行。文字の位置は全文で決まるので、出ていない文字は透明にしておく
                 let chars = text.chars().filter(|ch| *ch != '\n' && *ch != '\r').count();
@@ -514,9 +598,9 @@ mod tests {
         assert_eq!(keep_ruby_words(&segs, "ああ漢\n字いい"), "ああ\n漢字いい");
         let segs2 = parse_ruby("漢字《かんじ》いい\n\nう");
         assert_eq!(keep_ruby_words(&segs2, "漢\n字いい\n\nう"), "漢字\nいい\n\nう");
-        let t = ruby_ass(&rows, 40, None, 2);
+        let t = ruby_ass(&rows, 40, None, 2, None);
         assert!(t.contains("{\\r\\fs20\\fscx67\\alpha&HFF&}かんじ"), "{t}");
-        assert!(ruby_ass(&rows, 40, None, 3).contains("{\\r\\fs20\\fscx67}かんじ"));
+        assert!(ruby_ass(&rows, 40, None, 3, None).contains("{\\r\\fs20\\fscx67}かんじ"));
         // 字幕ファイル（SRT）はルビを外した文
         assert!(build_srt(&p).contains("今日は夕暮時"));
     }
@@ -599,7 +683,7 @@ mod tests {
         let b = karaoke_bounds(&"あい、う".chars().collect::<Vec<_>>(), 100, 30);
         // 全部で 3.3 文字ぶん、長さの 9 割（3 秒）で塗り終わる
         assert_eq!(b, vec![0, 91, 182, 209, 300]);
-        let s = karaoke_ass("あい\nう", 30, 30, "#FFFFFF", "#FFD400");
+        let s = karaoke_ass("あい\nう", 30, 30, "#FFFFFF", "#FFD400", None);
         assert!(s.starts_with("{\\1c&H0000D4FF&\\2c&H00FFFFFF&}{\\kf30}あ{\\kf30}い\\N{\\kf30}う"), "{s}");
     }
 
@@ -612,7 +696,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ass = d.path().join("k.ass");
         // 60 フレーム（2 秒）、9 割（1.8 秒）で 4 文字を塗る → 0.9 秒で半分
-        let body = karaoke_ass("WWWW", 60, 30, "#FFFFFF", "#FFD400");
+        let body = karaoke_ass("WWWW", 60, 30, "#FFFFFF", "#FFD400", None);
         std::fs::write(&ass, format!("[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 120\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: a,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,a,,0,0,0,,{body}\n")).unwrap();
         let o = std::process::Command::new("ffmpeg")
             .current_dir(d.path())
@@ -653,6 +737,60 @@ mod tests {
         assert!(lines[1].ends_with(",あ{\\alpha&HFF&}いう"));
         assert!(lines[3].ends_with(",あいう") && lines[3].contains(",0:00:03.00,"));
         assert_eq!(reveal_text("あ\nいう", 2), "あ\\Nい{\\alpha&HFF&}う");
+    }
+
+    fn line_with(text: &str, anim: SubtitleAnimation) -> Project {
+        let mut p = Project::sample();
+        p.characters[0].subtitle.animation = anim;
+        p.characters[0].subtitle.font_size = 50;
+        p.clips.truncate(1);
+        if let ClipBody::Voice(v) = &mut p.clips[0].body {
+            v.text = text.into();
+        }
+        p
+    }
+
+    fn dialogues(p: &Project) -> Vec<String> {
+        build_ass(p).lines().filter(|l| l.starts_with("Dialogue:")).map(|l| l.splitn(10, ',').nth(9).unwrap().to_string()).collect()
+    }
+
+    /// 一部の文字だけ色・大きさを変える（書き方は `<c=#FF0000>…</c>`・`<s=1.5>…</s>`）
+    #[test]
+    fn partial_styles_become_override_tags() {
+        use crate::text::{parse_markup, Span};
+        let m = parse_markup("あ<c=#f00>い<s=1.5>う</s></c>え\nお<c=#12ab34>か</c>");
+        let base: String = m.segs.iter().map(|s| s.base.as_str()).collect();
+        assert_eq!(base, "あいうえ\nおか");
+        // 文字ごと（改行は数えない）
+        let col = |c: &str| Some(Span { color: Some(c.into()), size: None });
+        assert_eq!(m.styles.len(), 6);
+        assert_eq!(m.styles[0], None);
+        assert_eq!(m.styles[1], col("#FF0000"));
+        assert_eq!(m.styles[2], Some(Span { color: Some("#FF0000".into()), size: Some(1.5) }));
+        assert_eq!((m.styles[3].clone(), m.styles[4].clone()), (None, None));
+        assert_eq!(m.styles[5], col("#12AB34"));
+        // 書き方に合わない < はそのまま文字。大きさは 0.3〜4 に収める
+        assert_eq!(crate::text::strip_markup("a<b>c <c=#xyz>d <s=9>e</s>"), "a<b>c <c=#xyz>d e");
+        assert_eq!(parse_markup("<s=9>e").styles[0].as_ref().unwrap().size, Some(4.0));
+        // 声・SRT にも書き方は入らない
+        assert_eq!(crate::text::ruby_reading("<c=#f00>明日《あした》</c>は"), "あしたは");
+        assert_eq!(crate::text::ruby_base("<c=#f00>明日《あした》</c>は"), "明日は");
+
+        // ふつうに出す：色は 1c、大きさは fs（50 × 1.5 = 75）。もとに戻るときは文字の色と大きさを明示する
+        let p = line_with("あ<c=#ff0000>い<s=1.5>う</s></c>え", SubtitleAnimation::None);
+        assert_eq!(dialogues(&p), vec!["あ{\\1c&H000000FF&\\fs50}い{\\1c&H000000FF&\\fs75}う{\\1c&H00FFFFFF&\\fs50}え"]);
+        // 飾りがなければ今までどおり
+        assert_eq!(dialogues(&line_with("あいう", SubtitleAnimation::None)), vec!["あいう"]);
+        // 1 文字ずつ：まだ出ない文字は透明にする（飾りは保つ）
+        let t = dialogues(&line_with("あ<c=#ff0000>いう</c>", SubtitleAnimation::Typewriter));
+        assert!(t[1].ends_with("あ{\\1c&H000000FF&\\fs50\\alpha&HFF&}いう"), "{t:?}");
+        assert_eq!(t.last().unwrap(), "あ{\\1c&H000000FF&\\fs50}いう");
+        // カラオケ：塗る前の色（2c）を飾りの色にする
+        let k = dialogues(&line_with("あ<c=#00ff00>い</c>", SubtitleAnimation::Karaoke));
+        assert!(k[0].contains("{\\kf") && k[0].contains("\\2c&H0000FF00&\\fs50}い"), "{k:?}");
+        // ルビのある字幕では大きさを使わない（色は使う）
+        let r = dialogues(&line_with("<c=#ff0000><s=2>明日《あした》</s></c>", SubtitleAnimation::None));
+        assert!(r[0].contains("\\1c&H000000FF&") && !r[0].contains("\\fs100"), "{r:?}");
     }
 
     #[test]

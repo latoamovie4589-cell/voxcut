@@ -34,6 +34,52 @@ pub struct ExportOptions {
     pub range: Option<(f64, f64)>,
     /// 背景を透明のまま書き出す（.mov は ProRes 4444、.webm は VP9。背景の色は塗らない）
     pub transparent: bool,
+    /// 書き出す音の大きさを目標にそろえる（None ならそのまま）
+    pub loudness: Option<Loudness>,
+}
+
+/// 音の大きさの自動調整（EBU R128。loudnorm を 2 回通して、全体を同じ倍率で持ち上げ・下げる）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Loudness {
+    /// 目標の大きさ（LUFS。YouTube などは -14、放送は -24）
+    pub target: f64,
+    /// 1 回目に測った結果。None なら今は測る回（この回の音は捨てる）
+    pub measured: Option<LoudnessMeasured>,
+}
+
+/// loudnorm が測った値
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoudnessMeasured {
+    pub input_i: f64,
+    pub input_tp: f64,
+    pub input_lra: f64,
+    pub input_thresh: f64,
+    pub target_offset: f64,
+}
+
+/// 音割れを防ぐ上限（dBTP）と、大きさの幅の目標
+const LOUDNESS_TP: f64 = -1.0;
+const LOUDNESS_LRA: f64 = 11.0;
+
+/// 混ぜた音に掛ける loudnorm（測る回は print_format=json で測るだけ、本番は測った値で直線的に整える）
+fn loudnorm_filter(l: &Loudness) -> String {
+    let t = l.target.clamp(-40.0, -5.0);
+    match l.measured {
+        None => format!("loudnorm=I={t:.1}:TP={LOUDNESS_TP:.1}:LRA={LOUDNESS_LRA:.0}:print_format=json"),
+        Some(m) => format!(
+            "loudnorm=I={t:.1}:TP={LOUDNESS_TP:.1}:LRA={LOUDNESS_LRA:.0}:measured_I={:.2}:measured_TP={:.2}:measured_LRA={:.2}:measured_thresh={:.2}:offset={:.2}:linear=true",
+            m.input_i, m.input_tp, m.input_lra, m.input_thresh, m.target_offset
+        ),
+    }
+}
+
+/// loudnorm の測った結果（FFmpeg の標準エラーの最後に出る JSON）を読む。音が無い・無音のときは None
+pub fn parse_loudnorm(log: &str) -> Option<LoudnessMeasured> {
+    let a = log.rfind('{')?;
+    let b = log[a..].find('}')? + a;
+    let j: serde_json::Value = serde_json::from_str(&log[a..=b]).ok()?;
+    let num = |k: &str| j.get(k)?.as_str().and_then(|v| v.trim().parse::<f64>().ok()).or_else(|| j.get(k)?.as_f64()).filter(|v| v.is_finite());
+    Some(LoudnessMeasured { input_i: num("input_i")?, input_tp: num("input_tp")?, input_lra: num("input_lra")?, input_thresh: num("input_thresh")?, target_offset: num("target_offset")? })
 }
 
 impl ExportOptions {
@@ -53,6 +99,7 @@ impl ExportOptions {
             still_at: None,
             range: None,
             transparent: false,
+            loudness: None,
         }
     }
 }
@@ -276,20 +323,28 @@ fn sound_fades(fx: &crate::model::SourceFx, dur: f64, fps: u32) -> String {
 }
 
 /// セリフの声に掛けるフィルタ（aresample の後ろにつなぐ。先頭は「,」）。dur はクリップの長さ（秒）。
-/// 画面（preview/playback.ts）と同じ順：再生開始位置 → 音声エフェクト → エコー → フェード → 左右
+/// 画面（preview/playback.ts）と同じ順：再生開始位置 → 音声エフェクト → エコー → リバーブ → フェード → 左右
 pub fn voice_audio_filters(vc: &crate::model::VoiceClip, fps: u32, dur: f64) -> String {
     let off = vc.start_offset() as f64 / fps as f64;
     let mut f = if off > 0.0 { format!(",atrim={off:.3}:{:.3},asetpts=PTS-STARTPTS", off + dur) } else { format!(",atrim=0:{dur:.3}") };
     let Some(a) = &vc.audio_fx else { return f };
     for flt in &a.filters {
-        match flt {
-            crate::model::AudioFilter::Highpass { hz } => f.push_str(&format!(",highpass=f={:.1}:width_type=q:width=0.7071", hz.max(1.0))),
-            crate::model::AudioFilter::Lowpass { hz } => f.push_str(&format!(",lowpass=f={:.1}:width_type=q:width=0.7071", hz.max(1.0))),
+        let s = crate::audiofx::filter_ff(flt);
+        if !s.is_empty() {
+            f.push(',');
+            f.push_str(&s);
         }
     }
     if let Some(e) = &a.echo {
         if e.delay_ms > 0.0 && e.decay > 0.0 {
             f.push_str(&format!(",aecho=1:1:{:.1}:{:.3}", e.delay_ms.min(5000.0), e.decay.clamp(0.0, 1.0)));
+        }
+    }
+    if let Some(r) = &a.reverb {
+        let s = crate::audiofx::reverb_ff(r);
+        if !s.is_empty() {
+            f.push(',');
+            f.push_str(&s);
         }
     }
     if a.fade_in > 0 {
@@ -944,6 +999,9 @@ fn build_args_inner(
     }
     // 音声（なければ無音）。波形・スペクトラムがあれば、混ぜた音を分けて渡す
     let mix_out = if viz_labels.is_empty() { "aout".to_string() } else { "amixed".to_string() };
+    // 音の大きさをそろえるときは、混ぜた音をいったん別の名前で受けて、loudnorm を通してから mix_out にする
+    let loud = opt.loudness.filter(|_| !audio_labels.is_empty() && opt.still_at.is_none() && !gif);
+    let mix_raw = if loud.is_some() { "amixraw".to_string() } else { mix_out.clone() };
     if audio_labels.is_empty() {
         fc.push(format!("anullsrc=r={}:cl=stereo,atrim=0:{total_s:.3}[{mix_out}]", v.sample_rate));
     } else {
@@ -952,7 +1010,11 @@ fn build_args_inner(
             fc.push(format!("[{l}]{STEREO}[s{l}]"));
         }
         let ins: String = audio_labels.iter().map(|l| format!("[s{l}]")).collect();
-        fc.push(format!("{ins}amix=inputs={}:normalize=0:duration=longest,apad,atrim=0:{total_s:.3}[{mix_out}]", audio_labels.len()));
+        fc.push(format!("{ins}amix=inputs={}:normalize=0:duration=longest,apad,atrim=0:{total_s:.3}[{mix_raw}]", audio_labels.len()));
+        if let Some(l) = &loud {
+            // loudnorm は内部で 192kHz にするので、元の標本化周波数に戻す
+            fc.push(format!("[{mix_raw}]{},aresample={}[{mix_out}]", loudnorm_filter(l), v.sample_rate));
+        }
     }
     if !viz_labels.is_empty() {
         let outs: String = viz_labels.iter().map(|l| format!("[{l}]")).collect();
@@ -1048,6 +1110,18 @@ pub fn run_cancellable(
     on_progress: &mut dyn FnMut(f64),
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
+    run_capture(args, ffmpeg, total_secs, on_progress, cancel, 20).map(|_| ())
+}
+
+/// run_cancellable と同じで、FFmpeg の標準エラーの最後の keep 行を返す
+pub fn run_capture(
+    args: &[String],
+    ffmpeg: &Path,
+    total_secs: f64,
+    on_progress: &mut dyn FnMut(f64),
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    keep: usize,
+) -> Result<String> {
     let mut child = crate::tts::hidden_command(ffmpeg)
         .args(args)
         .stdout(Stdio::piped())
@@ -1059,7 +1133,7 @@ pub fn run_cancellable(
     let err_thread = std::thread::spawn(move || {
         let mut tail: std::collections::VecDeque<String> = Default::default();
         for l in BufReader::new(stderr).lines().map_while(std::result::Result::ok) {
-            if tail.len() >= 20 {
+            if tail.len() >= keep {
                 tail.pop_front();
             }
             tail.push_back(l);
@@ -1072,7 +1146,7 @@ pub fn run_cancellable(
             let _ = child.kill();
             let _ = child.wait();
             let _ = err_thread.join();
-            if let Some(out) = args.last() {
+            if let Some(out) = args.last().filter(|o| o.as_str() != "-") {
                 let _ = std::fs::remove_file(out);
             }
             return Err(Error::Cancelled);
@@ -1088,7 +1162,18 @@ pub fn run_cancellable(
     if !status.success() {
         return Err(Error::Ffmpeg(err));
     }
-    Ok(())
+    Ok(err)
+}
+
+/// 書き出す音の大きさを測る（音だけ組み立てて、書き出さずに loudnorm の測定だけ行う）。
+/// 音が無い・無音なら None（そのまま書き出す）。args は build_args を loudness = (target, measured なし) で呼んだもの
+pub fn measure_loudness(args: &[String], ffmpeg: &Path, total_secs: f64, on_progress: &mut dyn FnMut(f64), cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<Option<LoudnessMeasured>> {
+    let mut a = args.to_vec();
+    // 出力先（最後の引数）を捨て先に替える
+    a.pop();
+    a.extend(["-f", "null", "-"].map(String::from));
+    let log = run_capture(&a, ffmpeg, total_secs, on_progress, cancel, 60)?;
+    Ok(parse_loudnorm(&log))
 }
 
 /// 動き方の式。p は 0〜1 の進み具合の式
@@ -3173,7 +3258,7 @@ mod tests {
         (p.video.width, p.video.height, p.video.fps) = (64, 36, 30);
         p.video.background = "#000000".into();
         let mut tc: TextClip = serde_json::from_str(r##"{"text":"ab","fontFamily":"a","fontSize":10,"color":"#fff","outlineColor":"#000","outlineWidth":0}"##).unwrap();
-        tc.deco.char_anim = Some(CharAnim { kind: "fade".into(), interval: 1, length: 1 });
+        tc.deco.char_anim = Some(CharAnim { kind: "fade".into(), interval: 1, length: 1, color: None });
         p.clips = vec![Clip { id: "t".into(), track_id: "V1".into(), start: 0, duration: 60, link_id: None, body: ClipBody::Text(tc) }];
         let shot = |at: f64| {
             let out = d.path().join("o.png");
@@ -3194,7 +3279,7 @@ mod tests {
         assert!((90..170).contains(&m), "{m}");
         assert!(shot(1.5) > 220);
         // 出きるまでのコマ数（画面の charAnimFrames と同じ）
-        assert_eq!(CharAnim { kind: "fade".into(), interval: 5, length: 10 }.frames(4), 25);
+        assert_eq!(CharAnim { kind: "fade".into(), interval: 5, length: 10, color: None }.frames(4), 25);
     }
 
     /// シーン：シーンアイテムの頭からシーンを再生し、アイテムの位置で置く（画面の e2e「シーン」と同じ数）
@@ -3571,7 +3656,7 @@ mod tests {
         let mut p = Project::sample();
         p.clips.clear();
         for (i, v) in [VoiceFx::Robot, VoiceFx::Echo, VoiceFx::High].into_iter().enumerate() {
-            let fx = SourceFx { speed: 1.5, reverse: i == 1, audio_fx: Some(MediaAudioFx { denoise: true, voice: Some(v), gain_db: Some(-3.0) }), ..Default::default() };
+            let fx = SourceFx { speed: 1.5, reverse: i == 1, audio_fx: Some(MediaAudioFx { denoise: true, voice: Some(v), gain_db: Some(-3.0), ..Default::default() }), ..Default::default() };
             p.clips.push(Clip { id: format!("a{i}"), track_id: "A1".into(), start: i as Frame * 40, duration: 30, link_id: None, body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: fx }) });
         }
         if !p.tracks.iter().any(|t| t.id == "A1") {
@@ -3586,6 +3671,117 @@ mod tests {
         assert!(g.contains("afftfilt") && g.contains("aecho") && g.contains("areverse") && g.contains("atrim=0:1.000"), "{g}");
         let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    /// セリフに EQ・コンプレッサー・リミッター・リバーブを掛けて、実際に書き出せる（声の長さの分より響きで少し長くなる）
+    #[test]
+    fn voice_line_new_audio_fx_export_with_real_ffmpeg() {
+        use crate::model::{AudioFilter, LineAudio, Reverb};
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let wav = d.path().join("v.wav");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=300:d=1:r=24000"]).arg(&wav).status().unwrap().success());
+        let mut p = Project::sample();
+        p.clips.truncate(1);
+        if let ClipBody::Voice(v) = &mut p.clips[0].body {
+            v.audio_fx = Some(Box::new(LineAudio {
+                reverb: Some(Reverb { size: 1.0, decay: 0.9, wet: 0.6 }),
+                filters: vec![
+                    AudioFilter::Eq { low_db: 4.0, mid_db: -2.0, high_db: 3.0, mid_hz: 1500.0 },
+                    AudioFilter::Compressor { threshold_db: -24.0, ratio: 4.0, attack_ms: 5.0, release_ms: 100.0, makeup_db: 3.0 },
+                    AudioFilter::Limiter { ceiling_db: -2.0 },
+                ],
+                ..Default::default()
+            }));
+        }
+        let out = d.path().join("o.wav");
+        let opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let w = wav.clone();
+        let args = build_args(&p, &move |_: &str| Some(w.clone()), &[], &[], &opt).unwrap();
+        let g = args.join(" ");
+        assert!(g.contains("bass=g=4.00") && g.contains("equalizer=f=1500.0") && g.contains("treble=g=3.00") && g.contains("acompressor=threshold=") && g.contains("alimiter=limit=0.7943") && g.matches("aecho=1:1:").count() == 2, "{g}");
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        // 天井（-2dB）を超えない
+        let (_, max) = crate::audiofx::measure(Path::new("ffmpeg"), &out).unwrap();
+        assert!(max <= -1.5, "{max}");
+    }
+
+    #[test]
+    fn loudnorm_log_is_parsed() {
+        let log = "[Parsed_loudnorm_0 @ 0x1] \n{\n\t\"input_i\" : \"-27.61\",\n\t\"input_tp\" : \"-4.47\",\n\t\"input_lra\" : \"18.06\",\n\t\"input_thresh\" : \"-39.20\",\n\t\"output_i\" : \"-16.58\",\n\t\"output_tp\" : \"-1.50\",\n\t\"output_lra\" : \"14.78\",\n\t\"output_thresh\" : \"-27.71\",\n\t\"normalization_type\" : \"dynamic\",\n\t\"target_offset\" : \"0.58\"\n}\n";
+        let m = parse_loudnorm(log).unwrap();
+        assert_eq!((m.input_i, m.input_tp, m.input_lra, m.input_thresh, m.target_offset), (-27.61, -4.47, 18.06, -39.20, 0.58));
+        // 無音は -inf で返る → 測れなかった扱い
+        assert!(parse_loudnorm(&log.replace("-27.61", "-inf")).is_none());
+        assert!(parse_loudnorm("no json here").is_none());
+        let l = Loudness { target: -14.0, measured: None };
+        assert_eq!(loudnorm_filter(&l), "loudnorm=I=-14.0:TP=-1.0:LRA=11:print_format=json");
+        let f = loudnorm_filter(&Loudness { target: -16.0, measured: Some(m) });
+        assert!(f.starts_with("loudnorm=I=-16.0:TP=-1.0:LRA=11:measured_I=-27.61:") && f.ends_with("offset=0.58:linear=true"), "{f}");
+    }
+
+    /// 音の大きさをそろえる：測ってから本番で整えると、目標の大きさになる（音の無い書き出しは何も変えない）
+    #[test]
+    fn loudness_is_normalized_to_target() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        use crate::model::Clip;
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("s.wav");
+        // 小さめ（-30dBFS 付近）の音を 6 秒。ゆらぎを付けて、声のような大小を作る
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc='0.03*sin(2*PI*300*t)*(1+0.5*sin(2*PI*2*t))|0.03*sin(2*PI*300*t)*(1+0.5*sin(2*PI*2*t))':s=48000:d=6"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let mut p = Project::sample();
+        p.clips.clear();
+        if !p.tracks.iter().any(|t| t.id == "A1") {
+            let mut t = p.tracks[0].clone();
+            t.id = "A1".into();
+            p.tracks.push(t);
+        }
+        p.clips.push(Clip {
+            id: "a0".into(),
+            track_id: "A1".into(),
+            start: 0,
+            duration: 180,
+            link_id: None,
+            body: ClipBody::Media(MediaClip { src: src.to_string_lossy().into_owned(), media_kind: MediaKind::Audio, has_audio: true, in_point: 0, volume: 1.0, transform: Transform::default(), look: Default::default(), audio_frames: None, src_fx: Default::default() }),
+        });
+        let out = d.path().join("o.wav");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let lookup = |_: &str| None;
+        // 1 回目：測る
+        opt.loudness = Some(Loudness { target: -16.0, measured: None });
+        let args = build_args(&p, &lookup, &[], &[], &opt).unwrap();
+        let fc = args.join(" ");
+        assert!(fc.contains("[amixraw]loudnorm=I=-16.0") && fc.contains("print_format=json"), "{fc}");
+        let m = measure_loudness(&args, Path::new("ffmpeg"), 6.0, &mut |_| {}, None).unwrap().expect("測れる");
+        assert!(m.input_i < -25.0 && m.input_i > -45.0, "{m:?}");
+        // 本番：測った値で整える
+        opt.loudness = Some(Loudness { target: -16.0, measured: Some(m) });
+        let args = build_args(&p, &lookup, &[], &[], &opt).unwrap();
+        assert!(args.join(" ").contains("measured_I="));
+        run(&args, Path::new("ffmpeg"), 6.0, &mut |_| {}).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(["-hide_banner", "-nostats", "-i"]).arg(&out).args(["-af", "loudnorm=I=-16:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).output().unwrap();
+        let got = parse_loudnorm(&String::from_utf8_lossy(&o.stderr)).unwrap();
+        assert!((got.input_i + 16.0).abs() < 1.0, "目標 -16 のところ {got:?}");
+        assert!(got.input_tp <= -0.5, "{got:?}");
+        // 設定しなければ、書き出しの音は変わらない
+        opt.loudness = None;
+        let args = build_args(&p, &lookup, &[], &[], &opt).unwrap();
+        assert!(!args.join(" ").contains("loudnorm"));
+        // 音が無い書き出しには入らない
+        let mut silent = p.clone();
+        silent.clips.clear();
+        opt.loudness = Some(Loudness { target: -14.0, measured: None });
+        assert!(!build_args(&silent, &lookup, &[], &[], &opt).unwrap().join(" ").contains("loudnorm"));
     }
 
     /// キーフレーム：何点でも、通る順に入れ子の式になる（画面の animStateAt と同じ値）
@@ -3709,7 +3905,14 @@ mod tests {
                 fade_out: 3,
                 start_offset: 2,
                 echo: Some(crate::model::Echo { delay_ms: 120.0, decay: 0.4 }),
-                filters: vec![crate::model::AudioFilter::Highpass { hz: 300.0 }, crate::model::AudioFilter::Lowpass { hz: 3400.0 }],
+                reverb: Some(crate::model::Reverb { size: 0.5, decay: 0.5, wet: 0.4 }),
+                filters: vec![
+                    crate::model::AudioFilter::Highpass { hz: 300.0 },
+                    crate::model::AudioFilter::Lowpass { hz: 3400.0 },
+                    crate::model::AudioFilter::Eq { low_db: 3.0, mid_db: 0.0, high_db: -2.0, mid_hz: 1000.0 },
+                    crate::model::AudioFilter::Compressor { threshold_db: -20.0, ratio: 3.0, attack_ms: 8.0, release_ms: 100.0, makeup_db: 2.0 },
+                    crate::model::AudioFilter::Limiter { ceiling_db: -1.0 },
+                ],
             }));
         }
         // 個別に設定した字幕は ASS に入らない

@@ -1,6 +1,7 @@
 //! 素材の音の加工（CapCut の「ノイズ除去」「音量を均一に」「ボイスチェンジャー」）と、拍の検出。
 //! 加工は書き出しと同じフィルターで、プレビュー用に素材まるごとを加工した WAV も作る（同じ音になる）。
 
+use crate::model::{AudioFilter, Reverb};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,12 +38,119 @@ pub struct MediaAudioFx {
     /// 音量をそろえるための増減（dB）。「音量を均一に」を入れたときに素材を測って決める
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain_db: Option<f64>,
+    /// 音の高さ（半音。長さは変えない。±12）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// 音声エフェクト（イコライザー・コンプレッサー・リミッターなど。上から順に掛ける）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<AudioFilter>,
+    /// リバーブ（部屋・ホールの響き）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb: Option<Reverb>,
 }
 
 impl MediaAudioFx {
     pub fn is_plain(&self) -> bool {
-        !self.denoise && self.voice.is_none() && self.gain_db.is_none_or(|g| g.abs() < 1e-6)
+        !self.denoise
+            && self.voice.is_none()
+            && self.gain_db.is_none_or(|g| g.abs() < 1e-6)
+            && self.pitch.is_none_or(|p| p.abs() < 0.05)
+            && self.filters.iter().all(|f| filter_ff(f).is_empty())
+            && self.reverb.as_ref().is_none_or(|r| reverb_plan(r).is_none())
     }
+}
+
+/// 音声エフェクト 1 つ分のフィルター（何も変えない設定なら空）。セリフ（render.rs）も素材の音もこれを使う
+pub fn filter_ff(f: &AudioFilter) -> String {
+    match f {
+        AudioFilter::Highpass { hz } => format!("highpass=f={:.1}:width_type=q:width=0.7071", hz.max(1.0)),
+        AudioFilter::Lowpass { hz } => format!("lowpass=f={:.1}:width_type=q:width=0.7071", hz.max(1.0)),
+        AudioFilter::Eq { low_db, mid_db, high_db, mid_hz } => {
+            // 低音・高音は 2 次の棚（Q=0.7071。画面の lowshelf / highshelf と同じ）、中音は Q=1 の山
+            let mut v: Vec<String> = vec![];
+            if low_db.abs() >= 0.05 {
+                v.push(format!("bass=g={:.2}:f={EQ_LOW_HZ}:width_type=q:w=0.7071", low_db.clamp(-24.0, 24.0)));
+            }
+            if mid_db.abs() >= 0.05 {
+                v.push(format!("equalizer=f={:.1}:width_type=q:w={EQ_MID_Q}:g={:.2}", mid_hz.clamp(100.0, 8000.0), mid_db.clamp(-24.0, 24.0)));
+            }
+            if high_db.abs() >= 0.05 {
+                v.push(format!("treble=g={:.2}:f={EQ_HIGH_HZ}:width_type=q:w=0.7071", high_db.clamp(-24.0, 24.0)));
+            }
+            v.join(",")
+        }
+        AudioFilter::Compressor { threshold_db, ratio, attack_ms, release_ms, makeup_db } => {
+            let th = db_to_lin(threshold_db.clamp(-60.0, 0.0)).clamp(0.000976563, 1.0);
+            let mut s = format!(
+                "acompressor=threshold={th:.6}:ratio={:.2}:attack={:.1}:release={:.1}:knee={COMP_KNEE}",
+                ratio.clamp(1.0, 20.0),
+                attack_ms.clamp(0.01, 2000.0),
+                release_ms.clamp(0.01, 9000.0)
+            );
+            if makeup_db.abs() >= 0.05 {
+                s.push_str(&format!(",volume={:.2}dB", makeup_db.clamp(-24.0, 24.0)));
+            }
+            s
+        }
+        AudioFilter::Limiter { ceiling_db } => format!("alimiter=limit={:.4}:attack=5:release=50:level=0", db_to_lin(ceiling_db.clamp(-24.0, 0.0)).clamp(0.0625, 1.0)),
+    }
+}
+
+/// イコライザーの帯域（画面の BiquadFilter と同じ値）
+pub const EQ_LOW_HZ: f64 = 200.0;
+pub const EQ_HIGH_HZ: f64 = 5000.0;
+pub const EQ_MID_Q: f64 = 1.0;
+/// コンプレッサーの肩の丸さ（FFmpeg の knee。画面の DynamicsCompressor は 3dB）
+pub const COMP_KNEE: f64 = 2.82843;
+
+fn db_to_lin(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+/// リバーブの反射：2 段に重ねる（1 段目 5 つ、2 段目 4 つ。基準の遅れは ms）。画面（playback.ts の reverbPlan）と同じ
+pub const REVERB_BASE: [&[f64]; 2] = [&[31.0, 53.0, 79.0, 113.0, 151.0], &[167.0, 229.0, 311.0, 401.0]];
+
+/// 1 段ごとの（遅れ ms、大きさ）と、全体の音量の補正。混ざる量がほぼ 0 なら None
+pub struct ReverbPlan {
+    pub stages: [Vec<(f64, f64)>; 2],
+    pub gain: f64,
+}
+
+pub fn reverb_plan(r: &Reverb) -> Option<ReverbPlan> {
+    let wet = r.wet.clamp(0.0, 1.0);
+    if wet < 0.005 {
+        return None;
+    }
+    let k = 0.5 + 1.5 * r.size.clamp(0.0, 1.0);
+    let f = 0.45 + 0.5 * r.decay.clamp(0.0, 1.0);
+    let stage = |base: &[f64]| {
+        let w: Vec<f64> = (0..base.len()).map(|i| f.powi(i as i32)).collect();
+        let sum: f64 = w.iter().sum();
+        base.iter().zip(&w).map(|(b, w)| ((b * k).round(), wet * 0.6 * w / sum)).collect::<Vec<_>>()
+    };
+    Some(ReverbPlan { stages: [stage(REVERB_BASE[0]), stage(REVERB_BASE[1])], gain: 1.0 / (1.0 + 0.8 * wet) })
+}
+
+/// リバーブのフィルター（混ざる量がほぼ 0 なら空）
+pub fn reverb_ff(r: &Reverb) -> String {
+    let Some(p) = reverb_plan(r) else { return String::new() };
+    let mut v: Vec<String> = p
+        .stages
+        .iter()
+        .map(|st| {
+            let d: Vec<String> = st.iter().map(|(d, _)| format!("{d:.0}")).collect();
+            let a: Vec<String> = st.iter().map(|(_, a)| format!("{a:.4}")).collect();
+            format!("aecho=1:1:{}:{}", d.join("|"), a.join("|"))
+        })
+        .collect();
+    v.push(format!("volume={:.4}", p.gain));
+    v.join(",")
+}
+
+/// 音の高さを変える（長さは変えない）。入力は 48kHz にそろえてあること
+fn pitch_ff(semitones: f64) -> String {
+    let r = 2f64.powf(semitones.clamp(-12.0, 12.0) / 12.0);
+    format!("asetrate=48000*{r:.6},aresample=48000,atempo={:.6}", 1.0 / r)
 }
 
 /// 音の加工のフィルター（素材の時間のまま掛ける）。末尾に「,」（なければ空）
@@ -64,6 +172,21 @@ pub fn audio_chain(fx: &MediaAudioFx) -> String {
         Some(VoiceFx::Echo) => f.push("aecho=0.8:0.7:180|360:0.4|0.25".into()),
         Some(VoiceFx::Megaphone) => f.push("highpass=f=700,lowpass=f=2600,volume=2,alimiter=limit=0.9".into()),
         None => {}
+    }
+    if let Some(p) = fx.pitch.filter(|p| p.abs() >= 0.05) {
+        f.push(pitch_ff(p));
+    }
+    for flt in &fx.filters {
+        let s = filter_ff(flt);
+        if !s.is_empty() {
+            f.push(s);
+        }
+    }
+    if let Some(r) = &fx.reverb {
+        let s = reverb_ff(r);
+        if !s.is_empty() {
+            f.push(s);
+        }
     }
     if let Some(g) = fx.gain_db.filter(|g| g.abs() > 1e-6) {
         f.push(format!("volume={g:.2}dB"));
@@ -241,7 +364,7 @@ mod tests {
     #[test]
     fn chain_and_gain() {
         assert_eq!(audio_chain(&MediaAudioFx::default()), "");
-        let c = audio_chain(&MediaAudioFx { denoise: true, voice: Some(VoiceFx::High), gain_db: Some(3.0) });
+        let c = audio_chain(&MediaAudioFx { denoise: true, voice: Some(VoiceFx::High), gain_db: Some(3.0), ..Default::default() });
         assert_eq!(c, "aresample=48000,afftdn=nf=-30,asetrate=48000*1.35,aresample=48000,atempo=0.740741,volume=3.00dB,");
         // 平均 -30 → +10 dB。ただし最大 -5 なら +4 dB まで
         assert_eq!(normalize_gain(-30.0, -15.0), 10.0);
@@ -279,7 +402,7 @@ mod tests {
         let (mean, max) = measure(Path::new("ffmpeg"), &src).unwrap();
         assert!(mean < -10.0 && max < 0.0, "{mean} {max}");
         for v in [VoiceFx::High, VoiceFx::Low, VoiceFx::Robot, VoiceFx::Radio, VoiceFx::Echo, VoiceFx::Megaphone] {
-            let fx = MediaAudioFx { denoise: true, voice: Some(v), gain_db: Some(normalize_gain(mean, max)) };
+            let fx = MediaAudioFx { denoise: true, voice: Some(v), gain_db: Some(normalize_gain(mean, max)), ..Default::default() };
             let p = make_processed(Path::new("ffmpeg"), &src, d.path(), &fx).unwrap();
             assert!(p.is_file());
             // 長さは変わらない（48kHz・2ch・16bit で約 1 秒。やまびこは残りの分だけ長い）
@@ -287,5 +410,116 @@ mod tests {
             let want = if v == VoiceFx::Echo { 1.36 } else { 1.0 };
             assert!((len - want).abs() < 0.08, "{v:?} {len}");
         }
+    }
+
+    #[test]
+    fn filter_strings() {
+        assert_eq!(filter_ff(&AudioFilter::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0, mid_hz: 1000.0 }), "");
+        assert_eq!(
+            filter_ff(&AudioFilter::Eq { low_db: 4.0, mid_db: -3.0, high_db: 2.5, mid_hz: 1500.0 }),
+            "bass=g=4.00:f=200:width_type=q:w=0.7071,equalizer=f=1500.0:width_type=q:w=1:g=-3.00,treble=g=2.50:f=5000:width_type=q:w=0.7071"
+        );
+        // -18dB = 0.125、makeup は volume で
+        assert_eq!(
+            filter_ff(&AudioFilter::Compressor { threshold_db: -18.0, ratio: 4.0, attack_ms: 10.0, release_ms: 120.0, makeup_db: 3.0 }),
+            "acompressor=threshold=0.125893:ratio=4.00:attack=10.0:release=120.0:knee=2.82843,volume=3.00dB"
+        );
+        assert_eq!(filter_ff(&AudioFilter::Limiter { ceiling_db: -1.0 }), "alimiter=limit=0.8913:attack=5:release=50:level=0");
+        assert_eq!(reverb_ff(&Reverb { size: 0.5, decay: 0.5, wet: 0.0 }), "");
+        let r = reverb_ff(&Reverb { size: 0.0, decay: 0.0, wet: 1.0 });
+        // 広さ 0 は基準の半分の遅れ、2 段、最後に音量の補正
+        assert!(r.starts_with("aecho=1:1:16|27|40|57|76:") && r.contains(",aecho=1:1:84|115|156|201:") && r.ends_with(",volume=0.5556"), "{r}");
+        // 大きさの合計は 1 段あたり wet*0.6
+        let p = reverb_plan(&Reverb { size: 0.3, decay: 0.8, wet: 0.5 }).unwrap();
+        for st in &p.stages {
+            assert!((st.iter().map(|x| x.1).sum::<f64>() - 0.3).abs() < 1e-9);
+            assert!(st.windows(2).all(|w| w[1].1 < w[0].1 && w[1].0 > w[0].0));
+        }
+    }
+
+    #[test]
+    fn chain_with_pitch_and_filters() {
+        let fx = MediaAudioFx {
+            pitch: Some(3.0),
+            filters: vec![AudioFilter::Highpass { hz: 80.0 }, AudioFilter::Limiter { ceiling_db: -2.0 }],
+            reverb: Some(Reverb::default()),
+            ..Default::default()
+        };
+        assert!(!fx.is_plain());
+        let c = audio_chain(&fx);
+        assert!(c.starts_with("aresample=48000,asetrate=48000*1.189207,aresample=48000,atempo=0.840896,highpass=f=80.0"), "{c}");
+        assert!(c.contains(",alimiter=limit=0.7943") && c.contains("aecho=") && c.ends_with(","), "{c}");
+        // 何も変えない設定は「加工なし」
+        let none = MediaAudioFx { pitch: Some(0.0), filters: vec![AudioFilter::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0, mid_hz: 1000.0 }], reverb: Some(Reverb { wet: 0.0, ..Default::default() }), ..Default::default() };
+        assert!(none.is_plain());
+        assert_eq!(audio_chain(&none), "");
+        // 保存した形（camelCase）
+        let j = serde_json::to_value(&MediaAudioFx { filters: vec![AudioFilter::Compressor { threshold_db: -20.0, ratio: 3.0, attack_ms: 5.0, release_ms: 80.0, makeup_db: 0.0 }], pitch: Some(2.0), ..Default::default() }).unwrap();
+        assert_eq!(j["filters"][0]["kind"], "compressor");
+        assert_eq!(j["filters"][0]["thresholdDb"], -20.0);
+        let back: MediaAudioFx = serde_json::from_value(j).unwrap();
+        assert_eq!(back.pitch, Some(2.0));
+    }
+
+    #[test]
+    fn new_filters_with_real_ffmpeg() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("s.wav");
+        // 440Hz と 3kHz を混ぜた 1 秒（大きめ）
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc='0.45*sin(2*PI*440*t)+0.3*sin(2*PI*3000*t)|0.45*sin(2*PI*440*t)+0.3*sin(2*PI*3000*t)':s=48000:d=1"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let (_m0, x0) = measure(Path::new("ffmpeg"), &src).unwrap();
+        let level = |fx: &MediaAudioFx| {
+            let p = make_processed(Path::new("ffmpeg"), &src, d.path(), fx).unwrap();
+            let len = std::fs::metadata(&p).unwrap().len() as f64 / (48000.0 * 4.0);
+            let (m, x) = measure(Path::new("ffmpeg"), &p).unwrap();
+            (m, x, len)
+        };
+        // 帯域ごとに、その高さの音だけで確かめる（低音 80Hz / 中音 1kHz / 高音 10kHz）
+        let tone = |hz: u32| {
+            let t = d.path().join(format!("t{hz}.wav"));
+            assert!(std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("sine=f={hz}:d=1:r=48000"), "-ac", "2"])
+                .arg(&t)
+                .status()
+                .unwrap()
+                .success());
+            t
+        };
+        let shift = |hz: u32, f: AudioFilter| {
+            let t = tone(hz);
+            let (m0, _) = measure(Path::new("ffmpeg"), &t).unwrap();
+            let p = make_processed(Path::new("ffmpeg"), &t, d.path(), &MediaAudioFx { filters: vec![f], ..Default::default() }).unwrap();
+            measure(Path::new("ffmpeg"), &p).unwrap().0 - m0
+        };
+        let eq = |low_db, mid_db, high_db| AudioFilter::Eq { low_db, mid_db, high_db, mid_hz: 1000.0 };
+        let (lo, mid, hi) = (shift(80, eq(8.0, 0.0, 0.0)), shift(1000, eq(0.0, -9.0, 0.0)), shift(10000, eq(0.0, 0.0, -10.0)));
+        assert!((lo - 8.0).abs() < 1.5 && (mid + 9.0).abs() < 1.0 && (hi + 10.0).abs() < 1.5, "{lo} {mid} {hi}");
+        // 触っていない帯域は変わらない
+        assert!(shift(1000, eq(8.0, 0.0, -10.0)).abs() < 1.5);
+        let (_, _, len) = level(&MediaAudioFx { filters: vec![eq(0.0, 0.0, -12.0)], ..Default::default() });
+        assert!((len - 1.0).abs() < 0.08, "{len}");
+        // コンプレッサーで最大が下がる
+        let (_, x, _) = level(&MediaAudioFx { filters: vec![AudioFilter::Compressor { threshold_db: -24.0, ratio: 8.0, attack_ms: 1.0, release_ms: 50.0, makeup_db: 0.0 }], ..Default::default() });
+        assert!(x < x0 - 2.0, "{x} {x0}");
+        // リミッターは天井を超えない
+        let (_, x, len) = level(&MediaAudioFx { filters: vec![AudioFilter::Limiter { ceiling_db: -6.0 }], ..Default::default() });
+        assert!(x <= -5.5 && (len - 1.0).abs() < 0.15, "{x} {len}");
+        // 音の高さは長さを変えない
+        for st in [-12.0, -5.0, 7.0, 12.0] {
+            let (_, _, len) = level(&MediaAudioFx { pitch: Some(st), ..Default::default() });
+            assert!((len - 1.0).abs() < 0.08, "{st} {len}");
+        }
+        // リバーブは響きの分だけ長くなる（広い部屋ほど）
+        let (_, _, small) = level(&MediaAudioFx { reverb: Some(Reverb { size: 0.0, decay: 0.5, wet: 0.5 }), ..Default::default() });
+        let (_, _, big) = level(&MediaAudioFx { reverb: Some(Reverb { size: 1.0, decay: 0.5, wet: 0.5 }), ..Default::default() });
+        assert!(small > 1.05 && big > small + 0.2, "{small} {big}");
     }
 }

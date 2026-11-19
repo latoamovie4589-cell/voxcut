@@ -69,6 +69,114 @@ pub fn is_kanji(c: char) -> bool {
 /// 「漢字《かんじ》」「｜文字《もじ》」の形のルビを区切る（青空文庫と同じ書き方）。
 /// ｜がなければ《の直前の漢字の並びに付く。閉じていない《や、付ける文字がない《はそのまま文字として残す。画面側の ruby.ts と同じ
 pub fn parse_ruby(text: &str) -> Vec<RubySeg> {
+    parse_markup(text).segs
+}
+
+/// 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）。どちらも入れ子にできる）
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    /// "#RRGGBB"（大文字）
+    pub color: Option<String>,
+    /// 大きさの倍率（0.3〜4）
+    pub size: Option<f64>,
+}
+
+/// ルビと飾りを読み取った結果。segs は飾りの書き方を外した区切り、styles は文字ごとの飾り（改行は数えない。飾りなしは None）
+#[derive(Debug, Clone, PartialEq)]
+pub struct Markup {
+    pub segs: Vec<RubySeg>,
+    pub styles: Vec<Option<Span>>,
+}
+
+/// 飾りの書き方（開く・閉じる）。長さ（文字数）とセット。書き方に合わない `<` は普通の文字。画面側の ruby.ts と同じ
+#[derive(Debug, Clone, PartialEq)]
+enum Tag {
+    Color(String),
+    Size(f64),
+    EndColor,
+    EndSize,
+}
+
+fn parse_tag(c: &[char], i: usize) -> Option<(Tag, usize)> {
+    if c.get(i) != Some(&'<') {
+        return None;
+    }
+    let close = (i + 1..c.len().min(i + 20)).find(|&k| c[k] == '>')?;
+    let inner: String = c[i + 1..close].iter().collect();
+    let n = close + 1 - i;
+    match inner.as_str() {
+        "/c" => return Some((Tag::EndColor, n)),
+        "/s" => return Some((Tag::EndSize, n)),
+        _ => {}
+    }
+    if let Some(v) = inner.strip_prefix("c=") {
+        let h = v.strip_prefix('#').unwrap_or(v);
+        if !h.chars().all(|x| x.is_ascii_hexdigit()) {
+            return None;
+        }
+        let full: String = match h.len() {
+            6 => h.to_uppercase(),
+            3 => h.chars().flat_map(|x| [x, x]).collect::<String>().to_uppercase(),
+            _ => return None,
+        };
+        return Some((Tag::Color(format!("#{full}")), n));
+    }
+    if let Some(v) = inner.strip_prefix("s=") {
+        if v.is_empty() || !v.chars().all(|x| x.is_ascii_digit() || x == '.') {
+            return None;
+        }
+        let k: f64 = v.parse().ok()?;
+        return Some((Tag::Size(k.clamp(0.3, 4.0)), n));
+    }
+    None
+}
+
+/// ルビを読み取ってから、各区切りの飾りの書き方を外す（飾りは区切りをまたいでよい）
+pub fn parse_markup(text: &str) -> Markup {
+    let mut colors: Vec<String> = vec![];
+    let mut sizes: Vec<f64> = vec![];
+    let mut segs = vec![];
+    let mut styles = vec![];
+    for seg in parse_ruby_raw(text) {
+        let c: Vec<char> = seg.base.chars().collect();
+        let mut base = String::new();
+        let mut i = 0;
+        while i < c.len() {
+            if let Some((tag, n)) = parse_tag(&c, i) {
+                match tag {
+                    Tag::Color(v) => colors.push(v),
+                    Tag::Size(v) => sizes.push(v),
+                    Tag::EndColor => {
+                        colors.pop();
+                    }
+                    Tag::EndSize => {
+                        sizes.pop();
+                    }
+                }
+                i += n;
+                continue;
+            }
+            base.push(c[i]);
+            if c[i] != '\n' {
+                let (col, sz) = (colors.last().cloned(), sizes.last().copied());
+                styles.push(if col.is_none() && sz.is_none() { None } else { Some(Span { color: col, size: sz }) });
+            }
+            i += 1;
+        }
+        // 書き方だけで空になった地の文は捨てる
+        if !base.is_empty() || seg.ruby.is_some() {
+            segs.push(RubySeg { base, ruby: seg.ruby });
+        }
+    }
+    Markup { segs, styles }
+}
+
+/// 飾りの書き方を外した、画面に出す文（ルビもそのまま）
+pub fn strip_markup(text: &str) -> String {
+    parse_markup(text).segs.iter().map(|s| s.base.as_str()).collect()
+}
+
+fn parse_ruby_raw(text: &str) -> Vec<RubySeg> {
     let c: Vec<char> = text.chars().collect();
     let mut out: Vec<RubySeg> = vec![];
     let mut cur: Vec<char> = vec![];
