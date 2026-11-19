@@ -299,6 +299,12 @@ pub struct Breath {
     pub amount: f64,
     /// 1 回の呼吸の長さ（秒）
     pub period: f64,
+    /// 上下にふわふわ浮く量（画像の高さの %、0〜10）。周期は period と同じ
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub float: f64,
+    /// 左右にゆっくりゆれる量（画像の幅の %、0〜10）。周期は period の 2 倍（行って戻る）
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub sway: f64,
 }
 
 impl Breath {
@@ -309,6 +315,22 @@ impl Breath {
     /// ffmpeg の式（t はその時刻の秒）
     pub fn ffmpeg_expr(&self) -> String {
         format!("(1+{:.5}*(1-cos(2*PI*t/{:.4}))/2)", self.amount.clamp(0.0, 20.0) / 100.0, self.period.max(0.2))
+    }
+    /// 時刻 t 秒での、上へ浮く量（画像の高さに対する割合。下へ沈むときはマイナス）
+    pub fn float_at(&self, t: f64) -> f64 {
+        self.float.clamp(0.0, 10.0) / 100.0 * (2.0 * std::f64::consts::PI * t / self.period.max(0.2)).sin()
+    }
+    /// 時刻 t 秒での、右へゆれる量（画像の幅に対する割合。左へ行くときはマイナス）
+    pub fn sway_at(&self, t: f64) -> f64 {
+        self.sway.clamp(0.0, 10.0) / 100.0 * (std::f64::consts::PI * t / self.period.max(0.2)).sin()
+    }
+    /// 浮く量の ffmpeg の式（t はその時刻の秒）。浮かない設定なら None
+    pub fn float_expr(&self) -> Option<String> {
+        (self.float > 0.0).then(|| format!("{:.5}*sin(2*PI*t/{:.4})", self.float.clamp(0.0, 10.0) / 100.0, self.period.max(0.2)))
+    }
+    /// ゆれる量の ffmpeg の式。ゆれない設定なら None
+    pub fn sway_expr(&self) -> Option<String> {
+        (self.sway > 0.0).then(|| format!("{:.5}*sin(PI*t/{:.4})", self.sway.clamp(0.0, 10.0) / 100.0, self.period.max(0.2)))
     }
 }
 

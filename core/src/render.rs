@@ -256,7 +256,7 @@ impl PortraitInput {
     /// 縦の倍率の式（呼吸 × 声の弾み）。どちらも無ければ None。t はその時刻の秒
     pub fn vscale_expr(&self) -> Option<String> {
         let mut parts: Vec<String> = vec![];
-        if let Some(b) = &self.breath {
+        if let Some(b) = self.breath.as_ref().filter(|b| b.amount > 0.0) {
             parts.push(b.ffmpeg_expr());
         }
         if let Some(t) = self.talk.as_ref().filter(|t| !t.hop) {
@@ -582,7 +582,7 @@ pub fn prepare_portraits(
             }
             let fx = line_portrait_effects(p, &ch.id).into_iter().map(|((s, e), fx)| ((s.max(a), e.min(b)), fx)).filter(|((s, e), _)| e > s).collect();
             out.push(PortraitInput { concat, transform: pc.transform.clone(), track: item.track_id.clone(), only: Some(only), fx,
-                breath: pt.breath.clone().filter(|b| b.amount > 0.0),
+                breath: pt.breath.clone().filter(|b| b.amount > 0.0 || b.float > 0.0 || b.sway > 0.0),
                 talk: pt.talk.filter(|a| *a > 0.0).map(|a| TalkBounce { amount: a.clamp(0.0, 20.0) / 100.0, hop: pt.talk_hop, steps: mouths.get(&default_expr).cloned().unwrap_or_default() }),
             });
         }
@@ -711,6 +711,10 @@ fn build_args_inner(
         };
         // 声に合わせて跳ねるときは、そのぶん上へ（画像の高さ × 量）
         let hop = pi.hop_expr().map(|e| format!("-h*({e})")).unwrap_or_default();
+        // 待機モーション：上下に浮く（画像の高さ × 量）・左右にゆれる（画像の幅 × 量）
+        let float = pi.breath.as_ref().and_then(|b| b.float_expr()).map(|e| format!("-h*({e})")).unwrap_or_default();
+        let sway = pi.breath.as_ref().and_then(|b| b.sway_expr()).map(|e| format!("+w*({e})")).unwrap_or_default();
+        let (hop, dx) = (format!("{hop}{float}"), format!("{dx}{sway}"));
         let pos = if dx.is_empty() && vscale.is_none() && hop.is_empty() {
             format!("x=(W-w)/2+{x:.1}:y=(H-h)/2+{y:.1}", x = t.x, y = t.y)
         } else {
@@ -4215,7 +4219,7 @@ mod tests {
         (p.video.width, p.video.height, p.video.fps) = (160, 160, 30);
         p.clips.retain(|c| c.as_voice().is_none());
         p.clips.push(crate::model::Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 75, link_id: None, body: ClipBody::Shape(crate::model::ShapeClip { shape: "rect".into(), width: 1.0, height: 1.0, fill: "#000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
-        let b = crate::model::Breath { amount: 20.0, period: 2.0 };
+        let b = crate::model::Breath { amount: 20.0, period: 2.0, float: 0.0, sway: 0.0 };
         assert!((b.scale_at(0.0) - 1.0).abs() < 1e-9 && (b.scale_at(1.0) - 1.2).abs() < 1e-9 && (b.scale_at(0.5) - 1.1).abs() < 1e-9);
         let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: Some(b), talk: None };
         let out = d.path().join("o.mp4");
@@ -4237,6 +4241,48 @@ mod tests {
         let (c, d1) = span("1");
         assert!(a.abs_diff(50) <= 1 && b0.abs_diff(129) <= 1, "はじめ {a} {b0}");
         assert!(d1.abs_diff(b0) <= 1 && c.abs_diff(34) <= 2, "1 秒 {c} {d1}");
+    }
+
+    /// 立ち絵の待機モーション：上下に浮く・左右にゆれる（プレビューの float_at / sway_at と同じ式。形は変えない）
+    #[test]
+    fn portrait_idle_float_and_sway_move_without_stretching_with_real_ffmpeg() {
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("t.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x80,format=rgba", "-frames:v", "1"]).arg(&png).output().unwrap().status.success());
+        let concat = d.path().join("p.ffconcat");
+        std::fs::write(&concat, format!("ffconcat version 1.0\nfile {}\nduration 3\nfile {}\n", concat_quote(&png), concat_quote(&png))).unwrap();
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (160, 160, 30);
+        p.clips.retain(|c| c.as_voice().is_none());
+        p.clips.push(crate::model::Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 75, link_id: None, body: ClipBody::Shape(crate::model::ShapeClip { shape: "rect".into(), width: 1.0, height: 1.0, fill: "#000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
+        // 周期 4 秒：1 秒で浮きが最大（高さ 80 の 10% = 8 上へ）、ゆれは 8 秒周期なので 2 秒で最大（幅 40 の 10% = 4 右へ）
+        let b = crate::model::Breath { amount: 0.0, period: 4.0, float: 10.0, sway: 10.0 };
+        assert!((b.float_at(1.0) - 0.1).abs() < 1e-9 && b.float_at(0.0).abs() < 1e-9 && (b.float_at(3.0) + 0.1).abs() < 1e-9);
+        assert!((b.sway_at(2.0) - 0.1).abs() < 1e-9 && b.sway_at(4.0).abs() < 1e-9);
+        let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: Some(b), talk: None };
+        let out = d.path().join("o.mp4");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let dark = d.path().join("k.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=2x2", "-frames:v", "1"]).arg(&dark).output().unwrap().status.success());
+        opt.item_images.insert("z".into(), dark);
+        let args = build_args(&p, &|_: &str| None, &[pi], &[], &opt).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        // 赤い範囲（上端・下端・左端・右端）
+        let bbox = |t: &str| {
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-ss", t, "-i"]).arg(&out).args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+            let red = |x: usize, y: usize| img[(y * 160 + x) * 3] > 150 && img[(y * 160 + x) * 3 + 1] < 90;
+            let ys: Vec<usize> = (0..160).filter(|&y| (0..160).any(|x| red(x, y))).collect();
+            let xs: Vec<usize> = (0..160).filter(|&x| (0..160).any(|y| red(x, y))).collect();
+            (xs[0], *xs.last().unwrap(), ys[0], *ys.last().unwrap())
+        };
+        // はじめ：真ん中から 10 下げた 50〜129 / 60〜99。1 秒：上へ 8 / 2 秒：右へ 4（さらに浮きは 0 へ戻る）
+        let (l0, r0, t0, b0) = bbox("0");
+        assert!(l0.abs_diff(60) <= 1 && r0.abs_diff(99) <= 1 && t0.abs_diff(50) <= 1 && b0.abs_diff(129) <= 1, "はじめ {l0} {r0} {t0} {b0}");
+        let (l1, r1, t1, b1) = bbox("1");
+        assert!(t1.abs_diff(42) <= 2 && b1.abs_diff(121) <= 2 && l1.abs_diff(62) <= 2 && r1.abs_diff(101) <= 2, "1 秒 {l1} {r1} {t1} {b1}");
+        let (l2, r2, t2, b2) = bbox("2");
+        assert!(l2.abs_diff(64) <= 2 && r2.abs_diff(103) <= 2 && t2.abs_diff(50) <= 2 && b2.abs_diff(129) <= 2, "2 秒 {l2} {r2} {t2} {b2}");
     }
 
     /// 立ち絵が声に合わせて弾む：口が開いている間だけ、足もとは動かさず頭のほうが伸びる（プレビューの talkScale と同じ値）
