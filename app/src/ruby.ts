@@ -14,12 +14,14 @@ export function isKanji(c: string): boolean {
   return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0xf900 && cp <= 0xfaff) || '々〆ヶ〇'.includes(c);
 }
 
-/** 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）。どちらも入れ子にできる）。core/src/text.rs の Span と同じ */
+/** 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）、`<b>太</b>` で太字。どれも入れ子にできる）。core/src/text.rs の Span と同じ */
 export interface Span {
   /** "#RRGGBB"（大文字） */
   color?: string;
   /** 大きさの倍率（0.3〜4） */
   size?: number;
+  /** 太字（`<b>太</b>`） */
+  bold?: boolean;
 }
 
 /** ルビと飾りを読み取った結果。segs は飾りの書き方を外した区切り、styles は文字ごとの飾り（改行は数えない。飾りなしは undefined） */
@@ -28,7 +30,7 @@ export interface Markup {
   styles: (Span | undefined)[];
 }
 
-type Tag = {kind: 'color'; v: string} | {kind: 'size'; v: number} | {kind: 'endColor'} | {kind: 'endSize'};
+type Tag = {kind: 'color'; v: string} | {kind: 'size'; v: number} | {kind: 'endColor'} | {kind: 'endSize'} | {kind: 'bold'} | {kind: 'endBold'};
 
 /** i 文字目の飾りの書き方（開く・閉じる）と長さ。書き方に合わない `<` は普通の文字（Rust の parse_tag と同じ） */
 function parseTag(c: string[], i: number): [Tag, number] | null {
@@ -44,6 +46,8 @@ function parseTag(c: string[], i: number): [Tag, number] | null {
   const n = close + 1 - i;
   if (inner === '/c') return [{kind: 'endColor'}, n];
   if (inner === '/s') return [{kind: 'endSize'}, n];
+  if (inner === '/b') return [{kind: 'endBold'}, n];
+  if (inner === 'b') return [{kind: 'bold'}, n];
   if (inner.startsWith('c=')) {
     const v = inner.slice(2);
     const h = v.startsWith('#') ? v.slice(1) : v;
@@ -64,6 +68,7 @@ function parseTag(c: string[], i: number): [Tag, number] | null {
 export function parseMarkup(text: string): Markup {
   const colors: string[] = [];
   const sizes: number[] = [];
+  let bold = 0;
   const segs: RubySeg[] = [];
   const styles: (Span | undefined)[] = [];
   for (const seg of parseRubyRaw(text)) {
@@ -76,7 +81,9 @@ export function parseMarkup(text: string): Markup {
         if (tag.kind === 'color') colors.push(tag.v);
         else if (tag.kind === 'size') sizes.push(tag.v);
         else if (tag.kind === 'endColor') colors.pop();
-        else sizes.pop();
+        else if (tag.kind === 'endSize') sizes.pop();
+        else if (tag.kind === 'bold') bold++;
+        else bold = Math.max(0, bold - 1);
         i += n;
         continue;
       }
@@ -84,7 +91,7 @@ export function parseMarkup(text: string): Markup {
       if (c[i] !== '\n') {
         const col = colors[colors.length - 1];
         const sz = sizes[sizes.length - 1];
-        styles.push(col === undefined && sz === undefined ? undefined : {...(col !== undefined ? {color: col} : {}), ...(sz !== undefined ? {size: sz} : {})});
+        styles.push(col === undefined && sz === undefined && !bold ? undefined : {...(col !== undefined ? {color: col} : {}), ...(sz !== undefined ? {size: sz} : {}), ...(bold ? {bold: true} : {})});
       }
       i++;
     }
