@@ -1246,12 +1246,24 @@ async def main():
           return {strip:R.rubyBase('赤<c=#00FF00>緑</c>'), reading:R.rubyReading('<c=#f00>明日《あした》</c>は'), n:v.textCharCount('赤<c=#00FF00>緑</c>'),
             g:[near(a,[0,255,0]),near(b,[0,255,0])], wide:[a.width,c.width,a.height,c.height], rubyRed:near(d,[255,0,0]), bad:R.stripSpansCheck?1:0,
             sg:[gcount(s0),gcount(s1)], sbb:[bb(s0),bb(s2)],
-            st:m.styles.map(x=>x?JSON.stringify(x):'-').join(','), lit:R.rubyBase('a<b>c <c=#xyz>d <s=9>e</s>'), big:R.parseMarkup('<s=9>e').styles[0].size}}""")
+            st:m.styles.map(x=>x?JSON.stringify(x):'-').join(','), lit:R.rubyBase('a<i>c <c=#xyz>d <s=9>e</s>'), big:R.parseMarkup('<s=9>e').styles[0].size}}""")
         check("飾り：書き方は文字から外れ、声（ルビの読み）・文字数にも入らない", r['strip'] == '赤緑' and r['reading'] == 'あしたは' and r['n'] == 2, str(r))
         check("飾り：テキストの一部だけ色が変わり、大きさを変えると画像が広がる", r['g'][0] == 0 and r['g'][1] > 100 and r['wide'][1] > r['wide'][0] and r['wide'][3] > r['wide'][2], str(r))
         check("飾り：ルビを付けた語にも色が付く", r['rubyRed'] > 100, str(r))
         check("飾り：字幕でも一部だけ色が変わり、大きくした分だけ字幕の範囲が広がる", r['sg'][0] == 0 and r['sg'][1] > 100 and r['sbb'][1][0] > r['sbb'][0][0] and r['sbb'][1][1] > r['sbb'][0][1], str(r))
-        check("飾りの読み取り：入れ子・改行をまたぐ・書き方に合わない < はそのまま・大きさは 4 倍まで（Rust と同じ）", r['st'] == '-,{"color":"#FF0000"},{"color":"#FF0000","size":1.5},-,-' and r['lit'] == 'a<b>c <c=#xyz>d e' and r['big'] == 4, str(r))
+        check("飾りの読み取り：入れ子・改行をまたぐ・書き方に合わない < はそのまま・大きさは 4 倍まで（Rust と同じ）", r['st'] == '-,{"color":"#FF0000"},{"color":"#FF0000","size":1.5},-,-' and r['lit'] == 'a<i>c <c=#xyz>d e' and r['big'] == 4, str(r))
+        # 太字：<b>…</b>（字幕・テキスト）
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts'); const R=await import('/src/ruby.ts'); const pv=await import('/src/preview/Preview.tsx'); const s=await import('/src/store.ts');
+          const base={id:'bd', type:'text', trackId:'V1', start:0, duration:120, text:'あいうえお', fontFamily:'sans-serif', fontSize:60, color:'#ffffff', outlineColor:'#000000', outlineWidth:0, bold:false, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}};
+          const a=v.textImage(base), b=v.textImage({...base, text:'あ<b>いうえ</b>お'}), c=v.textImage({...base, bold:true}), d=v.textImage({...base, text:'<b>明日《あした》</b>'}), e=v.textImage({...base, text:'明日《あした》'});
+          const p=s.getState().project; const ch=p.characters[0];
+          const sub=(t)=>{const cv=document.createElement('canvas'); cv.width=p.video.width; cv.height=p.video.height; const x=cv.getContext('2d'); pv.drawSubtitle(x,t,ch,p,1,30,90); return cv};
+          const bb=cv=>{const dd=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data; let n=0; for(let i=3;i<dd.length;i+=4) if(dd[i]>128) n++; return n};
+          const ink=cv=>bb(cv);
+          const m=R.parseMarkup('あ<b>い<b>う</b>え</b>お<c=#f00><b>か</b></c>');
+          return {w:[ink(a),ink(b),ink(c)], rw:[d.width,e.width], sw:[bb(sub('あ<b>いうえ</b>お')),bb(sub('<b>あいうえお</b>'))], st:m.styles.map(x=>x?JSON.stringify(x):'-').join(','), strip:R.rubyBase('<b>明日</b>は'), lit:R.rubyBase('a<i>c')}}""")
+        check("太字：テキストの一部だけ太くなり（全部太字との間の太さ）、字幕でも一部だけ太くなる", r['w'][0] < r['w'][1] < r['w'][2] and r['sw'][0] < r['sw'][1], str(r))
+        check("太字：ルビのある文では使わない。書き方は文字から外れ、入れ子・色との組み合わせも読める", r['rw'][0] == r['rw'][1] and r['strip'] == '明日は' and r['lit'] == 'a<i>c' and r['st'] == '-,{"bold":true},{"bold":true},{"bold":true},-,{"color":"#FF0000","bold":true}', str(r))
         # ── 音声：イコライザー・コンプレッサー・リミッター・リバーブ（書き出しと同じ値で、画面の音をつなぐ）
         r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); const pb=await import('/src/preview/playback.ts');
           const rms=(a,from)=>{let s=0,n=0; for(let i=from;i<a.length;i++){s+=a[i]*a[i];n++} return Math.sqrt(s/n)}; const dB=x=>20*Math.log10(x);
