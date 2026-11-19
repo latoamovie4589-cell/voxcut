@@ -35,6 +35,8 @@ import {
   soundFadeAt,
   breathScale,
   talkScale,
+  floatOffset,
+  swayOffset,
 } from '../model';
 import {distort, drawRegion, drawVisual, itemSource, vizImage, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -589,10 +591,14 @@ export function Preview() {
       const kt = talkScale(pt.talk, mouth);
       const hop = !!pt.talkHop;
       const k = breathScale(pt.breath, playhead / fps) * (hop ? 1 : kt);
-      const moved = k !== 1 || (hop && kt !== 1);
+      // 待機モーション：上下に浮く・左右にゆれる（書き出しの overlay の式と同じ）
+      const fl = floatOffset(pt.breath, playhead / fps);
+      const sw = swayOffset(pt.breath, playhead / fps);
+      const moved = k !== 1 || (hop && kt !== 1) || fl !== 0 || sw !== 0;
       if (moved) {
         const r0 = placeRect(tr, psdFrame.size, w, h, scale);
         ctx.save();
+        if (fl !== 0 || sw !== 0) ctx.translate(sw * r0.w, -fl * r0.h);
         // 跳ねる：形は変えず、口の開きに合わせて上へ（画像の高さ × 量。書き出しの hop_expr と同じ）
         if (hop) ctx.translate(0, -(kt - 1) * r0.h);
         ctx.translate(0, r0.y + r0.h);
