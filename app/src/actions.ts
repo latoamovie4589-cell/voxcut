@@ -744,7 +744,7 @@ export async function runExport(out: string, options: ExportRequest, onProgress:
   if (!s.project) return;
   stop();
   const a = await api;
-  const label = (p: ExportProgress) => (p.stage === 'synth' ? '音声を合成しています' : p.stage === 'portrait' ? '立ち絵を準備しています' : '書き出しています');
+  const label = (p: ExportProgress) => (p.stage === 'synth' ? '音声を合成しています' : p.stage === 'portrait' ? '立ち絵を準備しています' : p.stage === 'loudness' ? '音の大きさを測っています' : '書き出しています');
   setState({busy: {label: '書き出しています', ratio: 0}});
   const off = await a.onExportProgress(p => {
     onProgress(p);

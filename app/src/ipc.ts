@@ -11,10 +11,12 @@ export interface SynthProgress {
   error: string | null;
 }
 export interface ExportProgress {
-  stage: 'synth' | 'portrait' | 'encode';
+  stage: 'synth' | 'portrait' | 'loudness' | 'encode';
   ratio: number;
 }
 export interface ExportRequest {
+  /** 音の大きさの目標（LUFS。YouTube などは -14、放送は -24）。無ければ音はそのまま */
+  loudness?: number;
   /** 画質（x264 の CRF。小さいほど高画質） */
   crf: number;
   /** 出力の高さ（null ならプロジェクトのまま） */

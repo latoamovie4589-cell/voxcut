@@ -14,8 +14,91 @@ export function isKanji(c: string): boolean {
   return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0xf900 && cp <= 0xfaff) || '々〆ヶ〇'.includes(c);
 }
 
+/** 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）。どちらも入れ子にできる）。core/src/text.rs の Span と同じ */
+export interface Span {
+  /** "#RRGGBB"（大文字） */
+  color?: string;
+  /** 大きさの倍率（0.3〜4） */
+  size?: number;
+}
+
+/** ルビと飾りを読み取った結果。segs は飾りの書き方を外した区切り、styles は文字ごとの飾り（改行は数えない。飾りなしは undefined） */
+export interface Markup {
+  segs: RubySeg[];
+  styles: (Span | undefined)[];
+}
+
+type Tag = {kind: 'color'; v: string} | {kind: 'size'; v: number} | {kind: 'endColor'} | {kind: 'endSize'};
+
+/** i 文字目の飾りの書き方（開く・閉じる）と長さ。書き方に合わない `<` は普通の文字（Rust の parse_tag と同じ） */
+function parseTag(c: string[], i: number): [Tag, number] | null {
+  if (c[i] !== '<') return null;
+  let close = -1;
+  for (let k = i + 1; k < Math.min(c.length, i + 20); k++)
+    if (c[k] === '>') {
+      close = k;
+      break;
+    }
+  if (close < 0) return null;
+  const inner = c.slice(i + 1, close).join('');
+  const n = close + 1 - i;
+  if (inner === '/c') return [{kind: 'endColor'}, n];
+  if (inner === '/s') return [{kind: 'endSize'}, n];
+  if (inner.startsWith('c=')) {
+    const v = inner.slice(2);
+    const h = v.startsWith('#') ? v.slice(1) : v;
+    if (!/^[0-9a-fA-F]*$/.test(h)) return null;
+    const full = h.length === 6 ? h : h.length === 3 ? [...h].map(x => x + x).join('') : null;
+    return full ? [{kind: 'color', v: `#${full.toUpperCase()}`}, n] : null;
+  }
+  if (inner.startsWith('s=')) {
+    const v = inner.slice(2);
+    if (!v || !/^[0-9.]+$/.test(v)) return null;
+    const k = Number(v);
+    return Number.isFinite(k) ? [{kind: 'size', v: Math.min(4, Math.max(0.3, k))}, n] : null;
+  }
+  return null;
+}
+
+/** ルビを読み取ってから、各区切りの飾りの書き方を外す（飾りは区切りをまたいでよい）。Rust の parse_markup と同じ */
+export function parseMarkup(text: string): Markup {
+  const colors: string[] = [];
+  const sizes: number[] = [];
+  const segs: RubySeg[] = [];
+  const styles: (Span | undefined)[] = [];
+  for (const seg of parseRubyRaw(text)) {
+    const c = Array.from(seg.base);
+    let base = '';
+    for (let i = 0; i < c.length; ) {
+      const t = parseTag(c, i);
+      if (t) {
+        const [tag, n] = t;
+        if (tag.kind === 'color') colors.push(tag.v);
+        else if (tag.kind === 'size') sizes.push(tag.v);
+        else if (tag.kind === 'endColor') colors.pop();
+        else sizes.pop();
+        i += n;
+        continue;
+      }
+      base += c[i];
+      if (c[i] !== '\n') {
+        const col = colors[colors.length - 1];
+        const sz = sizes[sizes.length - 1];
+        styles.push(col === undefined && sz === undefined ? undefined : {...(col !== undefined ? {color: col} : {}), ...(sz !== undefined ? {size: sz} : {})});
+      }
+      i++;
+    }
+    // 書き方だけで空になった地の文は捨てる
+    if (base || seg.ruby !== undefined) segs.push(seg.ruby === undefined ? {base} : {base, ruby: seg.ruby});
+  }
+  return {segs, styles};
+}
+
+/** ルビの区切り（飾りの書き方を外したもの） */
+export const parseRuby = (text: string): RubySeg[] => parseMarkup(text).segs;
+
 /** ｜がなければ《の直前の漢字の並びに付く。閉じていない《や、付ける文字がない《はそのまま文字として残す */
-export function parseRuby(text: string): RubySeg[] {
+function parseRubyRaw(text: string): RubySeg[] {
   const c = Array.from(text);
   const out: RubySeg[] = [];
   let cur: string[] = [];

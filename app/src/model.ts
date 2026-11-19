@@ -232,12 +232,75 @@ export interface LineAudio {
   startOffset: Frame;
   /** エコー（1 回だけ遅れて重なる） */
   echo?: {delayMs: number; decay: number} | null;
+  /** リバーブ（部屋・ホールの響き。エコーの後ろに掛ける） */
+  reverb?: Reverb | null;
   /** 音声エフェクト（上から順に掛ける） */
   filters?: AudioFilter[];
 }
-export type AudioFilter = {kind: 'highpass'; hz: number} | {kind: 'lowpass'; hz: number};
-export const plainLineAudio = (): LineAudio => ({pan: 0, fadeIn: 0, fadeOut: 0, startOffset: 0, echo: null, filters: []});
-export const isPlainLineAudio = (a: LineAudio | null | undefined) => !a || (!a.pan && !a.fadeIn && !a.fadeOut && !a.startOffset && !a.echo && !(a.filters ?? []).length);
+/** リバーブ（Rust の model::Reverb と同じ）。size は部屋の広さ、decay は響きの残り方、wet は混ざる量（どれも 0〜1） */
+export interface Reverb {
+  size: number;
+  decay: number;
+  wet: number;
+}
+export const defaultReverb = (): Reverb => ({size: 0.5, decay: 0.5, wet: 0.35});
+export type AudioFilter =
+  | {kind: 'highpass'; hz: number}
+  | {kind: 'lowpass'; hz: number}
+  /** イコライザー：低音（200Hz 以下）・中音（中心 midHz）・高音（5kHz 以上）を上げ下げする（dB） */
+  | {kind: 'eq'; lowDb: number; midDb: number; highDb: number; midHz?: number}
+  /** コンプレッサー：thresholdDb を超えた大きな音を 1/ratio に抑えて声の大小をならす。makeupDb で全体を持ち上げる */
+  | {kind: 'compressor'; thresholdDb: number; ratio: number; attackMs: number; releaseMs: number; makeupDb: number}
+  /** リミッター：ceilingDb を超えないよう、音割れを防ぐ */
+  | {kind: 'limiter'; ceilingDb: number};
+export type AudioFilterKind = AudioFilter['kind'];
+export const AUDIO_FILTER_LABELS: Record<AudioFilterKind, string> = {
+  highpass: '低い音を削る',
+  lowpass: '高い音を削る',
+  eq: 'イコライザー',
+  compressor: 'コンプレッサー',
+  limiter: 'リミッター',
+};
+export function newAudioFilter(kind: AudioFilterKind): AudioFilter {
+  switch (kind) {
+    case 'highpass':
+      return {kind, hz: 120};
+    case 'lowpass':
+      return {kind, hz: 6000};
+    case 'eq':
+      return {kind, lowDb: 0, midDb: 0, highDb: 0, midHz: 1000};
+    case 'compressor':
+      return {kind, thresholdDb: -20, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3};
+    case 'limiter':
+      return {kind, ceilingDb: -1};
+  }
+}
+/** イコライザー・コンプレッサーの定数（Rust の audiofx と同じ） */
+export const EQ_LOW_HZ = 200;
+export const EQ_HIGH_HZ = 5000;
+export const EQ_MID_Q = 1;
+/** リバーブの反射の基準の遅れ（ms。2 段）。Rust の audiofx::REVERB_BASE と同じ */
+export const REVERB_BASE: readonly (readonly number[])[] = [
+  [31, 53, 79, 113, 151],
+  [167, 229, 311, 401],
+];
+/** リバーブの反射：1 段ごとの（遅れ ms、大きさ）と、全体の音量の補正。混ざる量がほぼ 0 なら null（Rust の reverb_plan と同じ） */
+export function reverbPlan(r: Reverb): {stages: [number, number][][]; gain: number} | null {
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  const wet = clamp(r.wet);
+  if (wet < 0.005) return null;
+  const k = 0.5 + 1.5 * clamp(r.size);
+  const f = 0.45 + 0.5 * clamp(r.decay);
+  const stage = (base: readonly number[]): [number, number][] => {
+    const w = base.map((_, i) => f ** i);
+    const sum = w.reduce((a, b) => a + b, 0);
+    return base.map((b, i) => [Math.round(b * k), (wet * 0.6 * w[i]) / sum]);
+  };
+  return {stages: REVERB_BASE.map(stage), gain: 1 / (1 + 0.8 * wet)};
+}
+const isNeutralFilter = (f: AudioFilter) => (f.kind === 'eq' ? Math.abs(f.lowDb) < 0.05 && Math.abs(f.midDb) < 0.05 && Math.abs(f.highDb) < 0.05 : false);
+export const plainLineAudio = (): LineAudio => ({pan: 0, fadeIn: 0, fadeOut: 0, startOffset: 0, echo: null, reverb: null, filters: []});
+export const isPlainLineAudio = (a: LineAudio | null | undefined) => !a || (!a.pan && !a.fadeIn && !a.fadeOut && !a.startOffset && !a.echo && !a.reverb && !(a.filters ?? []).length);
 /** 再生開始位置（フレーム） */
 export const startOffsetOf = (c: VoiceClip) => Math.max(0, c.audioFx?.startOffset ?? 0);
 /** 左右の大きさ（Rust の pan_gains と同じ） */
@@ -390,8 +453,17 @@ export interface MediaAudioFx {
   voice?: VoiceFx;
   /** 音量をそろえるための増減（dB）。「音量を均一に」で素材を測って決める */
   gainDb?: number;
+  /** 音の高さ（半音。長さは変えない。±12） */
+  pitch?: number;
+  /** 音声エフェクト（イコライザー・コンプレッサー・リミッターなど。上から順に掛ける） */
+  filters?: AudioFilter[];
+  /** リバーブ（部屋・ホールの響き） */
+  reverb?: Reverb;
 }
-export const hasAudioFx = (m: MediaClip) => !!m.audioFx && (!!m.audioFx.denoise || !!m.audioFx.voice || Math.abs(m.audioFx.gainDb ?? 0) > 1e-6);
+export const hasAudioFx = (m: MediaClip) => {
+  const a = m.audioFx;
+  return !!a && (!!a.denoise || !!a.voice || Math.abs(a.gainDb ?? 0) > 1e-6 || Math.abs(a.pitch ?? 0) >= 0.05 || (a.filters ?? []).some(f => !isNeutralFilter(f)) || (!!a.reverb && a.reverb.wet >= 0.005));
+};
 
 export interface Crop {
   left: number;
@@ -1203,14 +1275,45 @@ export function timerText(t: Timer, template: string, local: number, fps: number
 
 /** テキストの 1 文字ずつの登場（core/src/model.rs の CharAnim と同じ） */
 export interface CharAnim {
-  /** type：そのまま出る／fade：ふわっと／pop：はねる／slideUp：下から */
-  kind: 'type' | 'fade' | 'pop' | 'slideUp';
+  kind: CharAnimKind;
   /** 次の文字が出るまでのフレーム */
   interval: number;
   /** 1 文字が出きるまでのフレーム */
   length: number;
+  /** カラオケで塗っていく色（なければ黄色） */
+  color?: string;
 }
-export const CHAR_ANIM_LABEL: Record<CharAnim['kind'], string> = {type: 'そのまま', fade: 'ふわっと', pop: 'はねる', slideUp: '下から'};
+/**
+ * type：そのまま出る／fade：ふわっと／pop：はねる／slideUp・slideDown・slideLeft・slideRight：その向きから／zoom：大きいところから縮む／
+ * spin：回りながら／blur：ぼけから／shake：揺れながら／drop：上から落ちて弾む／karaoke：最初から出ていて、文字ごとに色が塗られる
+ */
+export type CharAnimKind = 'type' | 'fade' | 'pop' | 'slideUp' | 'slideDown' | 'slideLeft' | 'slideRight' | 'zoom' | 'spin' | 'blur' | 'shake' | 'drop' | 'karaoke';
+export const CHAR_ANIM_LABEL: Record<CharAnimKind, string> = {
+  type: 'そのまま',
+  fade: 'ふわっと',
+  pop: 'はねる',
+  slideUp: '下から',
+  slideDown: '上から',
+  slideLeft: '左から',
+  slideRight: '右から',
+  zoom: '大きいところから縮む',
+  spin: '回りながら',
+  blur: 'ぼけから',
+  shake: '揺れながら',
+  drop: '落ちて弾む',
+  karaoke: 'カラオケ（色が塗られる）',
+};
+/** 動いて枠の外へ出る分の余白（文字の大きさの割合）。pop・slideUp は今までと同じ 0.6 */
+export const CHAR_ANIM_PAD: Record<CharAnimKind, number> = {type: 0, fade: 0, pop: 0.6, slideUp: 0.6, slideDown: 0.6, slideLeft: 1, slideRight: 1, zoom: 1, spin: 0.6, blur: 0.4, shake: 0.3, drop: 1.3, karaoke: 0};
+/** 弾みながら止まる動き（0〜1。落ちて弾む用） */
+export function bounceOut(t: number): number {
+  const n = 7.5625;
+  const d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+  return n * (t -= 2.625 / d) * t + 0.984375;
+}
 /** 全部の文字が出きるまでのフレーム（model.rs の CharAnim::frames と同じ） */
 export const charAnimFrames = (a: CharAnim, n: number) => (Math.max(1, n) - 1) * Math.max(0, a.interval) + Math.max(1, a.length);
 /** i 文字目の出かた（0〜1）。f はアイテムの頭からのフレーム */
