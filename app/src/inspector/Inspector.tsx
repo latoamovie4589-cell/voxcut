@@ -958,6 +958,28 @@ export function PortraitSection({character}: {character: Character}) {
           />
         </>
       )}
+      <Switch
+        label="声に合わせて弾む"
+        description="口が開いている間、足もとを止めたまま縦に伸びます（半開きは半分。書き出しも同じ）"
+        value={!!pt.talk}
+        isDisabled={!pt.visible}
+        onChange={on => setPt({talk: on ? 4 : null})}
+        labelPosition="start"
+        labelSpacing="spread"
+        width="100%"
+      />
+      {!!pt.talk && (
+        <Slider
+          label="弾む大きさ"
+          value={pt.talk}
+          min={1}
+          max={15}
+          step={0.5}
+          valueDisplay="text"
+          formatValue={v => `${v.toFixed(1)}%`}
+          onChange={(talk: number) => setPt({talk})}
+        />
+      )}
       <PsdPortraitEditor character={character} />
       <Heading level={4}>新しく置く立ち絵アイテムの位置と大きさ</Heading>
       <TransformFields value={pt.transform} onChange={transform => setPt({transform})} />
@@ -1254,6 +1276,30 @@ function SubtitleDeco({character}: {character: Character}) {
             <NumberInput label="影のずれ" units="px" value={st.shadowOffset ?? 4} min={1} max={40} onChange={shadowOffset => set({shadowOffset})} />
           </div>
         </HStack>
+      )}
+      <NumberInput label="文字の間隔" units="px" value={st.letterSpacing ?? 0} min={-20} max={60} onChange={letterSpacing => set({letterSpacing})} />
+      {!st.boxColor && (
+        <>
+          <Switch
+            label="外側にもう 1 本縁を付ける"
+            description="背景が明るくても暗くても読みやすくなります"
+            value={!!st.outline2Color && !!st.outline2Width}
+            onChange={on => set({outline2Color: on ? st.outline2Color || '#000000' : '', outline2Width: on ? st.outline2Width || 4 : 0})}
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+          />
+          {!!st.outline2Color && !!st.outline2Width && (
+            <HStack gap={2} vAlign="end">
+              <div style={{flex: 1}}>
+                <ColorField label="外側の縁の色" value={st.outline2Color} onChange={outline2Color => set({outline2Color})} />
+              </div>
+              <div style={{width: 132}}>
+                <NumberInput label="外側の縁の太さ" units="px" value={st.outline2Width} min={1} max={30} onChange={outline2Width => set({outline2Width})} />
+              </div>
+            </HStack>
+          )}
+        </>
       )}
       <Switch
         label="文字の後ろに帯を敷く"

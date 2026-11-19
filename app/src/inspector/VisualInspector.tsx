@@ -42,6 +42,7 @@ import {
   framesToTimecode,
   plainLook,
   type Ease,
+  EASE_LABEL,
   type Effect,
   type Look,
   type Motion,
@@ -347,12 +348,13 @@ export function LookFields({
         />
         {anim && (
           <>
-            <SegmentedControl label="動き方" size="sm" value={anim.ease} onChange={v => set({anim: {...anim, ease: v as Ease}})}>
-              <SegmentedControlItem value="linear" label="一定" />
-              <SegmentedControlItem value="in" label="加速" />
-              <SegmentedControlItem value="out" label="減速" />
-              <SegmentedControlItem value="inOut" label="加減速" />
-            </SegmentedControl>
+            <Selector
+              label="動き方"
+              value={anim.ease}
+              options={(Object.keys(EASE_LABEL) as Ease[]).map(k => ({value: k, label: EASE_LABEL[k]}))}
+              onChange={(v: string) => set({anim: {...anim, ease: v as Ease}})}
+              width="100%"
+            />
             <Text type="label">終わりの状態</Text>
             <TransformFields value={anim.to} onChange={to => set({anim: {...anim, to}})} />
             <Slider

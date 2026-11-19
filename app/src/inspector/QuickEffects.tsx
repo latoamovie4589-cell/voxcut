@@ -7,7 +7,7 @@ import {Heading} from '@astryxdesign/core/Heading';
 import {VStack} from '@astryxdesign/core/Layout';
 import {Text} from '@astryxdesign/core/Text';
 import {Slider} from '@astryxdesign/core/Slider';
-import {GRADES, plainLook, prevAdjacent, transitionFrames, type Effect, type Look, type MotionKind, type Transform, type TransitionKind, type VisualClip} from '../model';
+import {GRADES, plainLook, prevAdjacent, transitionFrames, type Ease, type Effect, type Look, type MotionKind, type Transform, type TransitionKind, type VisualClip} from '../model';
 import {play, stop} from '../preview/playback';
 import {gradeFilter} from '../preview/visual';
 import {getState, setState, updateClip, useStore} from '../store';
@@ -46,7 +46,7 @@ function exitPreset(id: string, label: string, kind: MotionKind | null, fade: bo
 
 /** アイテムの長さいっぱいを使う動き。今の位置・大きさを始まりにして、そこからの差で作る */
 type Move = {
-  ease: 'linear' | 'in' | 'out' | 'inOut';
+  ease: Ease;
   to: {dx?: number; dy?: number; scale?: number; rot?: number};
   mid?: {at: number; dx?: number; dy?: number; scale?: number; rot?: number};
 };
@@ -163,6 +163,9 @@ export const QUICK: Record<Tab, QuickPreset[]> = {
     movePreset('mv-beat', 'どきっ', {ease: 'out', to: {}, mid: {at: 0.15, scale: 1.25}}),
     movePreset('mv-tilt', 'かたむく', {ease: 'inOut', to: {}, mid: {at: 0.5, rot: 10}}),
     movePreset('mv-spin', '一回転', {ease: 'inOut', to: {rot: 360}}),
+    movePreset('mv-overshoot', '勢いよく拡大（行き過ぎて戻る）', {ease: 'outBack', to: {scale: 1.25}}),
+    movePreset('mv-drop', '下へ落ちて弾む', {ease: 'outBounce', to: {dy: 120}}),
+    movePreset('mv-spring', 'ぷるぷる揺れて止まる', {ease: 'outElastic', to: {dx: 140}}),
   ],
   fx: [
     {id: 'fx-none', label: 'なし', on: c => !(c.look.effects ?? []).length, apply: c => ({...c.look, effects: []})},
