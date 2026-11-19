@@ -24,6 +24,7 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
+import {applySubtitleStyle, removeSubtitleStyle, saveSubtitleStyle, useSavedSubtitleStyles} from '../savedStyles';
 import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, Volume2} from 'lucide-react';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import type {LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
@@ -65,6 +66,7 @@ import {
   setPortrait,
   setPresetForSelection,
   setExpressionForSelection,
+  autoExpressionsForSelection,
   setGapForSelection,
   setState,
   splitClip,
@@ -980,6 +982,18 @@ export function PortraitSection({character}: {character: Character}) {
           onChange={(talk: number) => setPt({talk})}
         />
       )}
+      {!!pt.talk && (
+        <Selector
+          label="弾み方"
+          value={pt.talkHop ? 'hop' : 'stretch'}
+          options={[
+            {value: 'stretch', label: '縦に伸びる（足もとは動かさない）'},
+            {value: 'hop', label: '上へ跳ねる（形は変えない）'},
+          ]}
+          onChange={(v: string) => setPt({talkHop: v === 'hop'})}
+          width="100%"
+        />
+      )}
       <PsdPortraitEditor character={character} />
       <Heading level={4}>新しく置く立ち絵アイテムの位置と大きさ</Heading>
       <TransformFields value={pt.transform} onChange={transform => setPt({transform})} />
@@ -1254,11 +1268,60 @@ export function CharacterSubtitleTab({character}: {character: Character}) {
 }
 
 /** 字幕の影と帯（書き出しの ASS でも描ける飾りだけ） */
+/** 字幕の見た目を名前を付けて保存し、ほかのキャラクターにも使えるようにする（位置・下の余白・1 行の文字数は今のまま） */
+function SavedSubtitleStyles({character}: {character: Character}) {
+  const list = useSavedSubtitleStyles();
+  const [name, setName] = useState('');
+  const st = character.subtitle;
+  return (
+    <VStack gap={2}>
+      {list.length > 0 && (
+        <HStack gap={2} vAlign="end">
+          <div style={{flex: 1}}>
+            <Selector
+              label="保存した字幕のスタイル"
+              value=""
+              placeholder="選ぶと見た目が入れ替わります"
+              options={list.map(s => ({value: s.id, label: s.name}))}
+              onChange={(id: string) => {
+                const s = list.find(x => x.id === id);
+                if (s) updateCharacter(character.id, {subtitle: applySubtitleStyle(st, s.style)});
+              }}
+              width="100%"
+            />
+          </div>
+        </HStack>
+      )}
+      <HStack gap={2} vAlign="end">
+        <div style={{flex: 1}}>
+          <TextInput label="いまの字幕を保存" placeholder="スタイルの名前" value={name} onChange={setName} />
+        </div>
+        <Button
+          label="保存"
+          variant="secondary"
+          onClick={() => {
+            saveSubtitleStyle(name, st);
+            setName('');
+          }}
+        />
+      </HStack>
+      {list.length > 0 && (
+        <HStack gap={2} wrap="wrap">
+          {list.map(s => (
+            <Button key={s.id} label={`「${s.name}」を消す`} size="sm" variant="ghost" onClick={() => removeSubtitleStyle(s.id)} />
+          ))}
+        </HStack>
+      )}
+    </VStack>
+  );
+}
+
 function SubtitleDeco({character}: {character: Character}) {
   const st = character.subtitle;
   const set = (patch: Partial<Character['subtitle']>) => updateCharacter(character.id, {subtitle: {...st, ...patch}});
   return (
     <>
+      <SavedSubtitleStyles character={character} />
       <Switch
         label="影を付ける"
         value={!!st.shadowColor}
@@ -1599,6 +1662,20 @@ function MultiInspector({ids, notify}: {ids: string[]; notify: Notify}) {
             notify(`${n} 行の表情を「${v === BASE_EXPRESSION ? '通常' : v || '変えない'}」にしました`);
           }}
           width="100%"
+        />
+      )}
+      {sameCh?.portrait?.psd && (sameCh.portrait.expressions ?? []).length > 0 && (
+        <Button
+          label="セリフの感情から表情を付ける"
+          variant="secondary"
+          onClick={() => {
+            const r = autoExpressionsForSelection();
+            notify(
+              r.set
+                ? `${r.set} 行に表情を付けました${r.skipped ? `（${r.skipped} 行は感情が決まらないか、合う表情がありません）` : ''}`
+                : '付けられる行がありません。表情の名前に「笑」「怒」「悲」「驚」などを入れると、感情に合わせて選べます',
+            );
+          }}
         />
       )}
       {lines.length > 0 && (

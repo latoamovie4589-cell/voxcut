@@ -2,6 +2,9 @@
 // 見本は実際の textImage で描くので、プレビューと書き出しと同じ見た目になる。
 
 import {Collapsible} from '@astryxdesign/core/Collapsible';
+import {useState} from 'react';
+import {Button} from '@astryxdesign/core/Button';
+import {TextInput} from '@astryxdesign/core/TextInput';
 import {Heading} from '@astryxdesign/core/Heading';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
@@ -10,7 +13,8 @@ import {Text} from '@astryxdesign/core/Text';
 import type {TextClip} from '../model';
 import {textImage} from '../preview/visual';
 import {updateClip} from '../store';
-import {isTextStyle, TEXT_STYLES, type TextStyle} from '../textStyles';
+import {removeTextStyle, saveTextStyle, useSavedTextStyles} from '../savedStyles';
+import {isTextStyle, TEXT_STYLES, type TextLook, type TextStyle} from '../textStyles';
 import {ColorRow} from './VisualInspector';
 
 /** 見本の画像（ひな形ごとに 1 回だけ描く） */
@@ -52,6 +56,7 @@ export function TextDecoPicker({clip}: {clip: TextClip}) {
         ))}
       </div>
       <Text type="supporting">押すと、色・縁・影・帯がまとめて変わります。文字・大きさ・位置・動きはそのままです。</Text>
+      <SavedTextStyles clip={clip} />
     </VStack>
   );
 }
@@ -118,5 +123,55 @@ export function TextDecoFields({clip}: {clip: TextClip}) {
         </VStack>
       </Collapsible>
     </>
+  );
+}
+
+/** 今の飾りに付けた名前で保存し、ほかの文字にもワンタッチで使えるようにする */
+function SavedTextStyles({clip}: {clip: TextClip}) {
+  const list = useSavedTextStyles();
+  const [name, setName] = useState('');
+  const look = (): TextLook => {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(TEXT_STYLES[0].look) as (keyof TextLook)[]) out[k] = clip[k] ?? TEXT_STYLES[0].look[k];
+    return out as TextLook;
+  };
+  return (
+    <VStack gap={2}>
+      <Text type="label">自分のスタイル</Text>
+      {list.length > 0 && (
+        <div className="vx-fx-grid vx-ts-grid" role="group" aria-label="保存したスタイル">
+          {list.map(s => (
+            <div key={s.id} style={{position: 'relative'}}>
+              <button
+                type="button"
+                className="vx-fx-tile"
+                data-saved-style={s.name}
+                aria-pressed={isTextStyle(clip, {id: s.id, label: s.name, look: s.look})}
+                onClick={() => updateClip(clip.id, s.look)}>
+                <span className="vx-fx-demo vx-ts-demo" aria-hidden>
+                  <img src={thumb({id: `u:${s.id}`, label: s.name, look: s.look})} alt="" />
+                </span>
+                <span className="vx-fx-name">{s.name}</span>
+              </button>
+              <Button label="消す" size="sm" variant="ghost" onClick={() => removeTextStyle(s.id)} />
+            </div>
+          ))}
+        </div>
+      )}
+      <HStack gap={2} vAlign="end">
+        <div style={{flex: 1}}>
+          <TextInput label="いまの飾りを保存" placeholder="スタイルの名前" value={name} onChange={setName} />
+        </div>
+        <Button
+          label="保存"
+          variant="secondary"
+          onClick={() => {
+            saveTextStyle(name, look());
+            setName('');
+          }}
+        />
+      </HStack>
+      <Text type="supporting">保存したスタイルは、ほかのプロジェクトの文字にも使えます。同じ名前で保存すると置き換わります。</Text>
+    </VStack>
   );
 }
