@@ -66,7 +66,25 @@ type Quality = keyof typeof QUALITY;
 const STAGE: Record<ExportProgress['stage'], string> = {
   synth: 'まだの音声を合成しています',
   portrait: '立ち絵を準備しています',
+  loudness: '音の大きさを測っています',
   encode: '動画を書き出しています',
+};
+
+/** 音の大きさの目標（LUFS）。off ならそのまま */
+const LOUDNESS: {value: string; label: string}[] = [
+  {value: 'off', label: '調整しない（そのまま）'},
+  {value: '-14', label: 'YouTube などの動画サイト向け（-14 LUFS）'},
+  {value: '-16', label: 'スマホ・配信向け（-16 LUFS）'},
+  {value: '-24', label: 'テレビ放送向け（-24 LUFS）'},
+];
+const LOUDNESS_KEY = 'voxcut.export.loudness';
+const readLoudness = () => {
+  try {
+    const v = localStorage.getItem(LOUDNESS_KEY);
+    return v && LOUDNESS.some(l => l.value === v) ? v : 'off';
+  } catch {
+    return 'off';
+  }
 };
 
 /** 動画に載せるクレジット表記（概要欄や字幕にそのまま貼れる） */
@@ -119,6 +137,15 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const [what, setWhat] = useState<ExportKind>('video');
   const [span, setSpan] = useState<Span>('all');
   const [backdrop, setBackdrop] = useState<Backdrop>('fill');
+  const [loudness, setLoudnessState] = useState<string>(readLoudness);
+  const setLoudness = (v: string) => {
+    setLoudnessState(v);
+    try {
+      localStorage.setItem(LOUDNESS_KEY, v);
+    } catch {
+      // 覚えられなくても書き出しはできる
+    }
+  };
   const stopRef = useRef(false);
   const queue = useQueue();
   const [from, setFrom] = useState('');
@@ -169,6 +196,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
     crf: QUALITY[quality].crf,
     height: height === 'same' ? null : Number(height),
     encoder,
+    ...(loudness !== 'off' && (what === 'video' || what === 'audio') ? {loudness: Number(loudness)} : {}),
     ...(r ? {rangeFrames: r} : {}),
     ...(alpha ? {transparent: true} : {}),
   });
@@ -395,6 +423,16 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                     width="100%"
                   />
                 </>
+              )}
+              {(what === 'video' || what === 'audio') && (
+                <Selector
+                  label="音の大きさ"
+                  description={loudness === 'off' ? undefined : '書き出す前に全体の大きさを測り、同じ倍率で上げ下げして目標にそろえます（音割れしないよう上限は -1 dB）。測る分、時間が少し長くなります'}
+                  value={loudness}
+                  options={LOUDNESS}
+                  onChange={setLoudness}
+                  width="100%"
+                />
               )}
               {needsVoice && pending > 0 && !problems.length && <Banner status="info" title={`まだ合成していないセリフが ${pending} 行あります`} description="書き出す前にまとめて合成します" />}
               <Credits />
