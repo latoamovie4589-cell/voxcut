@@ -749,6 +749,19 @@ pub async fn export_video(
             .or_else(|| range.map(|(a, b)| (b - a).max(0.04)))
             .unwrap_or_else(|| project.video.frames_to_secs(project.duration()));
         let new_syntax = ffmpeg_major(&ffmpeg) >= 7;
+        // 音の大きさをそろえるときは、先に音だけ組み立てて大きさを測る（静止画・GIF は音を使わない）
+        let is_gif = out.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+        if let (Some(target), None, false) = (options.loudness, still, is_gif) {
+            emit("loudness", 0.0);
+            let mut m = opt.clone();
+            m.out = work.join("loudness.wav");
+            m.loudness = Some(render::Loudness { target, measured: None });
+            let mut args = render::build_args(&exp, &lookup, &portraits, &captions, &m).map_err(err)?;
+            render::externalize_filter(&mut args, &work.join("graph_loudness.txt"), new_syntax, 6000).map_err(err)?;
+            let measured = render::measure_loudness(&args, &ffmpeg, total, &mut |x| emit("loudness", x), Some(&cancel)).map_err(err)?;
+            // 音が無い・無音なら、そのまま書き出す
+            opt.loudness = measured.map(|me| render::Loudness { target, measured: Some(me) });
+        }
         let run = |opt: &ExportOptions| -> CmdResult<()> {
             let mut args = render::build_args(silent.as_ref().unwrap_or(&exp), &lookup, &portraits, &captions, opt).map_err(err)?;
             render::externalize_filter(&mut args, &work.join("graph.txt"), new_syntax, 6000).map_err(err)?;
@@ -782,6 +795,9 @@ pub struct ExportRequest {
     /// 背景を透明のまま書き出す（.mov / .webm / .png）
     #[serde(default)]
     transparent: bool,
+    /// 音の大きさの目標（LUFS。YouTube などは -14）。無ければ音はそのまま
+    #[serde(default)]
+    loudness: Option<f64>,
     /// テキスト・図形アイテムの画像（クリップ id → PNG のパス）
     #[serde(default)]
     item_images: std::collections::HashMap<String, PathBuf>,
