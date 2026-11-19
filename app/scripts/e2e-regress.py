@@ -1264,6 +1264,30 @@ async def main():
           return {w:[ink(a),ink(b),ink(c)], rw:[d.width,e.width], sw:[bb(sub('あ<b>いうえ</b>お')),bb(sub('<b>あいうえお</b>'))], st:m.styles.map(x=>x?JSON.stringify(x):'-').join(','), strip:R.rubyBase('<b>明日</b>は'), lit:R.rubyBase('a<i>c')}}""")
         check("太字：テキストの一部だけ太くなり（全部太字との間の太さ）、字幕でも一部だけ太くなる", r['w'][0] < r['w'][1] < r['w'][2] and r['sw'][0] < r['sw'][1], str(r))
         check("太字：ルビのある文では使わない。書き方は文字から外れ、入れ子・色との組み合わせも読める", r['rw'][0] == r['rw'][1] and r['strip'] == '明日は' and r['lit'] == 'a<i>c' and r['st'] == '-,{"bold":true},{"bold":true},{"bold":true},-,{"color":"#FF0000","bold":true}', str(r))
+        # ── 字幕の字間・外側の縁（Rust の ASS の Spacing・外側の層と同じ）
+        r = await q.evaluate(r"""async()=>{const pv=await import('/src/preview/Preview.tsx'); const W=await import('/src/subtitleWrap.ts'); const s=await import('/src/store.ts');
+          const p=s.getState().project; const ch=p.characters[0];
+          const sub=(patch)=>{const cv=document.createElement('canvas'); cv.width=p.video.width; cv.height=p.video.height; const x=cv.getContext('2d'); pv.drawSubtitle(x,'あいうえお',{...ch,subtitle:{...ch.subtitle,boxColor:'',...patch}},p,1,30,90); return cv};
+          const box=cv=>{const d=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data; let a=1e9,b=-1,n=0; for(let y=0;y<cv.height;y++)for(let x=0;x<cv.width;x++){if(d[(y*cv.width+x)*4+3]>128){a=Math.min(a,x);b=Math.max(b,x);n++}} return [b-a,n]};
+          const base=box(sub({letterSpacing:0,outline2Width:0})), wide=box(sub({letterSpacing:20,outline2Width:0})), tight=box(sub({letterSpacing:-8,outline2Width:0}));
+          const out2=box(sub({letterSpacing:0,outlineWidth:4,outline2Color:'#ff0000',outline2Width:6})), out1=box(sub({letterSpacing:0,outlineWidth:4,outline2Width:0}));
+          const line='あ'.repeat(30);
+          return {base:base[0], wide:wide[0], tight:tight[0], o1:out1[1], o2:out2[1], wrapEm:[W.wrapEm(56,0), W.wrapEm(56,20), W.wrapEm(56,-10)], lines:[W.wrapSubtitle(line,W.wrapEm(56,0),1000).split('\n').length, W.wrapSubtitle(line,W.wrapEm(56,56),1000).split('\n').length]}}""")
+        check("字幕の字間：広げると字幕が横に伸び、詰めると縮む（折り返しの幅は広げた分だけ増える）", r['wide'] > r['base'] + 60 and r['tight'] < r['base'] - 15 and r['wrapEm'] == [56, 76, 56] and r['lines'][1] > r['lines'][0], str(r))
+        check("字幕の外側の縁：内側の縁の外にもう 1 本付くと、描かれる面積が増える", r['o2'] > r['o1'] * 1.1, str(r))
+        # ── 動きの緩急（Rust の ease_expr と同じ式）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts');
+          const ev=(e,p)=>+m.easeValue(e,p).toFixed(4);
+          const kinds=Object.keys(m.EASE_LABEL);
+          const t={x:0,y:0,scale:1,opacity:1};
+          const look={rotation:0, anim:{to:{x:0,y:0,scale:1,opacity:0}, rotation:0, ease:'outBack'}};
+          const op=[0.1,0.4,0.7,0.95].map(p=>m.animStateAt(t,look,p).transform.opacity);
+          return {kinds:kinds.length, ends:kinds.map(k=>[ev(k,0),ev(k,1)]), over:[ev('outBack',0.7), ev('outElastic',0.2), ev('inBack',0.2), ev('smooth',0.5), ev('outBounce',0.5)], op}}""")
+        check("動きの緩急：9 種類とも始まりは 0・終わりは 1", r['kinds'] == 9 and all(e == [0, 1] for e in r['ends']), str(r))
+        check("動きの緩急：行き過ぎる・引く・弾む動きが式どおりで、見えやすさは 0〜1 に収まる", r['over'][0] > 1 and r['over'][1] > 1 and r['over'][2] < 0 and r['over'][3] == 0.5 and abs(r['over'][4] - 0.7656) < 0.001 and all(0 <= x <= 1 for x in r['op']), str(r))
+        # ── 立ち絵が声に合わせて弾む（Rust の mouth_level_expr と同じ値）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); return [0,1,2].map(x=>+m.talkScale(4,x).toFixed(4)).concat([m.talkScale(null,2), m.talkScale(0,2), +m.talkScale(99,2).toFixed(2)])}""")
+        check("声に合わせた弾み：口の閉じ・半開き・全開で 1・半分・全量、設定なしは 1、大きさは 20% まで", r == [1, 1.02, 1.04, 1, 1, 1.2], str(r))
         # ── 音声：イコライザー・コンプレッサー・リミッター・リバーブ（書き出しと同じ値で、画面の音をつなぐ）
         r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); const pb=await import('/src/preview/playback.ts');
           const rms=(a,from)=>{let s=0,n=0; for(let i=from;i<a.length;i++){s+=a[i]*a[i];n++} return Math.sqrt(s/n)}; const dB=x=>20*Math.log10(x);
