@@ -1207,6 +1207,74 @@ async def main():
           const out={n, name:saved.name, layers:items.map(i=>i.layer), start:[a.start,b.start], above:ti.indexOf(a.trackId)>ti.indexOf(b.trackId), fresh:!keep.clips.some(c=>c.id===a.id)};
           t.removeTemplate(saved.id); s.setState({project:keep, selectedClipIds:[], selectedClipId:null}); return out}""")
         check("まとめたテンプレート：2 つを保存して再生位置に置くと、ずれと上下の並びを保つ", r['n'] == 2 and r['start'] == [300, 310] and r['above'] and r['fresh'] and r['name'].startswith('タイトル'), str(r))
+        # ── 文字の出し方（13 種類）・一部の文字の色と大きさ
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts'); const m=await import('/src/model.ts');
+          const base={id:'ca', type:'text', trackId:'V1', start:0, duration:120, text:'あいう', fontFamily:'sans-serif', fontSize:60, color:'#ffffff', outlineColor:'#000000', outlineWidth:0, bold:true, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}};
+          const px=x=>x.getContext('2d').getImageData(0,0,x.width,x.height).data;
+          const ink=x=>{const d=px(x); let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; return n};
+          const green=(x,col)=>{const d=px(x); let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>200&&Math.abs(d[i]-col[0])<40&&Math.abs(d[i+1]-col[1])<40&&Math.abs(d[i+2]-col[2])<40) n++; return n};
+          const kinds=Object.keys(m.CHAR_ANIM_LABEL); const out={kinds:kinds.length, bad:[], moving:[], sameEnd:[]};
+          const plain=ink(v.textImage({...base, charAnim:{kind:'type',interval:4,length:8}},{charFrame:100}));
+          for (const k of kinds) { try {
+            const ca={kind:k, interval:4, length:12}; const f=m.charAnimFrames(ca,3);
+            const a=v.textImage({...base, charAnim:ca},{charFrame:0}), b=v.textImage({...base, charAnim:ca},{charFrame:6}), e=v.textImage({...base, charAnim:ca},{charFrame:f+50});
+            if (a.width!==e.width||a.height!==e.height||b.width!==e.width) out.bad.push(k+':size');
+            if (k!=='karaoke' && Math.abs(ink(e)-plain)>plain*0.02) out.sameEnd.push(k+':'+ink(e)+'/'+plain);
+            const pa=px(b), pe=px(e); let d=0; for(let i=0;i<pe.length;i++) d=Math.max(d,Math.abs(pa[i]-pe[i])); if(d>40) out.moving.push(k);
+          } catch(err) { out.bad.push(k+':'+err) } }
+          // カラオケ：最初から全部出ていて、塗った分だけ別の色になる（最初は塗りなし、最後は全部）
+          const kc={kind:'karaoke', interval:10, length:20, color:'#00ff00'}; const kf=m.charAnimFrames(kc,3);
+          const k0=v.textImage({...base, charAnim:kc},{charFrame:0}), km=v.textImage({...base, charAnim:kc},{charFrame:12}), ke=v.textImage({...base, charAnim:kc},{charFrame:kf+30});
+          out.kara=[ink(k0),green(k0,[0,255,0]),green(km,[0,255,0]),green(ke,[0,255,0]),ink(ke)];
+          return out}""")
+        check("文字の出し方：13 種類とも描け、画像の大きさは変わらず、出きったあとは同じ文字になる", r['kinds'] == 13 and not r['bad'] and not r['sameEnd'], str(r))
+        check("文字の出し方：途中のコマは出きったあとと違う（動く・薄い）", sorted(r['moving']) == sorted(['fade','pop','slideUp','slideDown','slideLeft','slideRight','zoom','spin','blur','shake','drop','type']) or len(r['moving']) >= 10, str(r['moving']))
+        kr = r['kara']
+        check("カラオケ（文字）：最初から全部出ていて、色が左から塗られ、最後は全部その色", kr[0] > 0 and kr[1] == 0 and 0 < kr[2] < kr[3] and kr[3] > kr[4] * 0.5, str(kr))
+        r = await q.evaluate(r"""async()=>{const v=await import('/src/preview/visual.ts'); const R=await import('/src/ruby.ts'); const pv=await import('/src/preview/Preview.tsx'); const s=await import('/src/store.ts');
+          const base={id:'sp', type:'text', trackId:'V1', start:0, duration:120, text:'赤緑', fontFamily:'sans-serif', fontSize:60, color:'#ffffff', outlineColor:'#000000', outlineWidth:0, bold:true, italic:false, align:'center', transform:{x:0,y:0,scale:1,opacity:1}};
+          const px=x=>x.getContext('2d').getImageData(0,0,x.width,x.height).data;
+          const near=(x,col)=>{const d=px(x); let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>200&&Math.abs(d[i]-col[0])<40&&Math.abs(d[i+1]-col[1])<40&&Math.abs(d[i+2]-col[2])<40) n++; return n};
+          const a=v.textImage(base), b=v.textImage({...base, text:'赤<c=#00FF00>緑</c>'}), c=v.textImage({...base, text:'赤<s=2>緑</s>'}), d=v.textImage({...base, text:'<c=#f00>赤《あか》</c>緑'});
+          // 字幕（画面の drawSubtitle）
+          const p=s.getState().project; const ch=p.characters[0];
+          const sub=(t)=>{const cv=document.createElement('canvas'); cv.width=p.video.width; cv.height=p.video.height; const x=cv.getContext('2d'); pv.drawSubtitle(x,t,ch,p,1,30,90); return cv};
+          const bb=cv=>{const dd=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data; let y0=1e9,y1=-1,x0=1e9,x1=-1; for(let y=0;y<cv.height;y++) for(let x=0;x<cv.width;x++){ if(dd[(y*cv.width+x)*4+3]>128){y0=Math.min(y0,y);y1=Math.max(y1,y);x0=Math.min(x0,x);x1=Math.max(x1,x)} } return [x1-x0,y1-y0]};
+          const gcount=cv=>near(cv,[0,255,0]);
+          const s0=sub('赤緑'), s1=sub('赤<c=#00FF00>緑</c>'), s2=sub('赤<s=2>緑</s>');
+          const m=R.parseMarkup('あ<c=#f00>い<s=1.5>う</s></c>え\nお');
+          return {strip:R.rubyBase('赤<c=#00FF00>緑</c>'), reading:R.rubyReading('<c=#f00>明日《あした》</c>は'), n:v.textCharCount('赤<c=#00FF00>緑</c>'),
+            g:[near(a,[0,255,0]),near(b,[0,255,0])], wide:[a.width,c.width,a.height,c.height], rubyRed:near(d,[255,0,0]), bad:R.stripSpansCheck?1:0,
+            sg:[gcount(s0),gcount(s1)], sbb:[bb(s0),bb(s2)],
+            st:m.styles.map(x=>x?JSON.stringify(x):'-').join(','), lit:R.rubyBase('a<b>c <c=#xyz>d <s=9>e</s>'), big:R.parseMarkup('<s=9>e').styles[0].size}}""")
+        check("飾り：書き方は文字から外れ、声（ルビの読み）・文字数にも入らない", r['strip'] == '赤緑' and r['reading'] == 'あしたは' and r['n'] == 2, str(r))
+        check("飾り：テキストの一部だけ色が変わり、大きさを変えると画像が広がる", r['g'][0] == 0 and r['g'][1] > 100 and r['wide'][1] > r['wide'][0] and r['wide'][3] > r['wide'][2], str(r))
+        check("飾り：ルビを付けた語にも色が付く", r['rubyRed'] > 100, str(r))
+        check("飾り：字幕でも一部だけ色が変わり、大きくした分だけ字幕の範囲が広がる", r['sg'][0] == 0 and r['sg'][1] > 100 and r['sbb'][1][0] > r['sbb'][0][0] and r['sbb'][1][1] > r['sbb'][0][1], str(r))
+        check("飾りの読み取り：入れ子・改行をまたぐ・書き方に合わない < はそのまま・大きさは 4 倍まで（Rust と同じ）", r['st'] == '-,{"color":"#FF0000"},{"color":"#FF0000","size":1.5},-,-' and r['lit'] == 'a<b>c <c=#xyz>d e' and r['big'] == 4, str(r))
+        # ── 音声：イコライザー・コンプレッサー・リミッター・リバーブ（書き出しと同じ値で、画面の音をつなぐ）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts'); const pb=await import('/src/preview/playback.ts');
+          const rms=(a,from)=>{let s=0,n=0; for(let i=from;i<a.length;i++){s+=a[i]*a[i];n++} return Math.sqrt(s/n)}; const dB=x=>20*Math.log10(x);
+          const run=async(f,hz,amp=0.5,len=0.6)=>{const rate=48000; const oc=new OfflineAudioContext(1,Math.floor(rate*len),rate); const o=oc.createOscillator(); o.frequency.value=hz; const g=oc.createGain(); g.gain.value=amp; o.connect(g); f(oc,g).connect(oc.destination); o.start(); const b=await oc.startRendering(); return b.getChannelData(0)};
+          const dry=async(hz,amp)=>run((oc,n)=>n,hz,amp);
+          const delta=async(hz,filt,amp=0.1)=>{const a=await run((oc,n)=>pb.filterNode(oc,n,filt),hz,amp); const b=await dry(hz,amp); return dB(rms(a,24000)/rms(b,24000))};
+          const eq=(l,mi,h)=>({kind:'eq',lowDb:l,midDb:mi,highDb:h,midHz:1000});
+          const out={eq:[await delta(80,eq(8,0,0)), await delta(1000,eq(0,-9,0)), await delta(10000,eq(0,0,-10)), await delta(1000,eq(8,0,-10))]};
+          // コンプレッサー：大きい音が下がる（小さい音は変わらない）。リミッター：天井を超えない
+          const comp={kind:'compressor',thresholdDb:-24,ratio:8,attackMs:1,releaseMs:50,makeupDb:0};
+          out.comp=[await delta(440,comp,0.5), await delta(440,comp,0.02)];
+          const lim=await run((oc,n)=>pb.filterNode(oc,n,{kind:'limiter',ceilingDb:-6}),440,0.9); let pk=0; for(let i=20000;i<lim.length;i++) pk=Math.max(pk,Math.abs(lim[i])); out.lim=dB(pk);
+          // リバーブ：インパルスを入れると、決まった遅れに反射が出る（Rust の reverb_ff と同じ）
+          const r0={size:0,decay:0,wet:1}; const plan=m.reverbPlan(r0); out.plan=[plan.stages[0].map(x=>x[0]), plan.stages[1].map(x=>x[0]), +plan.gain.toFixed(4), +plan.stages[0].reduce((a,x)=>a+x[1],0).toFixed(3), m.reverbPlan({size:.5,decay:.5,wet:0})];
+          const rate=48000; const oc=new OfflineAudioContext(1,rate,rate); const buf=oc.createBuffer(1,rate,rate); buf.getChannelData(0)[0]=1; const src=oc.createBufferSource(); src.buffer=buf; pb.reverbNode(oc,src,r0).connect(oc.destination); src.start(); const ir=(await oc.startRendering()).getChannelData(0);
+          out.ir=[+ir[0].toFixed(4), +ir[Math.round(0.016*rate)].toFixed(4), +ir[Math.round(0.027*rate)].toFixed(4), +ir[Math.round(0.020*rate)].toFixed(4), ir.slice(Math.round(0.25*rate)).some(x=>Math.abs(x)>1e-4)];
+          out.a0=+(plan.stages[0][0][1]*plan.gain).toFixed(4); out.a1=+(plan.stages[0][1][1]*plan.gain).toFixed(4);
+          const has=a=>m.hasAudioFx({audioFx:a}); out.has=[has({pitch:3}), has({pitch:0}), has({filters:[eq(0,0,0)]}), has({filters:[eq(0,2,0)]}), has({reverb:{size:.5,decay:.5,wet:0}}), has({reverb:{size:.5,decay:.5,wet:.3}}), has({filters:[{kind:'limiter',ceilingDb:-1}]})];
+          return out}""")
+        check("イコライザー：低音・中音・高音がそれぞれの高さの音だけ上げ下げされる（書き出しと同じ）", abs(r['eq'][0] - 8) < 1.6 and abs(r['eq'][1] + 9) < 1.2 and abs(r['eq'][2] + 10) < 1.6 and abs(r['eq'][3]) < 1.6, str(r['eq']))
+        check("コンプレッサー：大きい音だけ下がる。リミッター：天井を超えない", r['comp'][0] < -3 and abs(r['comp'][1]) < 1.5 and r['lim'] <= -4.5, str(r))
+        check("リバーブ：反射の遅れ・大きさ・全体の補正が Rust の reverb_plan と同じ。反射が決まった遅れに出て、混ぜる量 0 なら何もしない", r['plan'][0] == [16, 27, 40, 57, 76] and r['plan'][1] == [84, 115, 156, 201] and r['plan'][2] == 0.5556 and r['plan'][3] == 0.6 and r['plan'][4] is None and abs(r['ir'][0] - r['plan'][2]) < 0.001 and abs(r['ir'][1] - r['a0']) < 0.002 and abs(r['ir'][2] - r['a1']) < 0.002 and r['ir'][3] == 0 and r['ir'][4], str(r))
+        check("音の加工あり判定：高さ・エフェクト・リバーブが効いているときだけ（何も変えない設定は加工しない）", r['has'] == [True, False, False, True, False, True, True], str(r['has']))
         check("この区切りの画面でエラーが出ていない", not q.errs, str(q.errs[:3]))
         await q.close()
 
