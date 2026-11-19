@@ -5,11 +5,12 @@ import {useMemo, useRef, useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {CheckboxInput} from '@astryxdesign/core/CheckboxInput';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
+import {NumberInput} from '@astryxdesign/core/NumberInput';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
-import {namesIn, parseScript, parseScriptFile, toScriptText} from '../script';
+import {namesIn, parseScript, parseScriptFile, splitLongText, toScriptText} from '../script';
 import {Icon} from '@astryxdesign/core/Icon';
 import {FileText} from 'lucide-react';
 import {ENGINE_LABEL, type EngineId} from '../model';
@@ -26,6 +27,8 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
   const [text, setText] = useState('');
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [synthNow, setSynthNow] = useState(true);
+  const [autoSplit, setAutoSplit] = useState(false);
+  const [splitMax, setSplitMax] = useState(30);
   const [seen, setSeen] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -107,7 +110,10 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
       updateCharacter(id, speaker ? {name, voice: {...base.voice, engine, speaker}} : {name});
       created.set(name, id);
     }
-    const items = lines.map(l => ({characterId: l.name ? (created.get(l.name) ?? target(l.name)) : fallback, text: l.text}));
+    const items = lines.flatMap(l => {
+      const characterId = l.name ? (created.get(l.name) ?? target(l.name)) : fallback;
+      return (autoSplit ? splitLongText(l.text, splitMax) : [l.text]).map(text => ({characterId, text}));
+    });
     // 選んでいたキャラクターに戻す（addCharacter が選択を変えるため）
     setState({selectedCharacterId: prevSel});
     const ids = addLines(items);
@@ -186,6 +192,15 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
             </VStack>
           )}
           <CheckboxInput label="追加したらすぐ合成する" value={synthNow} onChange={setSynthNow} />
+          <HStack gap={3} vAlign="end" wrap="wrap">
+            <CheckboxInput label="長いセリフを自動で分ける" value={autoSplit} onChange={setAutoSplit} />
+            {autoSplit && (
+              <div style={{width: 160}}>
+                <NumberInput label="1 行の文字数" units="文字" value={splitMax} min={8} max={200} onChange={v => setSplitMax(Math.max(8, Math.round(v || 30)))} />
+              </div>
+            )}
+          </HStack>
+          {autoSplit && <Text type="supporting">文の終わり（。！？）、足りなければ読点（、）で切ります。「」の中では切りません。</Text>}
         </VStack>
       </div>
       <HStack gap={2} hAlign="between" vAlign="center" padding={3}>

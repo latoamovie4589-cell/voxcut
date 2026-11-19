@@ -8,7 +8,8 @@ import {Button} from '@astryxdesign/core/Button';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
-import {resizeVideo, setState, updateVideo, useStore} from '../store';
+import {resizeVideoTo} from '../actions';
+import {setState, updateVideo, useStore} from '../store';
 
 const SIZES: {value: string; label: string; w: number; h: number}[] = [
   {value: '1920x1080', label: '横長 1920×1080（YouTube など）', w: 1920, h: 1080},
@@ -42,14 +43,14 @@ export function ProjectSettingsDialog() {
           options={sizes.map(x => ({value: x.value, label: x.label}))}
           onChange={val => {
             const x = sizes.find(s => s.value === val);
-            if (x) resizeVideo(x.w, x.h, relayout && hasItems);
+            if (x) void resizeVideoTo(x.w, x.h, relayout && hasItems);
           }}
           width="100%"
         />
         {hasItems && (
           <Switch
             label="置いてあるものも新しい大きさに合わせる"
-            description="横長から縦長に変えるときなど、立ち絵・画像・文字の位置と大きさを、画面からはみ出さないよう直します（元に戻すで戻せます）"
+            description="横長から縦長に変えるときなど、立ち絵・画像・文字の位置と大きさを直します。画面いっぱいに置いた画像・動画は、新しい画面もいっぱいに埋めます（元に戻すで戻せます）"
             value={relayout}
             onChange={setRelayout}
             labelPosition="start"
