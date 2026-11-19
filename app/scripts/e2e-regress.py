@@ -1290,6 +1290,71 @@ async def main():
           return {a:[near(a.x,-600*sx),near(a.y,300*sy),near(a.scale,f),a.opacity], b:b.transform.scale, an:[near(an.to.x,200*sx),near(an.to.y,-100*sy),near(an.to.scale,f),near(an.keys[0].transform.x,100*sx)], same:JSON.stringify(same.clips)===JSON.stringify(p.clips), fit:f}}""")
         check("縦長への切り替え：位置は横・縦の倍率で、大きさは小さいほうの倍率で変わる（不透明度はそのまま）", r['a'] == [True, True, True, 0.5] and abs(r['b'] - 2 * r['fit']) < 1e-9, str(r))
         check("縦長への切り替え：アニメーションの終わり・途中の状態も同じように変わり、同じ大きさなら何も変わらない", all(r['an']) and r['same'], str(r))
+        # ── 縦長への切り替え：画面いっぱいの素材は新しい画面も埋める
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts');
+          const pr0=s.getState().project; const from={width:1920,height:1080};
+          const m=(id,src,scale,extra)=>({id,trackId:'V1',type:'media',start:0,duration:30,linkId:null,src,mediaKind:'image',hasAudio:false,inPoint:0,volume:1,transform:{x:0,y:0,scale,opacity:1},...(extra||{})});
+          const p={...pr0, clips:[m('bg','/m/bg.png',1), m('bg2','/m/bg2.png',1.2), m('sm','/m/sm.png',0.5), m('cr','/m/bg.png',1,{crop:{l:0.1,t:0,r:0,b:0}}), m('un','/m/unknown.png',1)]};
+          const dims={'/m/bg.png':[1920,1080], '/m/bg2.png':[1920,1080], '/m/sm.png':[400,300]};
+          const out=s.relayoutForSize(p,from,{width:1080,height:1920},dims);
+          const sc=out.clips.map(c=>+c.transform.scale.toFixed(4));
+          return {sc, cover:+(1920/1080).toFixed(4)}}""")
+        check("縦長への切り替え：画面いっぱいの素材は新しい画面も埋め（余裕も同じ割合）、小さい素材・切り抜き・大きさ不明は縮めて収める", r['sc'] == [r['cover'], round(1.2 * 1920 / 1080, 4), 0.2813, 0.5625, 0.5625], str(r))
+        # ── 声に合わせて弾ませる（口の開きからキーフレームを作る）
+        r = await q.evaluate(r"""async()=>{const T=await import('/src/talkBounce.ts'); const m=await import('/src/model.ts');
+          const c={transform:{x:10,y:100,scale:1,opacity:1}, duration:30};
+          const lv=[...Array(5).fill(0),...Array(8).fill(2),...Array(7).fill(0),...Array(6).fill(1),...Array(4).fill(0)];
+          const h=T.bakeTalkBounce(c,lv,'hop',3,1000);
+          const keys=h.look.anim.keys; const y=p=>m.animStateAt(h.transform,h.look,p).transform.y;
+          const z=T.bakeTalkBounce(c,lv,'zoom',20,1000);
+          const many=T.bakeTalkBounce({...c,duration:600},Array.from({length:600},(_,i)=>(i%4<2?2:0)),'hop',3,1000);
+          return {n:keys.length, at:keys.map(k=>+(k.at*30).toFixed(2)).slice(0,4), ys:[y(0.1),y(0.2),y(0.4),y(0.6),y(0.8),y(1)], to:h.look.anim.to.y, x:keys[0].transform.x,
+            zs:[+m.animStateAt(z.transform,z.look,0.2).transform.scale.toFixed(3), +m.animStateAt(z.transform,z.look,0.6).transform.scale.toFixed(3)],
+            none:T.bakeTalkBounce(c,Array(30).fill(0),'hop',3,1000), cap:many.look.anim.keys.length<=70}}""")
+        check("声に合わせた弾み：口が開く・閉じるところで 1 コマの動きになり、全開は全量・半開きは半分、閉じたら元の位置へ戻る", r['at'] == [4, 5, 12, 13] and r['n'] == 8 and r['ys'][1] == 70 and r['ys'][3] == 100 and r['ys'][4] == 85 and r['ys'][5] == 100 and r['to'] == 100 and r['x'] == 10, str(r))
+        check("声に合わせた弾み：大きくなる弾み方も同じ。声が無ければ作らず、切り替えが多くてもキーフレームは上限まで", r['zs'] == [1.2, 1.0] and r['none'] is None and r['cap'], str(r))
+        # ── 長いセリフの自動分割
+        r = await q.evaluate(r"""async()=>{const S=await import('/src/script.ts'); const s=await import('/src/store.ts');
+          const sp=(t,n)=>S.splitLongText(t,n);
+          const long='今日はとてもいい天気ですね。散歩に出かけませんか？「えっ！？本当に行くの？」と彼は言った。わかった、行こう。';
+          const a=sp(long,20);
+          const nocut=sp('前置きです。「えっ！？本当に？」終わり。',16);
+          const comma=sp('これは、とても長い一つの文で、句点がなく、読点だけで区切られています',16);
+          const hard=sp('あ'.repeat(50),20);
+          const small=sp('短い。',20);
+          // タイムライン：選んだセリフを分け、後ろのアイテムを増えた分だけずらす
+          const st=s.getState(); const ch=st.project.characters[0];
+          const ids=s.addLines([{characterId:ch.id,text:long},{characterId:ch.id,text:'あとのセリフ。'}]);
+          const startOf=id=>s.getState().project.clips.find(c=>c.id===id).start;
+          const afterBefore=startOf(ids[1]);
+          s.setState({selectedClipId:ids[0],selectedClipIds:[ids[0]]});
+          const r2=s.splitLongLinesForSelection(20);
+          const voices=s.getState().project.clips.filter(c=>c.type==='voice'&&c.characterId===ch.id);
+          const mine=voices.filter(c=>a.includes(c.text)).sort((x,y)=>x.start-y.start);
+          const ok=mine.every((c,i)=>i===0||c.start>=mine[i-1].start+mine[i-1].duration);
+          return {a, nocut, comma, hard:hard.map(x=>[...x].length), small, r2, texts:mine.map(c=>c.text), ok, shifted:startOf(ids[1])>afterBefore, joined:mine.map(c=>c.text).join('')===long}}""")
+        check("台本の分割：文の終わりで切り、足りなければ読点で、「」の中では切らず、長い文は決めた文字数で切る", r['a'] == ['今日はとてもいい天気ですね。', '散歩に出かけませんか？', '「えっ！？本当に行くの？」と彼は言った。', 'わかった、行こう。'] and r['nocut'] == ['前置きです。', '「えっ！？本当に？」終わり。'] and r['hard'] == [20, 20, 10] and r['small'] == ['短い。'], str(r))
+        check("台本の分割：読点でも詰めて切る。選んだセリフが連なって増え、順番どおり並び、後ろのセリフは増えた分だけ後ろへ", all(len(x) <= 16 for x in r['comma']) and r['r2'] == {'lines': 1, 'added': 3} and r['texts'] == r['a'] and r['ok'] and r['shifted'] and r['joined'], str(r))
+        # ── BGM・効果音の自動配置
+        r = await q.evaluate(r"""async()=>{const A=await import('/src/autoSound.ts'); const s=await import('/src/store.ts');
+          const v=(start,text)=>({type:'voice',start,duration:30,text});
+          const p={markers:[{id:'a',frame:90,name:''},{id:'b',frame:10,name:''},{id:'c',frame:90,name:''}],
+            clips:[v(0,'そうなの？'),v(40,'やった！」'),v(80,'ふつう。'),v(120,'「えっ！？」'),v(160,'ほんとう？ 」'),{type:'media',start:5,duration:9,text:'x？'}]};
+          const bgm=A.planBgm(10000,1000,30);
+          const e2e={bgm, short:A.planBgm(500,1000,30), empty:A.planBgm(10000,0,30),
+            q:A.planSe(p,'question'), x:A.planSe(p,'exclaim'), m:A.planSe(p,'marker'), k:A.planSe(p,'keyword','ふつ'), k0:A.planSe(p,'keyword','  ')};
+          // 置く：全部が空いている音のレイヤーへ。ふさがっていれば新しいレイヤー
+          const st=s.getState(); const n0=st.project.clips.length, t0=st.project.tracks.length;
+          const info={kind:'audio',hasAudio:true,durationMs:2000,width:null,height:null};
+          const ids=s.placeAudioItems('/x/se.mp3',info,[{start:100,duration:60},{start:300,duration:60}],{volume:0.5,fadeIn:15,fadeOut:15});
+          const cl=s.getState().project.clips.filter(c=>ids.includes(c.id));
+          const ids2=s.placeAudioItems('/x/se2.mp3',info,[{start:120,duration:60}],{volume:0.3});
+          const c2=s.getState().project.clips.find(c=>c.id===ids2[0]);
+          return {...e2e, placed:cl.length, same:new Set(cl.map(c=>c.trackId)).size===1, vol:cl[0].volume, fade:[cl[0].soundFadeIn,cl[0].soundFadeOut], kind:cl[0].mediaKind,
+            diff:c2.trackId!==cl[0].trackId, added:s.getState().project.clips.length-n0, none:s.placeAudioItems('/x/a.mp3',info,[],{volume:1}).length}}""")
+        check("BGM の配置：動画の頭から終わりまで素材をくり返し、最後は動画の終わりで切る（短すぎる素材・空の動画は置かない）", r['bgm'][0] == {'start': 0, 'duration': 300} and len(r['bgm']) == 4 and r['bgm'][3] == {'start': 900, 'duration': 100} and r['short'] == [] and r['empty'] == [], str(r))
+        check("効果音の配置：マーカー・「？」「！」で終わるセリフ（閉じ括弧・空白は無視。「！？」は最後の「？」）・決めた言葉のセリフの頭。重なりなし・時間順", r['q'] == [0, 120, 160] and r['x'] == [40] and r['m'] == [10, 90] and r['k'] == [80] and r['k0'] == [], str(r))
+        check("音の配置：音量・フェードを付けて 1 つのレイヤーに並べ、ふさがっていれば別のレイヤーへ。空なら何もしない", r['placed'] == 2 and r['same'] and r['vol'] == 0.5 and r['fade'] == [15, 15] and r['kind'] == 'audio' and r['diff'] and r['added'] == 3 and r['none'] == 0, str(r))
         # ── セリフの感情から表情を付ける
         r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
           const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
