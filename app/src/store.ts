@@ -11,6 +11,7 @@ import type {
   LineAudio,
   CaptionClip,
   Character,
+  AnimMid,
   Control,
   PortraitClip,
   Clip,
@@ -22,12 +23,14 @@ import type {
   Project,
   ShapeKind,
   Track,
+  Transform,
   VisualClip,
   VoiceClip,
   VoiceInfo,
   VoiceParams,
   VoicePreset,
 } from './model';
+import {autoExpression} from './emotion';
 import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
 import type {GroupItem} from './templates';
 import {LINES_PRESET, PARTICLE_PRESET} from './preview/anim';
@@ -391,6 +394,14 @@ export function setLayerSize(layerSize: 'small' | 'medium' | 'large') {
  * プロジェクトの映像の設定（解像度・背景色・fps）。fps はアイテムの長さがコマ数で決まっているので、
  * まだ何も置いていないときだけ変えられる（置いたあとに変えると長さが変わってしまうため）
  */
+/** 動画の大きさを変える。relayout なら、置いてあるものも新しい画面に合わせて並べ直す */
+export function resizeVideo(width: number, height: number, relayout: boolean) {
+  commit(p => {
+    const next = {...p, video: {...p.video, width, height}};
+    return relayout && (p.video.width !== width || p.video.height !== height) ? relayoutForSize(next, p.video, {width, height}) : next;
+  });
+}
+
 export function updateVideo(patch: Partial<Project['video']>) {
   const before = state.project?.video.fps;
   commit(p => {
@@ -400,6 +411,36 @@ export function updateVideo(patch: Partial<Project['video']>) {
   });
   const after = state.project?.video.fps;
   if (before && after && before !== after) setState(s => ({playhead: Math.round((s.playhead * after) / before)}));
+}
+
+/**
+ * 動画の大きさ（比率）を変えるとき、置いてあるものを新しい画面に収まるよう並べ直す。
+ * 位置は横・縦それぞれの倍率で、大きさは小さいほうの倍率（はみ出さないほう）で変える。立ち絵・字幕の「個別に設定」・アニメーションの途中の状態も同じ
+ */
+export function relayoutForSize(p: Project, from: {width: number; height: number}, to: {width: number; height: number}): Project {
+  const sx = to.width / from.width;
+  const sy = to.height / from.height;
+  const fit = Math.min(sx, sy);
+  const tr = (t: Transform): Transform => ({...t, x: t.x * sx, y: t.y * sy, scale: t.scale * fit});
+  const mid = (m: AnimMid): AnimMid => ({...m, transform: tr(m.transform)});
+  const look = <T extends {look?: Look}>(c: T): T => {
+    const an = c.look?.anim;
+    if (!c.look || !an) return c;
+    return {...c, look: {...c.look, anim: {...an, to: tr(an.to), mid: an.mid ? mid(an.mid) : an.mid, keys: an.keys?.map(mid)}}};
+  };
+  return {
+    ...p,
+    characters: p.characters.map(c => (c.portrait ? {...c, portrait: {...c.portrait, transform: tr(c.portrait.transform)}} : c)),
+    clips: p.clips.map(c0 => {
+      if (c0.type === 'voice') {
+        const sc = c0.subtitleCustom;
+        return sc ? {...c0, subtitleCustom: look({...sc, transform: tr(sc.transform)} as typeof sc)} : c0;
+      }
+      if (c0.type === 'caption') return c0;
+      const moved = {...c0, transform: tr(c0.transform)};
+      return 'look' in moved ? look(moved as typeof moved & {look?: Look}) : moved;
+    }) as Clip[],
+  };
 }
 
 /** fps を from → to に変えたとき、フレームで持っている値（位置・長さ・間・フェードなど）を同じ時間になるよう直す */
@@ -600,6 +641,24 @@ export function setExpressionForSelection(expression: string | null) {
   if (!ids.size) return 0;
   commit(p => ({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, expression} : c))}));
   return ids.size;
+}
+
+/**
+ * 選んでいるセリフ（まだ表情を決めていないもの）に、セリフの感情から表情を付ける。
+ * 声の感情の設定があればそれ、なければ言葉づかいで決め、その感情に合う名前の表情があるときだけ付ける
+ */
+export function autoExpressionsForSelection() {
+  const p = state.project;
+  if (!p) return {set: 0, skipped: 0};
+  const picked = editableSelection().filter((c): c is VoiceClip => c.type === 'voice' && !c.expression);
+  const chosen = new Map<string, string>();
+  for (const c of picked) {
+    const ch = p.characters.find(x => x.id === c.characterId);
+    const name = autoExpression(ch, c.text, c.paramsOverride ?? ch?.voice.params);
+    if (name) chosen.set(c.id, name);
+  }
+  if (chosen.size) commit(q => ({...q, clips: q.clips.map(c => (c.type === 'voice' && chosen.has(c.id) ? {...c, expression: chosen.get(c.id)!} : c))}));
+  return {set: chosen.size, skipped: picked.length - chosen.size};
 }
 
 /** 選んでいるセリフの「後ろの間」（余韻）をまとめて変える。長さはそのぶん伸び縮みし、後ろのセリフも付いていく */

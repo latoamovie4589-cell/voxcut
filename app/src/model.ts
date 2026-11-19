@@ -92,6 +92,8 @@ export interface Portrait {
   breath?: Breath | null;
   /** 声に合わせて弾む（口が開いている間、足もとを止めたまま縦に伸びる量。高さの %、0〜20。半開きは半分） */
   talk?: number | null;
+  /** 弾みを、伸びではなく上へ跳ねる動きにする */
+  talkHop?: boolean;
 }
 
 /** 声に合わせた弾みの縦の倍率（mouth は口の開き 0・1・2）。Rust の mouth_level_expr と同じ値 */
