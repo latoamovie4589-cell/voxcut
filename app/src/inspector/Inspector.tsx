@@ -927,8 +927,8 @@ export function PortraitSection({character}: {character: Character}) {
         width="100%"
       />
       <Switch
-        label="呼吸する"
-        description="しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みします（書き出しも同じ）"
+        label="待機モーション（呼吸・浮く・ゆれる）"
+        description="しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みします。上下に浮いたり左右にゆれたりも足せます（書き出しも同じ）"
         value={!!pt.breath}
         isDisabled={!pt.visible}
         onChange={on => setPt({breath: on ? {amount: 1.5, period: 3} : null})}
@@ -941,7 +941,7 @@ export function PortraitSection({character}: {character: Character}) {
           <Slider
             label="呼吸の大きさ"
             value={pt.breath.amount}
-            min={0.5}
+            min={0}
             max={6}
             step={0.1}
             valueDisplay="text"
@@ -958,6 +958,28 @@ export function PortraitSection({character}: {character: Character}) {
             valueDisplay="text"
             formatValue={v => `${v} 回`}
             onChange={(n: number) => setPt({breath: {...pt.breath!, period: 60 / n}})}
+          />
+          <Slider
+            label="ふわふわ浮く量"
+            description="上下にゆっくり浮き沈みします（0 で浮かない。速さは呼吸と同じ）"
+            value={pt.breath.float ?? 0}
+            min={0}
+            max={6}
+            step={0.1}
+            valueDisplay="text"
+            formatValue={v => `${v.toFixed(1)}%`}
+            onChange={(v: number) => setPt({breath: {...pt.breath!, float: v}})}
+          />
+          <Slider
+            label="左右にゆれる量"
+            description="左右にゆっくりゆれます（0 でゆれない。呼吸の 2 倍の長さで行って戻ります）"
+            value={pt.breath.sway ?? 0}
+            min={0}
+            max={6}
+            step={0.1}
+            valueDisplay="text"
+            formatValue={v => `${v.toFixed(1)}%`}
+            onChange={(v: number) => setPt({breath: {...pt.breath!, sway: v}})}
           />
         </>
       )}
