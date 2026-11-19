@@ -59,6 +59,11 @@ export interface SubtitleStyle {
   maxChars?: number;
   /** カラオケで塗っていく色（空か無しなら黄色） */
   karaokeColor?: string;
+  /** 文字の間隔（px。負なら詰める）。無しなら 0 */
+  letterSpacing?: number;
+  /** 外側の縁（内側の縁の外にもう 1 本）。帯を敷いたときは使わない */
+  outline2Color?: string;
+  outline2Width?: number;
 }
 
 export interface Transform {
@@ -85,6 +90,14 @@ export interface Portrait {
   psd?: PsdPortrait | null;
   /** 呼吸（しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みする） */
   breath?: Breath | null;
+  /** 声に合わせて弾む（口が開いている間、足もとを止めたまま縦に伸びる量。高さの %、0〜20。半開きは半分） */
+  talk?: number | null;
+}
+
+/** 声に合わせた弾みの縦の倍率（mouth は口の開き 0・1・2）。Rust の mouth_level_expr と同じ値 */
+export function talkScale(amount: number | null | undefined, mouth: number): number {
+  if (!amount || !(amount > 0)) return 1;
+  return 1 + (Math.min(20, Math.max(0, amount)) / 100) * (mouth >= 2 ? 1 : mouth === 1 ? 0.5 : 0);
 }
 
 /** 立ち絵の呼吸。amount は伸びる大きさ（高さの %）、period は 1 回の長さ（秒） */
@@ -706,7 +719,18 @@ export interface AnimMid {
   transform: Transform;
   rotation: number;
 }
-export type Ease = 'linear' | 'in' | 'out' | 'inOut';
+export type Ease = 'linear' | 'in' | 'out' | 'inOut' | 'smooth' | 'outBack' | 'inBack' | 'outBounce' | 'outElastic';
+export const EASE_LABEL: Record<Ease, string> = {
+  linear: '一定の速さ',
+  in: '加速（だんだん速く）',
+  out: '減速（だんだん遅く）',
+  inOut: '加減速',
+  smooth: 'なめらか',
+  outBack: '行き過ぎて戻る',
+  inBack: '少し引いてから動く',
+  outBounce: '弾んで止まる',
+  outElastic: 'ぷるぷる揺れて止まる',
+};
 
 // ───────────── キーフレーム（書き出しの render.rs の Anim::waypoints・tween3 と同じ） ─────────────
 
@@ -722,6 +746,12 @@ export function easeValue(e: Ease, p: number): number {
   if (e === 'in') return q * q;
   if (e === 'out') return 1 - (1 - q) * (1 - q);
   if (e === 'inOut') return q < 0.5 ? 2 * q * q : 1 - 2 * (1 - q) * (1 - q);
+  if (e === 'smooth') return q * q * q * (q * (6 * q - 15) + 10);
+  // 以下は 0〜1 を行き過ぎることがある（書き出しの render.rs の ease_expr と同じ式）
+  if (e === 'outBack') return 1 + 2.70158 * (q - 1) ** 3 + 1.70158 * (q - 1) ** 2;
+  if (e === 'inBack') return 2.70158 * q * q * q - 1.70158 * q * q;
+  if (e === 'outBounce') return bounceOut(q);
+  if (e === 'outElastic') return q < 0.0001 ? 0 : q > 0.9999 ? 1 : 2 ** (-10 * q) * Math.sin((q * 10 - 0.75) * 2.0943951) + 1;
   return q;
 }
 
@@ -743,7 +773,7 @@ export function animStateAt(t: Transform, look: Look | undefined, p: number): {t
       x: mix(a.transform.x, b.transform.x),
       y: mix(a.transform.y, b.transform.y),
       scale: mix(a.transform.scale, b.transform.scale),
-      opacity: mix(c01(a.transform.opacity), c01(b.transform.opacity)),
+      opacity: c01(mix(c01(a.transform.opacity), c01(b.transform.opacity))),
     },
     rotation: mix(a.rotation, b.rotation),
   };

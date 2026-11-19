@@ -11,6 +11,9 @@ const charEm = (c: string) => {
 };
 const isWord = (c: string) => /^[A-Za-z0-9]$/.test(c);
 
+/** 折り返しの計算に使う 1 文字の幅（文字の大きさ + 文字の間隔。間隔が負なら大きさのまま。書き出しの wrap_em と同じ） */
+export const wrapEm = (fontSize: number, letterSpacing = 0) => Math.round(fontSize + Math.max(0, letterSpacing));
+
 export function wrapSubtitle(text: string, fontSize: number, width: number, maxChars = 0): string {
   const budget = Math.max(1, maxChars > 0 ? maxChars : Math.floor(width / Math.max(1, fontSize)));
   const out: string[] = [];
