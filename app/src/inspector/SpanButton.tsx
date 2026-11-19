@@ -1,4 +1,4 @@
-// 「文字を飾る」ボタン。入力欄で選んだ文字だけ、色や大きさを変える（書き方は <c=#FF0000>赤</c>・<s=1.5>大</s>。字幕・テキストで使える）
+// 「文字を飾る」ボタン。入力欄で選んだ文字だけ、色や大きさを変える（書き方は <c=#FF0000>赤</c>・<s=1.5>大</s>・<b>太</b>。字幕・テキストで使える）
 import {DropdownMenu, DropdownMenuDivider, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
 import {Icon} from '@astryxdesign/core/Icon';
 import {Palette} from 'lucide-react';
@@ -21,7 +21,7 @@ const SIZES: [string, number][] = [
   ['小さく（0.7 倍）', 0.7],
 ];
 
-const TAG = /<c=[^>]*>|<\/c>|<s=[^>]*>|<\/s>/g;
+const TAG = /<c=[^>]*>|<\/c>|<s=[^>]*>|<\/s>|<b>|<\/b>/g;
 
 /** 選んだ範囲を open と close で囲む。範囲がなければ、囲みの中にカーソルを置く */
 export function wrapSpan(value: string, start: number, end: number, open: string, close: string): {text: string; caret: [number, number]} {
@@ -50,12 +50,13 @@ export function SpanButton({host, value, onChange}: {host: () => HTMLElement | n
   };
   return (
     <DropdownMenu
-      button={{label: '文字を飾る', size: 'sm', variant: 'secondary', icon: <Icon icon={Palette} />, tooltip: '選んだ文字だけ、色や大きさを変えます（<c=#FF0000>赤</c>・<s=1.5>大</s> の書き方で入ります）'}}
+      button={{label: '文字を飾る', size: 'sm', variant: 'secondary', icon: <Icon icon={Palette} />, tooltip: '選んだ文字だけ、色・大きさ・太字を変えます（<c=#FF0000>赤</c>・<s=1.5>大</s>・<b>太</b> の書き方で入ります）'}}
       menuWidth={220}>
       {COLORS.map(([label, hex]) => (
         <DropdownMenuItem key={hex} label={`色：${label}`} onClick={() => apply((a, b) => wrapSpan(value, a, b, `<c=${hex}>`, '</c>'))} />
       ))}
       <DropdownMenuDivider />
+      <DropdownMenuItem label="太字" onClick={() => apply((a, b) => wrapSpan(value, a, b, '<b>', '</b>'))} />
       {SIZES.map(([label, k]) => (
         <DropdownMenuItem key={k} label={label} onClick={() => apply((a, b) => wrapSpan(value, a, b, `<s=${k}>`, '</s>'))} />
       ))}
