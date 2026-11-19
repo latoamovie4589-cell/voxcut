@@ -1275,6 +1275,51 @@ async def main():
           return {base:base[0], wide:wide[0], tight:tight[0], o1:out1[1], o2:out2[1], wrapEm:[W.wrapEm(56,0), W.wrapEm(56,20), W.wrapEm(56,-10)], lines:[W.wrapSubtitle(line,W.wrapEm(56,0),1000).split('\n').length, W.wrapSubtitle(line,W.wrapEm(56,56),1000).split('\n').length]}}""")
         check("字幕の字間：広げると字幕が横に伸び、詰めると縮む（折り返しの幅は広げた分だけ増える）", r['wide'] > r['base'] + 60 and r['tight'] < r['base'] - 15 and r['wrapEm'] == [56, 76, 56] and r['lines'][1] > r['lines'][0], str(r))
         check("字幕の外側の縁：内側の縁の外にもう 1 本付くと、描かれる面積が増える", r['o2'] > r['o1'] * 1.1, str(r))
+        # ── 縦長への切り替え：置いてあるものを新しい画面に合わせて並べ直す
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts');
+          const pr0=s.getState().project; const from={width:pr0.video.width,height:pr0.video.height};
+          const base={trackId:'V1', type:'text', start:0, duration:30, linkId:null, text:'x', fontFamily:'sans-serif', fontSize:60, color:'#fff', outlineColor:'#000', outlineWidth:0, bold:false, italic:false, align:'center'};
+          const mk=(id,t,look)=>({...base,id,transform:t,...(look?{look}:{})});
+          const p={...pr0, clips:[mk('rl1',{x:-600,y:300,scale:1,opacity:0.5}), mk('rl2',{x:0,y:0,scale:2,opacity:1},{rotation:0,fadeIn:0,fadeOut:0,anim:{to:{x:200,y:-100,scale:1,opacity:1},rotation:0,ease:'linear',keys:[{at:0.5,transform:{x:100,y:100,scale:1,opacity:1},rotation:0}]}})]};
+          const out=s.relayoutForSize(p,from,{width:1080,height:1920});
+          const a=out.clips[0].transform, b=out.clips[1], an=b.look.anim;
+          const sx=1080/from.width, sy=1920/from.height, f=Math.min(sx,sy);
+          const near=(u,v)=>Math.abs(u-v)<1e-6;
+          // 同じ大きさなら何も変わらない
+          const same=s.relayoutForSize(p,from,from);
+          return {a:[near(a.x,-600*sx),near(a.y,300*sy),near(a.scale,f),a.opacity], b:b.transform.scale, an:[near(an.to.x,200*sx),near(an.to.y,-100*sy),near(an.to.scale,f),near(an.keys[0].transform.x,100*sx)], same:JSON.stringify(same.clips)===JSON.stringify(p.clips), fit:f}}""")
+        check("縦長への切り替え：位置は横・縦の倍率で、大きさは小さいほうの倍率で変わる（不透明度はそのまま）", r['a'] == [True, True, True, 0.5] and abs(r['b'] - 2 * r['fit']) < 1e-9, str(r))
+        check("縦長への切り替え：アニメーションの終わり・途中の状態も同じように変わり、同じ大きさなら何も変わらない", all(r['an']) and r['same'], str(r))
+        # ── セリフの感情から表情を付ける
+        r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
+          const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
+          const ch={portrait:pt};
+          const d=(t,e)=>E.detectEmotion(t,e?{speed:1,pitch:0,volume:1,intonation:1,emotions:e}:null);
+          return {t:[d('やった！ありがとう'),d('いい加減にしてよ'),d('ごめん…つらい'),d('えっ！？まさか'),d('こんにちは')],
+            p:[d('こんにちは',{happy:0.3}),d('やった',{angry:0.8,happy:0.2}),d('こんにちは',{哀しみ:1}),d('こんにちは',{普通:1})],
+            n:['happy','angry','sad','surprised'].map(e=>E.expressionNameFor(pt,e)), none:E.expressionNameFor({expressions:[{name:'通常2'}]},'happy'),
+            a:[E.autoExpression(ch,'やった！',null), E.autoExpression(ch,'こんにちは',null), E.autoExpression({portrait:null},'やった！',null)]}}""")
+        check("感情：セリフの言葉づかいから、喜び・怒り・悲しみ・驚きを決める（決まらなければ無し）", r['t'] == ['happy', 'angry', 'sad', 'surprised', None], str(r))
+        check("感情：声の感情の設定があればそれを先に使う（強いものを選び、普通は感情にしない）", r['p'] == ['happy', 'angry', 'sad', None], str(r))
+        check("感情：表情の名前（笑・怒・悲・驚…）から合うものを選び、合うものが無ければ付けない", r['n'] == ['にっこり', 'ぷんぷん（怒）', 'しょんぼり', 'びっくり'] and r['none'] is None and r['a'] == ['にっこり', None, None], str(r))
+        # ── スタイルの保存と使い回し
+        r = await q.evaluate(r"""async()=>{localStorage.removeItem('voxcut.styles.v1'); const S=await import('/src/savedStyles.ts'); const ts=await import('/src/textStyles.ts'); const s=await import('/src/store.ts');
+          const ch=s.getState().project.characters[0]; const st0=ch.subtitle;
+          S.saveTextStyle('赤文字', {...ts.TEXT_STYLES[0].look, color:'#FF0000'});
+          S.saveTextStyle('赤文字', {...ts.TEXT_STYLES[0].look, color:'#EE0000'});
+          S.saveTextStyle('青文字', {...ts.TEXT_STYLES[0].look, color:'#0000FF'});
+          S.saveSubtitleStyle('目立つ', {...st0, fontSize:99, color:'#ABCDEF', position:'top', marginV:5, maxChars:7});
+          const raw=JSON.parse(localStorage.getItem('voxcut.styles.v1'));
+          const sub=raw.subtitle[0].style;
+          const applied=S.applySubtitleStyle({...st0, position:'bottom', marginV:77, maxChars:3}, sub);
+          const names=raw.text.map(x=>x.name+':'+x.look.color);
+          S.removeTextStyle(raw.text[0].id);
+          const after=JSON.parse(localStorage.getItem('voxcut.styles.v1'));
+          const empty=(S.saveTextStyle('   ', ts.TEXT_STYLES[0].look), JSON.parse(localStorage.getItem('voxcut.styles.v1')).text.map(x=>x.name));
+          localStorage.removeItem('voxcut.styles.v1');
+          return {names, applied:[applied.fontSize,applied.color,applied.position,applied.marginV,applied.maxChars], left:after.text.map(x=>x.name), empty}}""")
+        check("スタイル保存：同じ名前は置き換わり、消すと無くなり、名前が空なら「スタイル」になる（この PC に覚える）", r['names'] == ['赤文字:#EE0000', '青文字:#0000FF'] or r['names'] == ['青文字:#0000FF', '赤文字:#EE0000'], str(r))
+        check("スタイル保存：字幕のスタイルは見た目をまるごと入れ替え、位置・下の余白・1 行の文字数は今のまま", r['applied'] == [99, '#ABCDEF', 'bottom', 77, 3] and r['left'] == ['青文字'] and r['empty'] == ['青文字', 'スタイル'], str(r))
         # ── 動きの緩急（Rust の ease_expr と同じ式）
         r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts');
           const ev=(e,p)=>+m.easeValue(e,p).toFixed(4);
