@@ -242,7 +242,9 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   if (ruby) text = keepRubyWords(segs, text);
   const rows = ruby ? rubyRows(segs, text) : null;
   const family = `${st?.fontFamily ? `"${st.fontFamily}",` : ''} -apple-system, "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif`;
-  const fontAt = (px: number) => `600 ${px}px ${family}`;
+  // 一部を太字にした字幕は、ほかの文字をふつうの太さにして違いが見えるようにする（書き出しの ASS も、飾りのない文字は \b0）
+  const anyBold = !ruby && mk.styles.some(x => x?.bold);
+  const fontAt = (px: number, bold = false) => `${bold ? 800 : anyBold ? 400 : 600} ${px}px ${family}`;
   ctx.font = fontAt(size);
   ctx.lineJoin = 'round';
   const lines = text.split('\n');
@@ -252,6 +254,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   // 一部の文字の色・大きさ（書き出しの ASS と同じく、ルビのある字幕では大きさを使わない）
   const styled = mk.styles.some(Boolean);
   const sizeAt = (gi: number) => (ruby ? 1 : (mk.styles[gi]?.size ?? 1));
+  const boldAt = (gi: number) => !ruby && !!mk.styles[gi]?.bold;
   const lineBase = lines.map((_, i) => lines.slice(0, i).reduce((a, l) => a + [...l].length, 0));
   // 大きさを変えた文字がある行は、その分だけ上へ広げる
   const grow = lines.map((l, i) => (styled && !ruby ? (Math.max(1, ...[...l].map((_, k) => sizeAt(lineBase[i] + k))) - 1) * size : 0));
@@ -290,10 +293,10 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const total = [...text.replace(/\n/g, '')].length;
   const count = anim === 'typewriter' ? typewriterCount(total, duration, f) : Infinity;
   // 文字を 1 かたまり描く（帯・縁・影も）。px は文字の大きさ、sx は横の縮め
-  const run = (s: string, x: number, y: number, px: number, sx = 1, textColor?: string) => {
+  const run = (s: string, x: number, y: number, px: number, sx = 1, textColor?: string, bold = false) => {
     if (!s) return;
     ctx.save();
-    ctx.font = fontAt(px);
+    ctx.font = fontAt(px, bold);
     ctx.translate(x, y);
     ctx.scale(sx, 1);
     const k = px / size;
@@ -341,9 +344,9 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     let cx = x;
     for (let j = 0; j < chars.length; j++) {
       const px = size * sizeAt(base + j);
-      ctx.font = fontAt(px);
+      ctx.font = fontAt(px, boldAt(base + j));
       const adv = ctx.measureText(chars[j]).width;
-      if (j < nShown) run(chars[j], cx, y, px, 1, color ?? mk.styles[base + j]?.color);
+      if (j < nShown) run(chars[j], cx, y, px, 1, color ?? mk.styles[base + j]?.color, boldAt(base + j));
       cx += adv;
     }
     ctx.font = fontAt(size);
@@ -354,7 +357,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
       return ctx.measureText(line).width;
     }
     const w = [...line].reduce((a, ch, j) => {
-      ctx.font = fontAt(size * sizeAt(base + j));
+      ctx.font = fontAt(size * sizeAt(base + j), boldAt(base + j));
       return a + ctx.measureText(ch).width;
     }, 0);
     ctx.font = fontAt(size);
@@ -376,7 +379,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     if (kara) {
       // この行で塗る幅（文字ごとの大きさも数える）
       const adv = (j: number) => {
-        ctx.font = fontAt(size * sizeAt(base + j));
+        ctx.font = fontAt(size * sizeAt(base + j), boldAt(base + j));
         return ctx.measureText(chars[j]).width;
       };
       let fillW = 0;

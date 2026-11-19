@@ -944,7 +944,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     m.letterSpacing = `${ls}px`;
     const lineH = Math.max(1, Math.round(c.fontSize * (ex.lineHeight ?? 1.3)));
     const charStep = c.fontSize + ls; // 縦書きの 1 文字の高さ
-    const fontOf = (k: number) => `${c.italic ? 'italic ' : ''}${c.bold ? 'bold ' : ''}${c.fontSize * k}px "${c.fontFamily}", "Yu Gothic UI", sans-serif`;
+    const fontOf = (k: number, bold = c.bold) => `${c.italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${c.fontSize * k}px "${c.fontFamily}", "Yu Gothic UI", sans-serif`;
     // 折り返し（文字単位。縦書きでは列の高さ）
     const wrap = ex.wrapWidth ?? 0;
     const lines: string[] = [];
@@ -956,6 +956,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const styled = mk.styles.some(Boolean);
     const spanAt = (gi: number): Span | undefined => mk.styles[gi];
     const sizeAt = (gi: number) => (ruby || ex.vertical ? 1 : (spanAt(gi)?.size ?? 1));
+    const boldAt = (gi: number) => !!c.bold || (!ruby && !!spanAt(gi)?.bold);
     for (const para of (rubyBase(c.text || ' ') || ' ').split('\n')) {
       if (wrap <= 0) {
         lines.push(para);
@@ -984,7 +985,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const advs: number[][] = sized
       ? lines.map((l, i) =>
           Array.from(l).map((ch, k) => {
-            m.font = fontOf(sizeAt(lineBase[i] + k));
+            m.font = fontOf(sizeAt(lineBase[i] + k), boldAt(lineBase[i] + k));
             return m.measureText(ch).width;
           }),
         )
@@ -1033,7 +1034,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     let left = ex.visible ?? Infinity;
     // k はルビの縮め（文字の大きさの比）、sx は横の縮め
     // ci は何文字目か（1 文字ずつの登場に使う）
-    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number; ci?: number; sz?: number; col?: string}[] = [];
+    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number; ci?: number; sz?: number; col?: string; bd?: boolean}[] = [];
     let ci0 = 0;
     const shownAll = ex.visible ?? Infinity;
     lines.forEach((l, i) => {
@@ -1051,7 +1052,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const colX = edge + tw - off[i] - rh - lineH / 2;
         const colH = chars.length * charStep;
         const y0 = edge + (c.align === 'left' ? 0 : c.align === 'right' ? th - colH : (th - colH) / 2);
-        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k]), ci: base + k, col: spanAt(base + k)?.color});
+        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k]), ci: base + k, col: spanAt(base + k)?.color, bd: boldAt(base + k)});
         for (const pc of pieces) {
           if (!pc.ruby || pc.at >= shownAll) continue;
           const rc = Array.from(pc.ruby);
@@ -1066,7 +1067,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const py = edge + off[i] + rh + lineHs[i] / 2;
         // 1 文字ずつ出すときと、一部の文字を飾るときは文字ごとに置く（位置は行をまとめて描いたときと同じ）
         const pxOf = (k: number) => (sized ? advs[i].slice(0, k).reduce((a, b) => a + b, 0) : m.measureText(chars.slice(0, k).join('')).width);
-        if (ca || styled) for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: lx + pxOf(k), py, rot: false, ci: base + k, sz: sizeAt(base + k), col: spanAt(base + k)?.color});
+        if (ca || styled) for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: lx + pxOf(k), py, rot: false, ci: base + k, sz: sizeAt(base + k), col: spanAt(base + k)?.color, bd: boldAt(base + k)});
         else glyphs.push({s: chars.slice(0, n).join(''), px: lx, py, rot: false});
         let x0 = lx;
         for (const pc of pieces) {
@@ -1087,7 +1088,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const pr = ca && g.ci !== undefined ? charProgress(ca, g.ci, ex.charFrame ?? 0) : 1;
         if (pr <= 0 && !kara) continue;
         x.save();
-        if (g.sz && g.sz !== 1) x.font = fontOf(g.sz);
+        if ((g.sz && g.sz !== 1) || (g.bd !== undefined && g.bd !== !!c.bold)) x.font = fontOf(g.sz ?? 1, g.bd);
         // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
         x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
         if (ca && pr < 1 && !kara) {
