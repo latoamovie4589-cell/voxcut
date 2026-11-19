@@ -121,12 +121,12 @@ fn style_line(name: &str, s: &SubtitleStyle) -> String {
     )
 }
 
-/// 外側の縁を描く下の層のスタイル名（外側の縁を付けたスタイルだけ）
 /// 折り返しの計算に使う 1 文字の幅（文字の大きさ + 文字の間隔。間隔が負なら大きさのまま）。画面の subtitleWrap と同じ
 pub fn wrap_em(s: &SubtitleStyle) -> u32 {
     (s.font_size as f64 + s.letter_spacing.max(0.0)).round() as u32
 }
 
+/// 外側の縁を描く下の層のスタイル名（外側の縁を付けたスタイルだけ）
 fn outer_name(name: &str) -> String {
     format!("{name}~o")
 }

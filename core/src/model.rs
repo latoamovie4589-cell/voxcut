@@ -286,6 +286,9 @@ pub struct Portrait {
     /// 声に合わせて弾む（口が開いている間、足もとを止めたまま縦に伸びる量。高さの %、0〜20）。口の開きに比例（半開き = 半分）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub talk: Option<f64>,
+    /// 声に合わせた弾みを、伸びではなく上へ跳ねる動きにする（跳ねる高さは同じ量）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub talk_hop: bool,
 }
 
 /// 立ち絵の呼吸。画面側の model.ts の breathScale と同じ式
@@ -2799,6 +2802,7 @@ mod tests {
             psd: None,
             breath: None,
             talk: None,
+            talk_hop: false,
         };
         assert_eq!(pt.layers(2, 2, 0), vec!["b.png", "e2.png", "m0.png"]);
         assert_eq!(pt.layers(1, 0, 0), vec!["b.png", "e0.png", "m0.png"]);
