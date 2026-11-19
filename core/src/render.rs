@@ -3470,6 +3470,25 @@ mod tests {
         }
     }
 
+    /// 声に合わせた動き（画面側が作るキーフレーム。上限の 70 個）が、書き出しでも式の上限に引っかからず動く
+    #[test]
+    fn many_keyframes_from_talk_sync_export_and_move() {
+        use crate::model::AnimMid;
+        if !has_ffmpeg() {
+            return;
+        }
+        let keys: Vec<AnimMid> = (0..70).map(|i| AnimMid { at: (i as f64 + 1.0) / 72.0, transform: Transform { y: if i % 2 == 0 { 10.0 } else { 0.0 }, ..Default::default() }, rotation: 0.0 }).collect();
+        let look = Look { anim: Some(Anim { to: Transform::default(), rotation: 0.0, ease: Ease::Linear, mid: None, keys, rot3d: None }), ..Default::default() };
+        let top = |at: f64| {
+            let g = shot_look("color=c=white:s=4x4", look.clone(), Transform::default(), at);
+            (0..36).find(|&y| g[y * 64 + 32] > 200).unwrap()
+        };
+        // 0.5 秒おきの 8 点：位置が 0 と 10 の間で変わっている
+        let tops: Vec<usize> = (0..8).map(|i| top(0.1 + 0.043 * i as f64)).collect();
+        let (lo, hi) = (*tops.iter().min().unwrap(), *tops.iter().max().unwrap());
+        assert!(hi > lo + 3, "{tops:?}");
+    }
+
     /// 残像：前の時点の位置に、だんだん薄く重なる
     #[test]
     fn trail_behind() {
