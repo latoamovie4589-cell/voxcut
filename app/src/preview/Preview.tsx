@@ -586,10 +586,15 @@ export function Preview() {
       if (!psdFrame) return;
       const tr = tf(key, item.transform);
       // 呼吸：足もと（伸ばす前の下端）を止めて、縦だけ伸ばす（書き出しの overlay_portrait と同じ）
-      const k = breathScale(pt.breath, playhead / fps) * talkScale(pt.talk, mouth);
-      if (k !== 1) {
+      const kt = talkScale(pt.talk, mouth);
+      const hop = !!pt.talkHop;
+      const k = breathScale(pt.breath, playhead / fps) * (hop ? 1 : kt);
+      const moved = k !== 1 || (hop && kt !== 1);
+      if (moved) {
         const r0 = placeRect(tr, psdFrame.size, w, h, scale);
         ctx.save();
+        // 跳ねる：形は変えず、口の開きに合わせて上へ（画像の高さ × 量。書き出しの hop_expr と同じ）
+        if (hop) ctx.translate(0, -(kt - 1) * r0.h);
         ctx.translate(0, r0.y + r0.h);
         ctx.scale(1, k);
         ctx.translate(0, -(r0.y + r0.h));
@@ -607,7 +612,7 @@ export function Preview() {
             scale,
           )
         : place(ctx, psdFrame.image, tr, w, h, scale, psdFrame.size);
-      if (k !== 1) ctx.restore();
+      if (moved) ctx.restore();
       if (!locked.has(item.trackId)) targets.push({key, kind: 'media', id: item.id, rect, transform: tf(key, item.transform)});
     };
 
