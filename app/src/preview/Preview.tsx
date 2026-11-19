@@ -5,7 +5,7 @@ import {getDock, showPanel} from '../dock/layout';
 import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
-import {wrapSubtitle} from '../subtitleWrap';
+import {wrapEm, wrapSubtitle} from '../subtitleWrap';
 import {hasRuby, keepRubyWords, parseMarkup, rubyBase, rubyRows} from '../ruby';
 import type {Character, Clip, Effect, MediaClip, PortraitClip, Project, Transform, VisualClip} from '../model';
 import {
@@ -34,6 +34,7 @@ import {
   sceneOf,
   soundFadeAt,
   breathScale,
+  talkScale,
 } from '../model';
 import {distort, drawRegion, drawVisual, itemSource, vizImage, onLutReady, itemImage, subtitleImage, visibleChars, visualAt, sourceView, drawFillBlur} from './visual';
 import {psdPreviewFrame} from '../psd/portrait';
@@ -237,7 +238,7 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const mk = parseMarkup(text);
   const segs = mk.segs;
   const ruby = hasRuby(segs);
-  text = wrapSubtitle(rubyBase(text), fs, Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
+  text = wrapSubtitle(rubyBase(text), wrapEm(fs, st?.letterSpacing), Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
   const plain = text;
   if (ruby) text = keepRubyWords(segs, text);
   const rows = ruby ? rubyRows(segs, text) : null;
@@ -246,6 +247,8 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const anyBold = !ruby && mk.styles.some(x => x?.bold);
   const fontAt = (px: number, bold = false) => `${bold ? 800 : anyBold ? 400 : 600} ${px}px ${family}`;
   ctx.font = fontAt(size);
+  // 文字の間隔（書き出しの ASS の Spacing と同じ px。大きさを変えた文字でも同じ）
+  (ctx as CanvasRenderingContext2D & {letterSpacing: string}).letterSpacing = `${(st?.letterSpacing ?? 0) * scale}px`;
   ctx.lineJoin = 'round';
   const lines = text.split('\n');
   const lh = size * 1.25;
@@ -311,10 +314,18 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
         if (!color) ctx.globalAlpha *= Math.max(0, Math.min(1, st?.boxOpacity ?? 1));
         ctx.fillRect(-pad + dx, top - pad + dy, ctx.measureText(s).width + pad * 2, px * (pos === 'middle' ? 1 : 1.12) + pad * 2);
         ctx.restore();
-      } else if (st?.outlineWidth) {
-        ctx.lineWidth = st.outlineWidth * 2 * scale * k;
-        ctx.strokeStyle = color ?? st.outlineColor;
-        ctx.strokeText(s, dx, dy);
+      } else if (st?.outlineWidth || (st?.outline2Width && st.outline2Color)) {
+        // 外側の縁：内側の縁より外に、外側の縁の分だけ太い縁を先に敷く（書き出しは下の層に重ねる）
+        if (st.outline2Width && st.outline2Color) {
+          ctx.lineWidth = ((st.outlineWidth ?? 0) + st.outline2Width) * 2 * scale * k;
+          ctx.strokeStyle = color ?? st.outline2Color;
+          ctx.strokeText(s, dx, dy);
+        }
+        if (st.outlineWidth) {
+          ctx.lineWidth = st.outlineWidth * 2 * scale * k;
+          ctx.strokeStyle = color ?? st.outlineColor;
+          ctx.strokeText(s, dx, dy);
+        }
       }
       ctx.fillStyle = color ?? textColor ?? st?.color ?? '#fff';
       ctx.fillText(s, dx, dy);
@@ -575,7 +586,7 @@ export function Preview() {
       if (!psdFrame) return;
       const tr = tf(key, item.transform);
       // 呼吸：足もと（伸ばす前の下端）を止めて、縦だけ伸ばす（書き出しの overlay_portrait と同じ）
-      const k = breathScale(pt.breath, playhead / fps);
+      const k = breathScale(pt.breath, playhead / fps) * talkScale(pt.talk, mouth);
       if (k !== 1) {
         const r0 = placeRect(tr, psdFrame.size, w, h, scale);
         ctx.save();
