@@ -63,6 +63,25 @@ const BACKDROP: Record<Backdrop, string> = {fill: '背景の色で塗る（MP4�
 const QUALITY = {high: {crf: 18, label: '高画質'}, normal: {crf: 20, label: '標準'}, light: {crf: 26, label: '軽量'}} as const;
 type Quality = keyof typeof QUALITY;
 
+/** 用途から選ぶ：書き出すもの・大きさの上限・画質・音の大きさをまとめて決める */
+interface ExportPreset {
+  id: string;
+  label: string;
+  description: string;
+  what: ExportKind;
+  /** 出力の高さの上限（プロジェクトがこれより小さければそのまま） */
+  maxHeight: number;
+  quality: Quality;
+  loudness: string;
+}
+const PRESETS: ExportPreset[] = [
+  {id: 'youtube', label: 'YouTube などの動画サイト向け', description: '1080 まで・標準の画質・音の大きさを -14 LUFS にそろえます', what: 'video', maxHeight: 1080, quality: 'normal', loudness: '-14'},
+  {id: 'sns', label: 'スマホ・SNS 向け（軽め）', description: '720 まで・軽量・音の大きさを -16 LUFS にそろえます。ファイルが小さくなります', what: 'video', maxHeight: 720, quality: 'light', loudness: '-16'},
+  {id: 'master', label: '保存・編集用（高画質）', description: 'プロジェクトの大きさのまま・高画質。音はそのままです', what: 'video', maxHeight: 99999, quality: 'high', loudness: 'off'},
+  {id: 'gif', label: 'GIF（軽め）', description: '480 まで。短い範囲を選ぶと軽くなります', what: 'gif', maxHeight: 480, quality: 'normal', loudness: 'off'},
+  {id: 'audio', label: '音声だけ（動画サイト向けの音量）', description: 'WAV で書き出し、音の大きさを -14 LUFS にそろえます', what: 'audio', maxHeight: 99999, quality: 'normal', loudness: '-14'},
+];
+
 const STAGE: Record<ExportProgress['stage'], string> = {
   synth: 'まだの音声を合成しています',
   portrait: '立ち絵を準備しています',
@@ -175,6 +194,24 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const v = project.video;
   const pending = project.clips.filter(c => c.type === 'voice' && !c.audio && c.text.trim()).length;
   const heights = [v.height, 1080, 720, 480, ...(what === 'gif' ? [360, 240] : [])].filter((h, i, a) => h <= v.height && a.indexOf(h) === i);
+  // 用途の「大きさの上限」を、この種類で選べる高さに直す（プロジェクトのままなら 'same'）
+  const heightFor = (kind: ExportKind, max: number) => {
+    const list = [v.height, 1080, 720, 480, ...(kind === 'gif' ? [360, 240] : [])].filter(h => h <= v.height);
+    const h = Math.max(...list.filter(x => x <= max), Math.min(...list));
+    return h === v.height ? 'same' : String(h);
+  };
+  const applyPreset = (id: string) => {
+    const pr = PRESETS.find(x => x.id === id);
+    if (!pr) return;
+    setWhat(pr.what);
+    setHeight(heightFor(pr.what, pr.maxHeight));
+    setQuality(pr.quality);
+    setBackdrop('fill');
+    setLoudnessState(pr.loudness);
+  };
+  // いまの設定がどの用途と同じか（どれとも違えば「自分で選ぶ」）
+  const presetNow =
+    PRESETS.find(pr => pr.what === what && heightFor(pr.what, pr.maxHeight) === height && backdrop === 'fill' && (what === 'gif' || what === 'audio' || pr.quality === quality) && (what === 'gif' || pr.loudness === loudness))?.id ?? 'custom';
   const sizeLabel = (h: number) => `${Math.round((v.width * h) / v.height / 2) * 2}×${h}`;
   const running = phase.kind === 'running' || phase.kind === 'batch';
 
@@ -294,6 +331,14 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                   ))}
                 </SegmentedControl>
               </VStack>
+              <Selector
+                label="用途から選ぶ"
+                description={PRESETS.find(x => x.id === presetNow)?.description ?? '下の設定を自分で選んでいます'}
+                value={presetNow}
+                options={[...PRESETS.map(x => ({value: x.id, label: x.label})), {value: 'custom', label: '自分で選ぶ'}]}
+                onChange={id => applyPreset(id)}
+                width="100%"
+              />
               {what !== 'subtitle' && (
                 <VStack gap={2}>
                   <Text type="label">書き出す範囲</Text>
