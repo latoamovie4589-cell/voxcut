@@ -2,11 +2,13 @@
 import {useState} from 'react';
 import {Button} from '@astryxdesign/core/Button';
 import {HStack} from '@astryxdesign/core/Layout';
+import {Slider} from '@astryxdesign/core/Slider';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {api} from '../ipc';
 import {timelineFrameOf, type MediaAudioFx, type MediaClip, type VoiceFx} from '../model';
+import {AudioFilterHint, AudioFilterMenu, AudioFilterRows, ReverbFields} from './AudioFilterFields';
 import {commit, getState, updateClip, useStore} from '../store';
 
 const VOICES: {value: VoiceFx | 'none'; label: string}[] = [
@@ -28,7 +30,7 @@ export function SoundFxFields({clip, notify}: {clip: MediaClip; notify: (m: stri
   const fx: MediaAudioFx = clip.audioFx ?? {};
   const set = (p: Partial<MediaAudioFx>) => {
     const next = {...fx, ...p};
-    const plain = !next.denoise && !next.voice && next.gainDb === undefined;
+    const plain = !next.denoise && !next.voice && next.gainDb === undefined && !next.pitch && !(next.filters ?? []).length && !next.reverb;
     updateClip(clip.id, {audioFx: plain ? undefined : next});
   };
   return (
@@ -63,6 +65,23 @@ export function SoundFxFields({clip, notify}: {clip: MediaClip; notify: (m: stri
         width="100%"
       />
       <Selector label="声を変える" value={fx.voice ?? 'none'} options={VOICES} onChange={(v: string) => set({voice: v === 'none' ? undefined : (v as VoiceFx)})} width="100%" />
+      <Slider
+        label="音の高さ（長さは変わりません）"
+        value={fx.pitch ?? 0}
+        min={-12}
+        max={12}
+        step={1}
+        valueDisplay="text"
+        formatValue={v => (v === 0 ? 'そのまま' : `${v > 0 ? '+' : ''}${v} 半音`)}
+        onChange={(pitch: number) => set({pitch: pitch === 0 ? undefined : pitch})}
+      />
+      <ReverbFields reverb={fx.reverb} onChange={reverb => set({reverb: reverb ?? undefined})} />
+      <HStack hAlign="between" vAlign="center">
+        <Text type="label">音声エフェクト</Text>
+        <AudioFilterMenu filters={fx.filters ?? []} onChange={filters => set({filters: filters.length ? filters : undefined})} />
+      </HStack>
+      <AudioFilterHint filters={fx.filters ?? []} />
+      <AudioFilterRows filters={fx.filters ?? []} onChange={filters => set({filters: filters.length ? filters : undefined})} />
       {clip.mediaKind === 'audio' && (
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button

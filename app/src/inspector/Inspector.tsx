@@ -8,11 +8,13 @@ import {Button} from '@astryxdesign/core/Button';
 import {Divider} from '@astryxdesign/core/Divider';
 import {Icon} from '@astryxdesign/core/Icon';
 import {RubyButton} from './RubyButton';
+import {SpanButton} from './SpanButton';
 import {SpeedSection} from './SpeedSection';
 import {CutoutSection} from './CutoutSection';
 import {AutoCaptionSection, AutoReframeSection, RemoveBackgroundSection} from './AiSection';
 import {SilenceCutSection} from './SilenceCutSection';
 import {SoundFxFields} from './SoundFxFields';
+import {AudioFilterHint, AudioFilterMenu, AudioFilterRows, ReverbFields} from './AudioFilterFields';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
@@ -22,10 +24,9 @@ import {Slider} from '@astryxdesign/core/Slider';
 import {Heading, Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, Volume2, X} from 'lucide-react';
-import {DropdownMenu, DropdownMenuItem} from '@astryxdesign/core/DropdownMenu';
+import {AudioLines, Copy, Link2, RotateCcw, MousePointerClick, Plus, Scissors, Settings, Trash2, Unlink, UserPen, FileImage, Volume2} from 'lucide-react';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
-import type {AudioFilter, LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
+import type {LineAudio, CaptionClip, LinePortrait, PortraitClip, Project, SubtitleCustom, SubtitleOverride, Character, EngineId, MediaClip, Portrait, VoiceClip} from '../model';
 import {
   BASE_EXPRESSION,
   ENGINE_LABEL,
@@ -127,6 +128,14 @@ function SerifFields({clip, notify}: {clip: VoiceClip; notify: Notify}) {
       <HStack gap={2} hAlign="start">
         <Button label="発音に反映" size="sm" variant={differs ? 'primary' : 'secondary'} tooltip="発音をセリフと同じにして合成し直す（YMM4 の「変」）" isDisabled={!differs} onClick={apply} />
         <RubyButton
+          host={() => lineRef.current}
+          value={draft}
+          onChange={v => {
+            setDraft(v);
+            updateClip(clip.id, {subtitle: v === clip.text ? null : v});
+          }}
+        />
+        <SpanButton
           host={() => lineRef.current}
           value={draft}
           onChange={v => {
@@ -361,6 +370,7 @@ function voiceSummary(project: Project, clip: VoiceClip): string {
     a?.pan && (a.pan < 0 ? '左寄り' : '右寄り'),
     (a?.fadeIn || a?.fadeOut) && 'フェード',
     a?.echo && 'エコー',
+    a?.reverb && 'リバーブ',
     (a?.filters ?? []).length > 0 && 'エフェクト',
     a?.startOffset && '頭を飛ばす',
   ]
@@ -382,7 +392,6 @@ function portraitSummary(project: Project, clip: VoiceClip): string {
   return parts.join('・');
 }
 
-const AUDIO_FILTER_LABEL = {highpass: '低い音を削る', lowpass: '高い音を削る'} as const;
 const panLabel = (v: number) => (Math.abs(v) < 0.005 ? '中央' : v < 0 ? `左 ${Math.round(-v * 100)}%` : `右 ${Math.round(v * 100)}%`);
 
 /** 素材の音のフェードと、前の音とのクロスフェード（書き出しも同じ） */
@@ -422,7 +431,6 @@ function LineAudioFields({clip}: {clip: VoiceClip}) {
   const a: LineAudio = {...plainLineAudio(), ...(clip.audioFx ?? {})};
   const set = (patch: Partial<LineAudio>) => setLineAudio(clip.id, patch);
   const filters = a.filters ?? [];
-  const setF = (i: number, f: AudioFilter | null) => set({filters: f ? filters.map((x, j) => (j === i ? f : x)) : filters.filter((_, j) => j !== i)});
   return (
     <VStack gap={3} paddingBlock={4} paddingInline={4}>
       <HStack hAlign="between" vAlign="center">
@@ -468,34 +476,13 @@ function LineAudioFields({clip}: {clip: VoiceClip}) {
           />
         </VStack>
       )}
+      <ReverbFields reverb={a.reverb} onChange={reverb => set({reverb})} />
       <HStack hAlign="between" vAlign="center">
         <Text type="label">音声エフェクト</Text>
-        <DropdownMenu button={{label: '追加', size: 'sm', variant: 'ghost', icon: <Icon icon={Plus} />}} menuWidth={180}>
-          <DropdownMenuItem label="電話風" onClick={() => set({filters: [...filters, {kind: 'highpass', hz: 400}, {kind: 'lowpass', hz: 3000}]})} />
-          <DropdownMenuItem label="こもった声（壁の向こう）" onClick={() => set({filters: [...filters, {kind: 'lowpass', hz: 800}]})} />
-          <DropdownMenuItem label={AUDIO_FILTER_LABEL.highpass} onClick={() => set({filters: [...filters, {kind: 'highpass', hz: 200}]})} />
-          <DropdownMenuItem label={AUDIO_FILTER_LABEL.lowpass} onClick={() => set({filters: [...filters, {kind: 'lowpass', hz: 4000}]})} />
-        </DropdownMenu>
+        <AudioFilterMenu filters={filters} onChange={filters => set({filters})} />
       </HStack>
-      {!filters.length && <Hint>電話風・こもった声などを付けられます。</Hint>}
-      {filters.map((f, i) => (
-        <div key={i} className="vx-preset">
-          <HStack hAlign="between" vAlign="center">
-            <Text type="label">{AUDIO_FILTER_LABEL[f.kind]}</Text>
-            <IconButton label={`${AUDIO_FILTER_LABEL[f.kind]}を外す`} size="sm" variant="ghost" icon={<Icon icon={X} />} onClick={() => setF(i, null)} />
-          </HStack>
-          <Slider
-            label={f.kind === 'highpass' ? 'これより低い音を削る' : 'これより高い音を削る'}
-            value={f.hz}
-            min={50}
-            max={12000}
-            step={50}
-            valueDisplay="text"
-            formatValue={v => `${v} Hz`}
-            onChange={(hz: number) => setF(i, {...f, hz})}
-          />
-        </div>
-      ))}
+      <AudioFilterHint filters={filters} />
+      <AudioFilterRows filters={filters} onChange={filters => set({filters})} />
     </VStack>
   );
 }
@@ -1362,6 +1349,7 @@ function CaptionInspector({clip}: {clip: CaptionClip}) {
       </div>
       <HStack gap={2} hAlign="start">
         <RubyButton host={() => capRef.current} value={voice.subtitle ?? voice.text} onChange={setCap} />
+        <SpanButton host={() => capRef.current} value={voice.subtitle ?? voice.text} onChange={setCap} />
       </HStack>
       <Text type="supporting" hasTabularNumbers>
         {framesToTimecode(clip.start, fps)} から 長さ {framesToTimecode(clip.duration, fps)}

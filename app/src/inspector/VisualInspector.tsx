@@ -19,6 +19,8 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {RubyButton} from './RubyButton';
+import {SpanButton} from './SpanButton';
+import {KARAOKE_COLOR} from '../subtitleAnim';
 import {BookmarkPlus, Copy, Plus, Trash2, X} from 'lucide-react';
 import {getNotify} from '../actions';
 import {itemTemplateName, saveTemplate} from '../templates';
@@ -1421,6 +1423,7 @@ export function TextInspector({clip}: {clip: TextClip}) {
         </div>
         <HStack gap={2} hAlign="start">
           <RubyButton host={() => textRef.current} value={clip.text} onChange={text => set({text})} />
+          <SpanButton host={() => textRef.current} value={clip.text} onChange={text => set({text})} />
         </HStack>
         <Switch label="縦書き" value={!!clip.vertical} onChange={vertical => set({vertical: vertical || undefined})} labelPosition="start" labelSpacing="spread" width="100%" />
         <Switch
@@ -1433,11 +1436,14 @@ export function TextInspector({clip}: {clip: TextClip}) {
         />
         {clip.charAnim && (
           <VStack gap={2}>
-            <SegmentedControl label="出かた" size="sm" layout="fill" value={clip.charAnim.kind} onChange={v => set({charAnim: {...clip.charAnim!, kind: v as CharAnim['kind']}})}>
-              {(Object.keys(CHAR_ANIM_LABEL) as CharAnim['kind'][]).map(k => (
-                <SegmentedControlItem key={k} value={k} label={CHAR_ANIM_LABEL[k]} />
-              ))}
-            </SegmentedControl>
+            <Selector
+              label="出かた"
+              value={clip.charAnim.kind}
+              options={(Object.keys(CHAR_ANIM_LABEL) as CharAnim['kind'][]).map(k => ({value: k, label: CHAR_ANIM_LABEL[k]}))}
+              onChange={(v: string) => set({charAnim: {...clip.charAnim!, kind: v as CharAnim['kind']}})}
+              width="100%"
+            />
+            {clip.charAnim.kind === 'karaoke' && <ColorRow label="塗る色" value={clip.charAnim.color || KARAOKE_COLOR} onChange={color => set({charAnim: {...clip.charAnim!, color}})} />}
             <Slider
               label="次の文字までの間隔"
               value={clip.charAnim.interval}
