@@ -31,6 +31,7 @@ import type {
   VoicePreset,
 } from './model';
 import {autoExpression} from './emotion';
+import {splitLongText} from './script';
 import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
 import type {GroupItem} from './templates';
 import {LINES_PRESET, PARTICLE_PRESET} from './preview/anim';
@@ -145,6 +146,7 @@ export interface State {
   settingsOpen: boolean;
   /** プロジェクトの設定（解像度・fps・背景色） */
   projectSettingsOpen: boolean;
+  autoSoundOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
   /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
@@ -227,6 +229,7 @@ let state: State = {
   inputPresets: {},
   settingsOpen: false,
   projectSettingsOpen: false,
+  autoSoundOpen: false,
   unsavedAsk: false,
   openSeq: 0,
   historyFlash: null,
@@ -395,10 +398,10 @@ export function setLayerSize(layerSize: 'small' | 'medium' | 'large') {
  * まだ何も置いていないときだけ変えられる（置いたあとに変えると長さが変わってしまうため）
  */
 /** 動画の大きさを変える。relayout なら、置いてあるものも新しい画面に合わせて並べ直す */
-export function resizeVideo(width: number, height: number, relayout: boolean) {
+export function resizeVideo(width: number, height: number, relayout: boolean, dims: Record<string, [number, number]> = {}) {
   commit(p => {
     const next = {...p, video: {...p.video, width, height}};
-    return relayout && (p.video.width !== width || p.video.height !== height) ? relayoutForSize(next, p.video, {width, height}) : next;
+    return relayout && (p.video.width !== width || p.video.height !== height) ? relayoutForSize(next, p.video, {width, height}, dims) : next;
   });
 }
 
@@ -417,11 +420,23 @@ export function updateVideo(patch: Partial<Project['video']>) {
  * 動画の大きさ（比率）を変えるとき、置いてあるものを新しい画面に収まるよう並べ直す。
  * 位置は横・縦それぞれの倍率で、大きさは小さいほうの倍率（はみ出さないほう）で変える。立ち絵・字幕の「個別に設定」・アニメーションの途中の状態も同じ
  */
-export function relayoutForSize(p: Project, from: {width: number; height: number}, to: {width: number; height: number}): Project {
+export function relayoutForSize(
+  p: Project,
+  from: {width: number; height: number},
+  to: {width: number; height: number},
+  /** 画像・動画の元の大きさ（src → [幅, 高さ]）。分かるものは、画面を埋めていたら新しい画面も埋めるよう広げる */
+  dims: Record<string, [number, number]> = {},
+): Project {
   const sx = to.width / from.width;
   const sy = to.height / from.height;
   const fit = Math.min(sx, sy);
-  const tr = (t: Transform): Transform => ({...t, x: t.x * sx, y: t.y * sy, scale: t.scale * fit});
+  const tr = (t: Transform, k = fit): Transform => ({...t, x: t.x * sx, y: t.y * sy, scale: t.scale * k});
+  /** 元の画面を埋めていた素材か（拡大・縮小の分を含めて、どの辺も画面に届いている） */
+  const coversOld = (c: Clip): [number, number] | null => {
+    if (c.type !== 'media' || c.mediaKind === 'audio' || c.crop) return null;
+    const d = dims[c.src];
+    return d && d[0] * c.transform.scale >= from.width * 0.98 && d[1] * c.transform.scale >= from.height * 0.98 ? d : null;
+  };
   const mid = (m: AnimMid): AnimMid => ({...m, transform: tr(m.transform)});
   const look = <T extends {look?: Look}>(c: T): T => {
     const an = c.look?.anim;
@@ -437,7 +452,10 @@ export function relayoutForSize(p: Project, from: {width: number; height: number
         return sc ? {...c0, subtitleCustom: look({...sc, transform: tr(sc.transform)} as typeof sc)} : c0;
       }
       if (c0.type === 'caption') return c0;
-      const moved = {...c0, transform: tr(c0.transform)};
+      // 画面を埋めていた素材は、新しい画面も同じ余裕で埋める（元の画面を埋める倍率 → 新しい画面を埋める倍率）。それ以外は画面に収まるよう縮める
+      const d = coversOld(c0);
+      const k = d ? Math.max(to.width / d[0], to.height / d[1]) / Math.max(from.width / d[0], from.height / d[1]) : fit;
+      const moved = {...c0, transform: tr(c0.transform, k)};
       return 'look' in moved ? look(moved as typeof moved & {look?: Look}) : moved;
     }) as Clip[],
   };
@@ -671,6 +689,55 @@ export function setGapForSelection(gapAfter: number) {
   if (!ids.size) return 0;
   commit(p => reflowAll({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, gapAfter: Math.max(0, Math.round(gapAfter))} : c))}));
   return ids.size;
+}
+
+/**
+ * 選んでいるセリフのうち、max 文字を超えるものを、文の終わり・読点で分ける（script.ts の splitLongText）。
+ * 分けた行は、もとの行の場所にそのまま続けて並べる（後ろのアイテムは、増えた分だけ後ろへずらす）。声は作り直す。
+ * 分けた行の数と、増えた行数を返す
+ */
+export function splitLongLinesForSelection(max: number): {lines: number; added: number} {
+  const ids = editableSelection()
+    .filter((c): c is VoiceClip => c.type === 'voice')
+    .map(c => c.id);
+  let lines = 0;
+  let added = 0;
+  if (!ids.length) return {lines, added};
+  commit(p0 => {
+    let p = p0;
+    for (const id of ids) {
+      const c = p.clips.find((x): x is VoiceClip => x.id === id && x.type === 'voice');
+      if (!c) continue;
+      const parts = splitLongText(c.text, max);
+      if (parts.length < 2) continue;
+      const minor = Math.min(c.gapAfter, 6);
+      const pieces = parts.map((text, i) => {
+        const last = i === parts.length - 1;
+        const gapAfter = last ? c.gapAfter : minor;
+        return {text, gapAfter, duration: provisional(p, text) + gapAfter};
+      });
+      // 全体の長さは、もとの長さ以上に（足りない分は最後の行の余韻に足す）
+      const sum = pieces.reduce((a, x) => a + x.duration, 0);
+      if (sum < c.duration) {
+        const lastP = pieces[pieces.length - 1];
+        lastP.duration += c.duration - sum;
+        lastP.gapAfter += c.duration - sum;
+      }
+      const total = pieces.reduce((a, x) => a + x.duration, 0);
+      p = rippleFrom(p, c.start + c.duration, total - c.duration);
+      let at = c.start;
+      const made: VoiceClip[] = pieces.map((x, i) => {
+        const clip: VoiceClip = {...c, id: i === 0 ? c.id : newId('c'), text: x.text, subtitle: null, audio: null, start: at, duration: x.duration, gapAfter: x.gapAfter, lockDuration: false};
+        at += x.duration;
+        return clip;
+      });
+      p = {...p, clips: [...p.clips.filter(x => x.id !== c.id), ...made]};
+      lines++;
+      added += made.length - 1;
+    }
+    return p;
+  });
+  return {lines, added};
 }
 
 /** 台本の文を探して置き換える。置き換えた行は音声を作り直す（その行の id を返す） */
@@ -1927,6 +1994,49 @@ export function relinkPaths(map: Record<string, string>) {
  * 置くトラック：選んでいるアイテムのトラック（同じ種類で、置く間ずっと空いているとき）→ 置く間ずっと空いている最初のトラック
  * （音声はセリフの無いトラックを先に）→ 無ければ新しく足す。既存のクリップを押し出さない
  */
+/**
+ * 音の素材を、決めた場所に置く（BGM・効果音の自動配置）。全部が空いている音のレイヤーに、なければ新しいレイヤーに置く。
+ * 1 回の「元に戻す」で全部戻る。置いたアイテムの id を返す
+ */
+export function placeAudioItems(path: string, info: MediaInfo, items: {start: number; duration: number}[], opts: {volume: number; fadeIn?: number; fadeOut?: number}): string[] {
+  const p = state.project;
+  if (!p || !items.length) return [];
+  const ids: string[] = [];
+  commit(pr => {
+    const lo = Math.min(...items.map(i => i.start));
+    const hi = Math.max(...items.map(i => i.start + i.duration));
+    const fits = (t: Track) => !t.locked && items.every(i => freeOver(pr, t.id, i.start, i.start + i.duration)) && lo >= 0 && hi > lo;
+    let next = pr;
+    let track = audioTracks(pr).find(fits);
+    if (!track) {
+      next = ensureTracks(pr, 'audio', audioTracks(pr).length + 1);
+      track = audioTracks(next).at(-1)!;
+    }
+    const clips: MediaClip[] = items.map(i => {
+      const id = newId('m');
+      ids.push(id);
+      return {
+        id,
+        trackId: track!.id,
+        start: i.start,
+        duration: i.duration,
+        type: 'media',
+        src: path,
+        mediaKind: 'audio',
+        hasAudio: true,
+        inPoint: 0,
+        volume: opts.volume,
+        transform: {x: 0, y: 0, scale: 1, opacity: 1},
+        ...(opts.fadeIn ? {soundFadeIn: opts.fadeIn} : {}),
+        ...(opts.fadeOut ? {soundFadeOut: opts.fadeOut} : {}),
+      };
+    });
+    return {...next, clips: [...next.clips, ...clips]};
+  });
+  setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1, media: {...s.media, [path]: info}}));
+  return ids;
+}
+
 export function addMediaClips(items: {path: string; info: MediaInfo}[], drop?: {frame: number; trackId?: string}) {
   const p = state.project;
   if (!p || !items.length) return;

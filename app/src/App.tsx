@@ -63,6 +63,7 @@ import type {PanelId} from './dock/layout';
 import {ScriptBar} from './panels/ScriptBar';
 import {SettingsDialog} from './panels/SettingsDialog';
 import {ProjectSettingsDialog} from './panels/ProjectSettingsDialog';
+import {AutoSoundDialog} from './panels/AutoSoundDialog';
 import {UnsavedDialog} from './panels/UnsavedDialog';
 import {toggleFullscreen} from './preview/PreviewControls';
 import './app.css';
@@ -307,6 +308,7 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="マーカーと概要欄…" description="チャプターと声のクレジットを、貼れる文章に" onClick={() => setState({descriptionOpen: true})} />
         <DropdownMenuItem label="素材の場所と整理…" description="見つからない素材をつなぎ直す・1 つのフォルダに集める" onClick={() => setState({mediaOpen: true})} />
         <DropdownMenuDivider />
+        <DropdownMenuItem label="BGM・効果音を自動で置く…" description="BGM を全体に敷く／マーカーや「？」「！」のセリフに効果音" onClick={() => setState({autoSoundOpen: true})} />
         <DropdownMenuItem label="プロジェクトの設定…" description="動画の大きさ（縦長のショートも）・fps・背景色" onClick={() => setState({projectSettingsOpen: true})} />
         <DropdownMenuItem label="合成ソフトの設定…" onClick={openSettings} />
       </DropdownMenu>
@@ -796,6 +798,7 @@ export function App() {
       />
       <SettingsDialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} notify={notify} />
       <ProjectSettingsDialog />
+      <AutoSoundDialog />
       <UnsavedDialog />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />

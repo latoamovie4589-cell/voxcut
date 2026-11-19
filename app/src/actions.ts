@@ -28,7 +28,9 @@ import {
   synthKey,
   timelineFrameOf,
 } from './model';
-import {addCaptionClips, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, replaceProject, setState, splitClip} from './store';
+import {bakeTalkBounce, ensurePeaks, mouthLevelsFor, type TalkMode} from './talkBounce';
+import {planBgm, planSe, type SeTrigger} from './autoSound';
+import {addCaptionClips, placeAudioItems, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -57,6 +59,45 @@ export async function addMedia() {
   await addMediaPaths(await (await api).pickMedia('media', true));
 }
 
+/** 画像・文字・図形を、キャラクターの声（口の開き）に合わせて弾ませる。動きはキーフレームとして書き込む */
+export async function talkBounceItem(id: string, characterId: string, mode: TalkMode, amount: number) {
+  const s = getState();
+  const p = s.project;
+  const c = p?.clips.find(x => x.id === id);
+  if (!p || !c || !('transform' in c)) return;
+  await ensurePeaks(p.clips.filter((v): v is VoiceClip => v.type === 'voice' && v.characterId === characterId && !!v.audio).map(v => v.audio!.cacheKey));
+  const levels = mouthLevelsFor(getState().project!, characterId, c.start, c.duration);
+  const baked = bakeTalkBounce(c as VisualClip, levels, mode, amount, p.video.height);
+  if (!baked) {
+    notifyRef('このアイテムの間に、そのキャラクターの声（合成ずみのセリフ）がありません', 'error');
+    return;
+  }
+  commit(q => ({...q, clips: q.clips.map(x => (x.id === id ? ({...x, look: baked.look} as typeof x) : x))}));
+  notifyRef(`声に合わせた動きを作りました（キーフレーム ${baked.look?.anim?.keys?.length ?? 0} 個）`, 'info');
+}
+
+/**
+ * 動画の大きさを変える。relayout なら置いてあるものも新しい画面に合わせて並べ直す。
+ * 画面を埋めていた画像・動画は新しい画面も埋めるよう広げるので、元の大きさを調べてから直す
+ */
+export async function resizeVideoTo(width: number, height: number, relayout: boolean) {
+  const s = getState();
+  const dims: Record<string, [number, number]> = {};
+  if (relayout && s.project) {
+    const a = await api;
+    for (const c of s.project.clips) {
+      if (c.type !== 'media' || c.mediaKind === 'audio' || c.src in dims) continue;
+      try {
+        const info = s.media[c.src] ?? (await a.probeMedia(c.src, s.projectPath));
+        if (info.width && info.height) dims[c.src] = [info.width, info.height];
+      } catch {
+        // 調べられない素材は、収まるように縮める
+      }
+    }
+  }
+  resizeVideo(width, height, relayout, dims);
+}
+
 /** パスを指定して素材を追加（選んだ・ドロップしたファイル） */
 export async function addMediaPaths(paths: string[], drop?: {frame: number; trackId?: string}) {
   const a = await api;
@@ -70,6 +111,58 @@ export async function addMediaPaths(paths: string[], drop?: {frame: number; trac
   }
   addMediaClips(items, drop);
   for (const it of items) if (it.info.kind === 'video') void ensureProxy(it.path);
+}
+
+/** 音の素材を選ぶ（音声ファイルだけ。音が入っていなければ null） */
+export async function pickSoundFile(): Promise<{path: string; info: MediaInfo} | null> {
+  const a = await api;
+  const [path] = await a.pickMedia('media', false);
+  if (!path) return null;
+  try {
+    const info = await a.probeMedia(path, getState().projectPath);
+    if (info.kind !== 'audio') {
+      notifyRef('音声ファイル（mp3・wav など）を選んでください', 'error');
+      return null;
+    }
+    return {path, info};
+  } catch (e) {
+    notifyRef(friendlyError(e), 'error');
+    return null;
+  }
+}
+
+/** BGM を動画の頭から終わりまで、くり返して敷く。置いた数を返す */
+export function placeBgm(sound: {path: string; info: MediaInfo}, volume: number, fadeFrames: number): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const total = Math.max(0, ...p.clips.map(c => c.start + c.duration));
+  const plan = planBgm(sound.info.durationMs ?? 0, total, p.video.fps);
+  if (!plan.length) {
+    notifyRef(total ? '素材が短すぎます（1 秒以上の音を選んでください）' : '先にセリフやアイテムを置いてください', 'error');
+    return 0;
+  }
+  const ids = placeAudioItems(sound.path, sound.info, plan, {volume, fadeIn: fadeFrames, fadeOut: fadeFrames});
+  notifyRef(`BGM を ${ids.length} 個置きました`, 'info');
+  return ids.length;
+}
+
+/** 効果音を、きっかけの場所に置く。置いた数を返す */
+export function placeSe(sound: {path: string; info: MediaInfo}, volume: number, trigger: SeTrigger, keyword: string): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const fps = p.video.fps;
+  const len = Math.max(1, Math.round(((sound.info.durationMs ?? 0) * fps) / 1000));
+  const items = planSe(p, trigger, keyword).map(start => ({start, duration: len}));
+  if (!items.length) {
+    notifyRef('きっかけに当てはまる場所がありません', 'error');
+    return 0;
+  }
+  // 音が重なると同じレイヤーに置けない。重なる分は間引く
+  const kept: typeof items = [];
+  for (const it of items) if (!kept.length || it.start >= kept[kept.length - 1].start + kept[kept.length - 1].duration) kept.push(it);
+  const ids = placeAudioItems(sound.path, sound.info, kept, {volume});
+  notifyRef(`効果音を ${ids.length} 個置きました${kept.length < items.length ? `（重なる ${items.length - kept.length} 個は省きました）` : ''}`, 'info');
+  return ids.length;
 }
 
 let proxyListening = false;
