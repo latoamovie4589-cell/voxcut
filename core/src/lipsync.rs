@@ -308,6 +308,7 @@ pub(crate) mod tests {
             expressions: vec![Expression { name: "怒り".into(), ..Default::default() }],
             psd: None,
             breath: None,
+            talk: None,
         });
         // c1（0〜90）だけ怒り、c3 は表情なし
         p.clips[0].as_voice_mut().unwrap().expression = Some("怒り".into());
@@ -334,6 +335,7 @@ pub(crate) mod tests {
             ],
             psd: None,
             breath: None,
+            talk: None,
         });
         // 既定は笑顔（1）。c1 は指定なし → 笑顔、c3 は「通常」をはっきり選ぶ → 0、c2 は別のキャラクター
         p.clips[2].as_voice_mut().unwrap().expression = Some(BASE_EXPRESSION.into());
@@ -364,6 +366,7 @@ pub(crate) mod tests {
             expressions: vec![Expression { name: "怒り".into(), ..Default::default() }, Expression { name: "笑顔".into(), ..Default::default() }],
             psd: Some(PsdPortrait { src: "a.psd".into(), ..Default::default() }),
             breath: None,
+            talk: None,
         });
         // 立ち絵アイテム（既定の表情は笑顔）
         p.clips.push(Clip {

@@ -234,6 +234,72 @@ pub struct PortraitInput {
     pub fx: Vec<((f64, f64), Vec<Effect>)>,
     /// 呼吸（足もとを止めて縦に伸び縮み）
     pub breath: Option<crate::model::Breath>,
+    /// 声に合わせて弾む（口の開きに合わせて縦に伸びる）
+    pub talk: Option<TalkBounce>,
+}
+
+/// 声に合わせた弾み。amount は口が全開のときの伸び（高さの割合）、steps は（切り替わる秒, 口の開き 0・1・2）で時刻順
+#[derive(Debug, Clone, PartialEq)]
+pub struct TalkBounce {
+    pub amount: f64,
+    pub steps: Vec<(f64, u8)>,
+}
+
+impl PortraitInput {
+    /// 縦の倍率の式（呼吸 × 声の弾み）。どちらも無ければ None。t はその時刻の秒
+    pub fn vscale_expr(&self) -> Option<String> {
+        let mut parts: Vec<String> = vec![];
+        if let Some(b) = &self.breath {
+            parts.push(b.ffmpeg_expr());
+        }
+        if let Some(t) = &self.talk {
+            parts.push(format!("(1+{:.5}*{})", t.amount, mouth_level_expr(&t.steps)));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("*"))
+        }
+    }
+}
+
+/// 口の開き（0・0.5・1）を、時刻 t の式にする。切り替わりが多くても深くならないよう二分木にする
+pub fn mouth_level_expr(steps: &[(f64, u8)]) -> String {
+    let lv = |m: u8| match m {
+        0 => "0",
+        1 => "0.5",
+        _ => "1",
+    };
+    // 同じ開きが続くところは 1 つにまとめる
+    let mut runs: Vec<(f64, u8)> = vec![];
+    for &(t, m) in steps {
+        if runs.last().is_none_or(|l| l.1 != m) {
+            runs.push((t, m));
+        }
+    }
+    fn tree(r: &[(f64, u8)], lv: &dyn Fn(u8) -> &'static str) -> String {
+        if r.len() == 1 {
+            return lv(r[0].1).to_string();
+        }
+        let mid = r.len() / 2;
+        format!("if(lt(t,{:.4}),{},{})", r[mid].0, tree(&r[..mid], lv), tree(&r[mid..], lv))
+    }
+    if runs.is_empty() {
+        "0".into()
+    } else {
+        tree(&runs, &lv)
+    }
+}
+
+/// 口の状態の並び（1 コマずつ）から、口の開きが切り替わる時刻の並びを作る
+pub fn mouth_steps(states: &[lipsync::PortraitState], fps: f64) -> Vec<(f64, u8)> {
+    let mut out: Vec<(f64, u8)> = vec![];
+    for (i, s) in states.iter().enumerate() {
+        if out.last().is_none_or(|l| l.1 != s.mouth) {
+            out.push((i as f64 / fps, s.mouth));
+        }
+    }
+    out
 }
 
 /// セリフの立ち絵エフェクト：そのキャラクターの、鳴るトラックにあるセリフのうちエフェクトを付けたものの区間（秒）
@@ -461,6 +527,7 @@ pub fn prepare_portraits(
         }
         // 立ち絵アイテムごとに、既定の表情を当てた状態の並びを作る（既定の表情が同じアイテムは同じ並びを使う）
         let mut concats: std::collections::HashMap<u8, PathBuf> = Default::default();
+        let mut mouths: std::collections::HashMap<u8, Vec<(f64, u8)>> = Default::default();
         let speaking = speaking_intervals(p, &ch.id);
         for (k, item) in items.into_iter().enumerate() {
             let ClipBody::Portrait(pc) = &item.body else { continue };
@@ -469,6 +536,7 @@ pub fn prepare_portraits(
                 Some(c) => c.clone(),
                 None => {
                     let states = lipsync::portrait_track_with(p, ch, total, peaks_for, default_expr);
+                    mouths.insert(default_expr, mouth_steps(&states, fps));
                     let runs = lipsync::runs(&states);
                     let mut images: std::collections::HashMap<usize, PathBuf> = Default::default();
                     for (st, _) in &runs {
@@ -506,7 +574,10 @@ pub fn prepare_portraits(
                 continue; // この間に一度も喋らないなら出さない
             }
             let fx = line_portrait_effects(p, &ch.id).into_iter().map(|((s, e), fx)| ((s.max(a), e.min(b)), fx)).filter(|((s, e), _)| e > s).collect();
-            out.push(PortraitInput { concat, transform: pc.transform.clone(), track: item.track_id.clone(), only: Some(only), fx, breath: pt.breath.clone().filter(|b| b.amount > 0.0) });
+            out.push(PortraitInput { concat, transform: pc.transform.clone(), track: item.track_id.clone(), only: Some(only), fx,
+                breath: pt.breath.clone().filter(|b| b.amount > 0.0),
+                talk: pt.talk.filter(|a| *a > 0.0).map(|a| TalkBounce { amount: a.clamp(0.0, 20.0) / 100.0, steps: mouths.get(&default_expr).cloned().unwrap_or_default() }),
+            });
         }
     }
     Ok(out)
@@ -617,7 +688,8 @@ fn build_args_inner(
         let (fx, dx, dy) = timed_effects(&pi.fx);
         let fx: String = fx.iter().map(|f| format!(",{f}")).collect();
         // 呼吸：高さだけをコマごとに変える（足もとは下の y の式で止める）
-        let breath = pi.breath.as_ref().map(|b| format!(",scale=w=iw:h='max(2,trunc(ih*{}/2)*2)':eval=frame", b.ffmpeg_expr())).unwrap_or_default();
+        let vscale = pi.vscale_expr();
+        let breath = vscale.as_ref().map(|e| format!(",scale=w=iw:h='max(2,trunc(ih*{e}/2)*2)':eval=frame")).unwrap_or_default();
         fc.push(format!("[{i}:v]fps={},scale=iw*{s:.4}:ih*{s:.4},format=rgba,colorchannelmixer=aa={o:.3}{fx}{breath}[{src_l}]", v.fps, s = t.scale, o = t.opacity.clamp(0.0, 1.0)));
         let out_l = format!("ov{i}");
         // 喋っているときだけ表示する立ち絵は、その区間だけ重ねる
@@ -626,11 +698,11 @@ fn build_args_inner(
             None => String::new(),
         };
         // 呼吸で伸ばしたときは、伸ばす前の高さ（h ÷ 倍率）の下端に合わせる
-        let ytop = match &pi.breath {
-            Some(b) => format!("(H+h/{e})/2-h", e = b.ffmpeg_expr()),
+        let ytop = match &vscale {
+            Some(e) => format!("(H+h/({e}))/2-h"),
             None => "(H-h)/2".into(),
         };
-        let pos = if dx.is_empty() && pi.breath.is_none() {
+        let pos = if dx.is_empty() && vscale.is_none() {
             format!("x=(W-w)/2+{x:.1}:y=(H-h)/2+{y:.1}", x = t.x, y = t.y)
         } else {
             format!("x='(W-w)/2+{x:.1}{dx}':y='{ytop}+{y:.1}{dy}'", x = t.x, y = t.y)
@@ -1183,6 +1255,23 @@ fn ease_expr(e: Ease, p: &str) -> String {
         Ease::In => format!("(({p})*({p}))"),
         Ease::Out => format!("(1-(1-({p}))*(1-({p})))"),
         Ease::InOut => format!("if(lt({p},0.5),2*({p})*({p}),1-2*(1-({p}))*(1-({p})))"),
+        Ease::Smooth => format!("(({p})*({p})*({p})*(({p})*(6*({p})-15)+10))"),
+        Ease::OutBack => format!("(1+2.70158*(({p})-1)*(({p})-1)*(({p})-1)+1.70158*(({p})-1)*(({p})-1))"),
+        Ease::InBack => format!("(2.70158*({p})*({p})*({p})-1.70158*({p})*({p}))"),
+        Ease::OutBounce => {
+            // 画面（model.ts の bounceOut）と同じ：n=7.5625、d=2.75 の 4 区間
+            let seg = |c: f64, add: f64| format!("7.5625*(({p})-{c:.6})*(({p})-{c:.6})+{add}");
+            format!(
+                "if(lt({p},{a:.6}),7.5625*({p})*({p}),if(lt({p},{b:.6}),{s1},if(lt({p},{c:.6}),{s2},{s3})))",
+                a = 1.0 / 2.75,
+                b = 2.0 / 2.75,
+                c = 2.5 / 2.75,
+                s1 = seg(1.5 / 2.75, 0.75),
+                s2 = seg(2.25 / 2.75, 0.9375),
+                s3 = seg(2.625 / 2.75, 0.984375)
+            )
+        }
+        Ease::OutElastic => format!("if(lt({p},0.0001),0,if(gt({p},0.9999),1,pow(2,-10*({p}))*sin((({p})*10-0.75)*2.0943951)+1))"),
     }
 }
 
@@ -1564,7 +1653,7 @@ pub fn visual_filters(fc: &mut Vec<String>, idx: usize, input: &str, last_v: &st
         chain.push(format!("geq=r='{}':g='{}':b='{}':a='alpha(X,Y)'", un("r"), un("g"), un("b")));
     }
     if moving(so, &mo, eo) {
-        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{}'", tween3(so, &mo, eo, e, "T", dur)));
+        chain.push(format!("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*clip({},0,1)'", tween3(so, &mo, eo, e, "T", dur)));
     } else if so < 1.0 {
         chain.push(format!("colorchannelmixer=aa={so:.3}"));
     }
@@ -2488,6 +2577,7 @@ mod tests {
             expressions: vec![],
             psd: Some(crate::model::PsdPortrait { src: "a.psd".into(), ..Default::default() }),
             breath: None,
+            talk: None,
         };
         let mut frames: std::collections::HashMap<usize, PathBuf> = Default::default();
         for eyes in 0..3 {
@@ -2563,7 +2653,7 @@ mod tests {
         let iv = speaking_intervals(&p, "ch_a");
         assert_eq!(iv, vec![(0.0, 3.0), (10.0, 13.0)]);
         assert_eq!(speaking_intervals(&p, "ch_b"), vec![(3.0, 6.0)]);
-        let pi = PortraitInput { concat: PathBuf::from("/c/p.ffconcat"), transform: Transform::default(), track: "V2".into(), only: Some(iv), fx: vec![], breath: None };
+        let pi = PortraitInput { concat: PathBuf::from("/c/p.ffconcat"), transform: Transform::default(), track: "V2".into(), only: Some(iv), fx: vec![], breath: None, talk: None };
         let opt = ExportOptions::new("ffmpeg", "/tmp/o.mp4", "/proj");
         let args = build_args(&p, &|id| Some(PathBuf::from(format!("/c/{id}.wav"))), &[pi], &[], &opt).unwrap();
         let fc = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
@@ -2588,6 +2678,7 @@ mod tests {
             expressions: vec![],
             psd: Some(crate::model::PsdPortrait { src: "/a.psd".into(), ..Default::default() }),
             breath: None,
+            talk: None,
         });
         let d = tempfile::tempdir().unwrap();
         // 立ち絵アイテムが無ければ出さない
@@ -3803,6 +3894,46 @@ mod tests {
         assert_eq!(a.waypoints().iter().map(|k| k.at).collect::<Vec<_>>(), vec![0.2, 0.5]);
     }
 
+    /// 動き方の式を FFmpeg で計算して、画面（model.ts の easeValue）と同じ値になることを確かめる
+    #[test]
+    fn ease_expressions_match_preview_formulas() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let bounce = |t: f64| {
+            let (n, d) = (7.5625, 2.75);
+            if t < 1.0 / d {
+                n * t * t
+            } else if t < 2.0 / d {
+                n * (t - 1.5 / d).powi(2) + 0.75
+            } else if t < 2.5 / d {
+                n * (t - 2.25 / d).powi(2) + 0.9375
+            } else {
+                n * (t - 2.625 / d).powi(2) + 0.984375
+            }
+        };
+        let reference = |e: Ease, q: f64| match e {
+            Ease::Smooth => q * q * q * (q * (6.0 * q - 15.0) + 10.0),
+            Ease::OutBack => 1.0 + 2.70158 * (q - 1.0).powi(3) + 1.70158 * (q - 1.0).powi(2),
+            Ease::InBack => 2.70158 * q * q * q - 1.70158 * q * q,
+            Ease::OutBounce => bounce(q),
+            Ease::OutElastic => 2f64.powf(-10.0 * q) * ((q * 10.0 - 0.75) * 2.0943951).sin() + 1.0,
+            _ => unreachable!(),
+        };
+        for e in [Ease::Smooth, Ease::OutBack, Ease::InBack, Ease::OutBounce, Ease::OutElastic] {
+            for q in [0.05, 0.2, 0.36, 0.5, 0.7, 0.8, 0.95] {
+                let expr = ease_expr(e, &format!("{q}"));
+                let o = std::process::Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i", &format!("aevalsrc='{expr}':s=1000:d=0.001"), "-f", "f32le", "-"]).output().unwrap();
+                assert!(o.status.success() && o.stdout.len() >= 4, "{e:?} {q}: {}", String::from_utf8_lossy(&o.stderr));
+                let got = f32::from_le_bytes([o.stdout[0], o.stdout[1], o.stdout[2], o.stdout[3]]) as f64;
+                assert!((got - reference(e, q)).abs() < 1e-3, "{e:?} q={q}: ffmpeg {got} / 画面 {}", reference(e, q));
+            }
+        }
+        // 区間の式に入る
+        let e = tween3(0.0, &[], 1.0, Ease::OutBack, "t", 1.0);
+        assert!(e.contains("2.70158"));
+    }
+
     #[test]
     fn mid_point_enter_exit_and_still() {
         use crate::model::{Anim, AnimMid, Clip, Ease, Look, Motion, MotionKind, TextClip};
@@ -3920,7 +4051,7 @@ mod tests {
         assert!(!ass.contains(&p.clips[0].as_voice().unwrap().text));
         let eff = line_portrait_effects(&p, "ch_a");
         assert_eq!(eff.len(), 1);
-        let pi = PortraitInput { concat, transform: Transform::default(), track: "V2".into(), only: None, fx: eff, breath: None };
+        let pi = PortraitInput { concat, transform: Transform::default(), track: "V2".into(), only: None, fx: eff, breath: None, talk: None };
         let out = d.path().join("o.mp4");
         let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
         // 1 文字ずつ出す字幕は、文字数ごとの画像（id#1, id#2, …）を順に出す
@@ -4056,7 +4187,7 @@ mod tests {
         p.clips.push(crate::model::Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 75, link_id: None, body: ClipBody::Shape(crate::model::ShapeClip { shape: "rect".into(), width: 1.0, height: 1.0, fill: "#000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
         let b = crate::model::Breath { amount: 20.0, period: 2.0 };
         assert!((b.scale_at(0.0) - 1.0).abs() < 1e-9 && (b.scale_at(1.0) - 1.2).abs() < 1e-9 && (b.scale_at(0.5) - 1.1).abs() < 1e-9);
-        let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: Some(b) };
+        let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: Some(b), talk: None };
         let out = d.path().join("o.mp4");
         let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
         let dark = d.path().join("k.png");
@@ -4076,6 +4207,46 @@ mod tests {
         let (c, d1) = span("1");
         assert!(a.abs_diff(50) <= 1 && b0.abs_diff(129) <= 1, "はじめ {a} {b0}");
         assert!(d1.abs_diff(b0) <= 1 && c.abs_diff(34) <= 2, "1 秒 {c} {d1}");
+    }
+
+    /// 立ち絵が声に合わせて弾む：口が開いている間だけ、足もとは動かさず頭のほうが伸びる（プレビューの talkScale と同じ値）
+    #[test]
+    fn portrait_talk_bounce_follows_the_mouth_with_real_ffmpeg() {
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("t.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=40x80,format=rgba", "-frames:v", "1"]).arg(&png).output().unwrap().status.success());
+        let concat = d.path().join("p.ffconcat");
+        std::fs::write(&concat, format!("ffconcat version 1.0\nfile {}\nduration 3\nfile {}\n", concat_quote(&png), concat_quote(&png))).unwrap();
+        let mut p = Project::sample();
+        (p.video.width, p.video.height, p.video.fps) = (160, 160, 30);
+        p.clips.retain(|c| c.as_voice().is_none());
+        p.clips.push(crate::model::Clip { id: "z".into(), track_id: "V1".into(), start: 0, duration: 75, link_id: None, body: ClipBody::Shape(crate::model::ShapeClip { shape: "rect".into(), width: 1.0, height: 1.0, fill: "#000".into(), stroke: String::new(), stroke_width: 0.0, transform: Transform::default(), look: Look::default(), region: None, control: None, scene: None, viz: None, anim: None }) });
+        // 0〜0.5 秒は口が閉じ、0.5〜1 秒は半開き、1 秒からは全開（20% 伸びる口の開き 1 のとき 20%、半分は 10%）
+        let steps = vec![(0.0, 0u8), (0.5, 1), (1.0, 2)];
+        assert_eq!(mouth_level_expr(&steps).matches("if(").count(), 2);
+        assert_eq!(mouth_level_expr(&[(0.0, 0), (0.5, 0), (1.0, 2)]), "if(lt(t,1.0000),0,1)");
+        let pi = PortraitInput { concat, transform: Transform { y: 10.0, ..Default::default() }, track: "V2".into(), only: None, fx: vec![], breath: None, talk: Some(TalkBounce { amount: 0.2, steps }) };
+        let out = d.path().join("o.mp4");
+        let mut opt = ExportOptions::new("ffmpeg", &out, d.path());
+        let dark = d.path().join("k.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=2x2", "-frames:v", "1"]).arg(&dark).output().unwrap().status.success());
+        opt.item_images.insert("z".into(), dark);
+        let args = build_args(&p, &|_: &str| None, &[pi], &[], &opt).unwrap();
+        let o = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        // 真ん中の列の赤い範囲（上端・下端）
+        let span = |t: &str| {
+            let img = std::process::Command::new("ffmpeg").args(["-v", "error", "-ss", t, "-i"]).arg(&out).args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap().stdout;
+            let red: Vec<usize> = (0..160).filter(|&y| img[(y * 160 + 80) * 3] > 150 && img[(y * 160 + 80) * 3 + 1] < 90).collect();
+            (red[0], *red.last().unwrap())
+        };
+        // 伸ばす前は 50〜129（真ん中から 10 下げる）。半開きで 1.1 倍（上へ 8）、全開で 1.2 倍（上へ 16）。足もと（下端）は動かない
+        let (a, b0) = span("0.25");
+        let (c, d1) = span("0.75");
+        let (e, f) = span("1.25");
+        assert!(a.abs_diff(50) <= 1 && b0.abs_diff(129) <= 1, "閉じ {a} {b0}");
+        assert!(d1.abs_diff(b0) <= 1 && c.abs_diff(42) <= 2, "半開き {c} {d1}");
+        assert!(f.abs_diff(b0) <= 1 && e.abs_diff(34) <= 2, "全開 {e} {f}");
     }
 
     /// 動く図形：粒はくり返し、進行バーは幅の数までの間隔、グラフは最後の絵のまま（画面側の animStep と同じ）

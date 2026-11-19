@@ -111,13 +111,35 @@ fn style_line(name: &str, s: &SubtitleStyle) -> String {
     };
     let (back, shadow) = if s.shadow_color.is_empty() { ("&H80000000".to_string(), 0) } else { (ass_color(&s.shadow_color), s.shadow_offset) };
     format!(
-        "Style: {name},{font},{size},{pri},&H000000FF,{out},{back},0,0,0,0,100,100,0,0,{border},{ow},{shadow},{al},40,40,{mv},1",
+        "Style: {name},{font},{size},{pri},&H000000FF,{out},{back},0,0,0,0,100,100,{sp},0,{border},{ow},{shadow},{al},40,40,{mv},1",
+        sp = s.letter_spacing,
         font = s.font_family,
         size = s.font_size,
         pri = ass_color(&s.color),
         al = alignment(s.position),
         mv = s.margin_v,
     )
+}
+
+/// 外側の縁を描く下の層のスタイル名（外側の縁を付けたスタイルだけ）
+/// 折り返しの計算に使う 1 文字の幅（文字の大きさ + 文字の間隔。間隔が負なら大きさのまま）。画面の subtitleWrap と同じ
+pub fn wrap_em(s: &SubtitleStyle) -> u32 {
+    (s.font_size as f64 + s.letter_spacing.max(0.0)).round() as u32
+}
+
+fn outer_name(name: &str) -> String {
+    format!("{name}~o")
+}
+
+/// 外側の縁の層のスタイル（内側の縁の外に、外側の縁の分だけ太くした縁を、外側の縁の色で）。帯を敷いたとき・設定がないときは None
+fn outer_style_line(name: &str, s: &SubtitleStyle) -> Option<String> {
+    if s.outline2_width == 0 || s.outline2_color.is_empty() || !s.box_color.is_empty() {
+        return None;
+    }
+    let mut o = s.clone();
+    o.outline_color = s.outline2_color.clone();
+    o.outline_width = s.outline_width + s.outline2_width;
+    Some(style_line(&outer_name(name), &o))
 }
 
 /// 不透明度つきの色（ASS は透明度で書く。00 が不透明）
@@ -434,17 +456,30 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[Script Info]\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n", p.video.width, p.video.height);
     let _ = writeln!(out, "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
+    // 外側の縁のあるスタイル（その字幕は、外側の縁の層を下に重ねて 2 行にする）
+    let mut outer: std::collections::HashSet<String> = Default::default();
     for c in &p.characters {
         let _ = writeln!(out, "{}", style_line(&c.id, &c.subtitle));
+        if let Some(l) = outer_style_line(&c.id, &c.subtitle) {
+            let _ = writeln!(out, "{l}");
+            outer.insert(c.id.clone());
+        }
     }
     // 見た目を上書きした字幕は、その字幕だけのスタイルを作る
     for c in &p.clips {
         let Some(cap) = c.as_caption() else { continue };
         let Some(ov) = &cap.style else { continue };
         let Some(ch) = p.clips.iter().find(|x| x.id == cap.voice_id).and_then(|x| x.as_voice()).and_then(|v| p.character(&v.character_id)) else { continue };
-        let _ = writeln!(out, "{}", style_line(&caption_style_name(&c.id), &ov.apply(&ch.subtitle)));
+        let name = caption_style_name(&c.id);
+        let eff = ov.apply(&ch.subtitle);
+        let _ = writeln!(out, "{}", style_line(&name, &eff));
+        if let Some(l) = outer_style_line(&name, &eff) {
+            let _ = writeln!(out, "{l}");
+            outer.insert(name);
+        }
     }
     let _ = writeln!(out, "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+    let ev_start = out.len();
     let mut clips: Vec<(&Clip, &crate::model::VoiceClip)> = p
         .clips
         .iter()
@@ -476,7 +511,7 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
         let segs = mk.segs;
         let base: String = segs.iter().map(|s| s.base.as_str()).collect();
         let font_size = eff.as_ref().map(|st| st.font_size).unwrap_or(56);
-        let wrapped = eff.map(|st| wrap_subtitle(&base, st.font_size, p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| base.clone());
+        let wrapped = eff.map(|st| wrap_subtitle(&base, wrap_em(&st), p.video.width.saturating_sub(80), st.max_chars)).unwrap_or_else(|| base.clone());
         let has_ruby = segs.iter().any(|s| s.ruby.is_some());
         let wrapped = if has_ruby { keep_ruby_words(&segs, &wrapped) } else { wrapped };
         let text = wrapped.as_str();
@@ -527,6 +562,24 @@ pub fn build_ass_for(p: &Project, track: Option<&str>) -> String {
                         cur = next;
                     }
                 }
+            }
+        }
+    }
+    if outer.is_empty() {
+        return out;
+    }
+    // 外側の縁：同じ字幕を、太い縁の層（下）と ふつうの層（上）の 2 行にする
+    let events = out.split_off(ev_start);
+    for line in events.lines() {
+        let f: Vec<&str> = line.splitn(10, ',').collect();
+        match f.as_slice() {
+            [layer, a, b, style, rest @ ..] if layer.starts_with("Dialogue: ") && outer.contains(*style) => {
+                let tail = rest.join(",");
+                let _ = writeln!(out, "Dialogue: 0,{a},{b},{},{tail}", outer_name(style));
+                let _ = writeln!(out, "Dialogue: 1,{a},{b},{style},{tail}");
+            }
+            _ => {
+                let _ = writeln!(out, "{line}");
             }
         }
     }
@@ -822,6 +875,41 @@ mod tests {
         let line = s.lines().find(|l| l.starts_with("Style: cap_cap1,")).expect(&s);
         assert!(line.contains(",80,") && line.ends_with(",8,40,40,60,1"), "{line}");
         assert!(s.contains(",cap_cap1,,0,0,0,,こんにちは"), "{s}");
+    }
+
+    #[test]
+    fn letter_spacing_and_outer_outline_reach_the_ass() {
+        let mut p = Project::sample();
+        let st = &mut p.characters[0].subtitle;
+        st.letter_spacing = 6.0;
+        st.outline_width = 4;
+        st.outline2_color = "#112233".into();
+        st.outline2_width = 5;
+        let id = p.characters[0].id.clone();
+        let s = build_ass(&p);
+        let main = s.lines().find(|l| l.starts_with(&format!("Style: {id},"))).expect(&s);
+        let outer = s.lines().find(|l| l.starts_with(&format!("Style: {id}~o,"))).expect(&s);
+        // 字間は Spacing（ScaleX,ScaleY の次）に入る
+        assert!(main.contains(",100,100,6,0,"), "{main}");
+        // 外側の縁の層は、縁が内側＋外側の太さで、色が外側の縁の色（#112233 → &H00332211）
+        assert!(outer.contains("&H00332211") && outer.contains(",9,"), "{outer}");
+        // 同じ字幕が 2 行になる：下の層（0）が外側の縁、上の層（1）がふつう
+        let d: Vec<&str> = s.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+        assert!(d.iter().any(|l| l.starts_with("Dialogue: 0,") && l.contains(&format!(",{id}~o,"))), "{d:?}");
+        assert!(d.iter().any(|l| l.starts_with("Dialogue: 1,") && l.contains(&format!(",{id},"))), "{d:?}");
+        // 帯を敷いたときは外側の縁を使わない
+        p.characters[0].subtitle.box_color = "#000000".into();
+        let s2 = build_ass(&p);
+        assert!(!s2.contains("~o"), "{s2}");
+        // 字間が広いと折り返しの幅も広がる
+        let mut a = p.characters[0].subtitle.clone();
+        a.letter_spacing = 0.0;
+        let mut b = a.clone();
+        b.letter_spacing = 20.0;
+        assert_eq!(wrap_em(&a), a.font_size);
+        assert_eq!(wrap_em(&b), a.font_size + 20);
+        b.letter_spacing = -10.0;
+        assert_eq!(wrap_em(&b), a.font_size);
     }
 
     #[test]

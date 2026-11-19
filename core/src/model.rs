@@ -178,6 +178,14 @@ pub struct SubtitleStyle {
     /// カラオケで塗っていく色（空なら黄色）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub karaoke_color: String,
+    /// 文字の間隔（px。ASS の Spacing。負なら詰める）
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub letter_spacing: f64,
+    /// 外側の縁の色（空ならなし）と太さ（px。内側の縁の外にもう 1 本）。帯を敷いたときは使わない
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outline2_color: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub outline2_width: u32,
 }
 
 /// カラオケの塗りの色の決まり
@@ -240,6 +248,9 @@ impl Default for SubtitleStyle {
             box_padding: 12,
             max_chars: 0,
             karaoke_color: String::new(),
+            letter_spacing: 0.0,
+            outline2_color: String::new(),
+            outline2_width: 0,
         }
     }
 }
@@ -272,6 +283,9 @@ pub struct Portrait {
     /// 呼吸（しゃべっていない間も、足もとを止めたまま縦にゆっくり伸び縮みする）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub breath: Option<Breath>,
+    /// 声に合わせて弾む（口が開いている間、足もとを止めたまま縦に伸びる量。高さの %、0〜20）。口の開きに比例（半開き = 半分）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talk: Option<f64>,
 }
 
 /// 立ち絵の呼吸。画面側の model.ts の breathScale と同じ式
@@ -1426,7 +1440,7 @@ pub struct AnimMid {
     pub rotation: f64,
 }
 
-/// 動き方（直線・だんだん速く・だんだん遅く・加速して減速）
+/// 動き方（直線・だんだん速く・だんだん遅く・加速して減速・なめらか・行き過ぎて戻る・少し戻ってから・弾む・ぷるぷる）
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Ease {
@@ -1435,6 +1449,16 @@ pub enum Ease {
     In,
     Out,
     InOut,
+    /// なめらか（始まりと終わりがより静かな加減速）
+    Smooth,
+    /// 行き過ぎてから戻る
+    OutBack,
+    /// 少し逆に引いてから動く
+    InBack,
+    /// 床に落ちたように弾んで止まる
+    OutBounce,
+    /// ばねのようにぷるぷる揺れて止まる
+    OutElastic,
 }
 
 fn six() -> u32 {
@@ -2774,6 +2798,7 @@ mod tests {
             }],
             psd: None,
             breath: None,
+            talk: None,
         };
         assert_eq!(pt.layers(2, 2, 0), vec!["b.png", "e2.png", "m0.png"]);
         assert_eq!(pt.layers(1, 0, 0), vec!["b.png", "e0.png", "m0.png"]);
