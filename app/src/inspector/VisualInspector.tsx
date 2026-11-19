@@ -6,6 +6,8 @@ import {Button} from '@astryxdesign/core/Button';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
 import {Divider} from '@astryxdesign/core/Divider';
 import {DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu} from '@astryxdesign/core/DropdownMenu';
+import {talkBounceItem} from '../actions';
+import {TALK_MODE_LABEL, type TalkMode} from '../talkBounce';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Icon} from '@astryxdesign/core/Icon';
 import {IconButton} from '@astryxdesign/core/IconButton';
@@ -288,6 +290,38 @@ function ShapeFields({look, set}: {look: Look; set: (p: Partial<Look>) => void})
 }
 
 /** 配置・回転・アニメーション・フェード・映像エフェクト */
+/** 声に合わせて弾ませる（キャラクターの口の開きから、動きのキーフレームを作る） */
+function TalkSyncSection({clip}: {clip: VisualClip}) {
+  const characters = useStore(s => s.project!.characters);
+  const [characterId, setCharacterId] = useState('');
+  const [mode, setMode] = useState<TalkMode>('hop');
+  const [amount, setAmount] = useState(3);
+  const chosen = characters.find(c => c.id === characterId)?.id ?? characters[0]?.id ?? '';
+  if (!characters.length) return null;
+  return (
+    <VStack gap={3} paddingBlock={4} paddingInline={4}>
+      <Heading level={3}>声に合わせて弾ませる</Heading>
+      <Selector label="声のキャラクター" value={chosen} options={characters.map(c => ({value: c.id, label: c.name}))} onChange={setCharacterId} width="100%" />
+      <Selector label="弾み方" value={mode} options={(Object.keys(TALK_MODE_LABEL) as TalkMode[]).map(k => ({value: k, label: TALK_MODE_LABEL[k]}))} onChange={(v: string) => setMode(v as TalkMode)} width="100%" />
+      <Slider
+        label={mode === 'hop' ? '跳ねる高さ（画面の高さに対して）' : '大きくなる量'}
+        value={amount}
+        min={1}
+        max={mode === 'hop' ? 10 : 30}
+        step={0.5}
+        valueDisplay="text"
+        formatValue={v => `${v.toFixed(1)}%`}
+        onChange={(v: number) => setAmount(v)}
+      />
+      <HStack gap={2}>
+        <Button label="声に合わせた動きを作る" variant="secondary" onClick={() => void talkBounceItem(clip.id, chosen, mode, amount)} />
+        {!!clip.look?.anim && <Button label="動きを消す" variant="ghost" onClick={() => updateClip(clip.id, {look: {...plainLook(), ...(clip.look ?? {}), anim: null}} as Partial<VisualClip>)} />}
+      </HStack>
+      <Hint>そのキャラクターの声が出ている間、口の開きに合わせて動きます（半開きは半分）。いまのアニメーションは置き換わります。声を合成し直したら、もう一度作ってください。</Hint>
+    </VStack>
+  );
+}
+
 export function LookEditor({clip}: {clip: VisualClip}) {
   const fps = useStore(s => s.project!.video.fps);
   return (
@@ -295,6 +329,8 @@ export function LookEditor({clip}: {clip: VisualClip}) {
       <QuickEffects clip={clip} fps={fps} />
       <Divider />
       <KeyframeBar clip={clip} />
+      <Divider />
+      <TalkSyncSection clip={clip} />
       <Divider />
       <TrackSection clip={clip} />
       <LookFields

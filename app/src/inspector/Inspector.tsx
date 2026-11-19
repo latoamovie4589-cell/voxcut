@@ -67,6 +67,7 @@ import {
   setPresetForSelection,
   setExpressionForSelection,
   autoExpressionsForSelection,
+  splitLongLinesForSelection,
   setGapForSelection,
   setState,
   splitClip,
@@ -1268,6 +1269,26 @@ export function CharacterSubtitleTab({character}: {character: Character}) {
 }
 
 /** 字幕の影と帯（書き出しの ASS でも描ける飾りだけ） */
+/** 選んだセリフのうち長いものを、文の終わり・読点で分ける */
+function SplitLongLines({notify}: {notify: Notify}) {
+  const [max, setMax] = useState(30);
+  return (
+    <HStack gap={2} vAlign="end">
+      <div style={{width: 160}}>
+        <NumberInput label="1 行の文字数" units="文字" value={max} min={8} max={200} onChange={v => setMax(Math.max(8, Math.round(v || 30)))} />
+      </div>
+      <Button
+        label="長いセリフを自動で分ける"
+        variant="secondary"
+        onClick={() => {
+          const r = splitLongLinesForSelection(max);
+          notify(r.lines ? `${r.lines} 行を分けて、${r.added} 行増えました（声は作り直してください）` : `${max} 文字を超えるセリフがありません`);
+        }}
+      />
+    </HStack>
+  );
+}
+
 /** 字幕の見た目を名前を付けて保存し、ほかのキャラクターにも使えるようにする（位置・下の余白・1 行の文字数は今のまま） */
 function SavedSubtitleStyles({character}: {character: Character}) {
   const list = useSavedSubtitleStyles();
@@ -1678,6 +1699,7 @@ function MultiInspector({ids, notify}: {ids: string[]; notify: Notify}) {
           }}
         />
       )}
+      {lines.length > 0 && <SplitLongLines notify={notify} />}
       {lines.length > 0 && (
         <NumberInput
           label="セリフの後ろの間をまとめて変える"
