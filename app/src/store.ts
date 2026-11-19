@@ -12,6 +12,7 @@ import type {
   CaptionClip,
   Character,
   AnimMid,
+  Transition,
   Control,
   PortraitClip,
   Clip,
@@ -147,6 +148,7 @@ export interface State {
   /** プロジェクトの設定（解像度・fps・背景色） */
   projectSettingsOpen: boolean;
   autoSoundOpen: boolean;
+  autoSceneOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
   /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
@@ -230,6 +232,7 @@ let state: State = {
   settingsOpen: false,
   projectSettingsOpen: false,
   autoSoundOpen: false,
+  autoSceneOpen: false,
   unsavedAsk: false,
   openSeq: 0,
   historyFlash: null,
@@ -2035,6 +2038,69 @@ export function placeAudioItems(path: string, info: MediaInfo, items: {start: nu
   });
   setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1, media: {...s.media, [path]: info}}));
   return ids;
+}
+
+/** 切り替えをまとめて付ける（1 回の「元に戻す」で全部戻る）。付けた数を返す */
+export function applyTransitions(items: {id: string; transition: Transition}[]): number {
+  if (!state.project || !items.length) return 0;
+  const by = new Map(items.map(i => [i.id, i.transition]));
+  commit(p => ({
+    ...p,
+    clips: p.clips.map(c => {
+      const t = by.get(c.id);
+      return t && c.type === 'media' ? {...c, look: {...plainLook(), ...(c.look ?? {}), transition: t}} : c;
+    }),
+  }));
+  return items.length;
+}
+
+/**
+ * 言葉に合わせて画像を置く。groups の 1 つが「1 つの画像を、いくつかの区間に」。
+ * それぞれ、全部の区間が空いている（鍵のかかっていない）レイヤーに、なければ新しいレイヤー（いちばん手前）に置く。置いた数を返す
+ */
+export function placeKeywordImages(
+  groups: {path: string; info: MediaInfo; spans: {start: number; duration: number}[]; place: {x: number; y: number; scale: number}}[],
+): number {
+  const p0 = state.project;
+  const todo = groups.filter(g => g.spans.length);
+  if (!p0 || !todo.length) return 0;
+  const ids: string[] = [];
+  commit(pr => {
+    let next = pr;
+    for (const g of todo) {
+      const fits = (t: Track) => !t.locked && g.spans.every(sp => freeOver(next, t.id, sp.start, sp.start + sp.duration));
+      const hasVoice = (t: Track) => next.clips.some(c => c.trackId === t.id && c.type === 'voice');
+      const list = videoTracks(next);
+      let track = [...list.filter(t => !hasVoice(t)), ...list.filter(hasVoice)].find(fits);
+      if (!track) {
+        next = ensureTracks(next, 'video', videoTracks(next).length + 1);
+        track = videoTracks(next).at(-1)!;
+      }
+      const clips: MediaClip[] = g.spans.map(sp => {
+        const id = newId('m');
+        ids.push(id);
+        const fade = Math.min(6, Math.floor(sp.duration / 4));
+        return {
+          id,
+          trackId: track!.id,
+          start: sp.start,
+          duration: sp.duration,
+          type: 'media',
+          src: g.path,
+          mediaKind: 'image',
+          hasAudio: false,
+          inPoint: 0,
+          volume: 1,
+          transform: {x: g.place.x, y: g.place.y, scale: g.place.scale, opacity: 1},
+          ...(fade > 0 ? {look: {...plainLook(), fadeIn: fade, fadeOut: fade}} : {}),
+        };
+      });
+      next = {...next, clips: [...next.clips, ...clips]};
+    }
+    return next;
+  });
+  setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1, media: {...s.media, ...Object.fromEntries(todo.map(g => [g.path, g.info]))}}));
+  return ids.length;
 }
 
 export function addMediaClips(items: {path: string; info: MediaInfo}[], drop?: {frame: number; trackId?: string}) {

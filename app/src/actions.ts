@@ -2,7 +2,7 @@
 
 import {parseSubtitles} from './srt';
 import {api, type AiProgress, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
-import type {EngineId, Portrait, Project, VoiceClip} from './model';
+import type {EngineId, Portrait, Project, TransitionKind, VoiceClip} from './model';
 import {
   ENGINE_LABEL,
   effectiveVoice,
@@ -30,7 +30,8 @@ import {
 } from './model';
 import {bakeTalkBounce, ensurePeaks, mouthLevelsFor, type TalkMode} from './talkBounce';
 import {planBgm, planSe, type SeTrigger} from './autoSound';
-import {addCaptionClips, placeAudioItems, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
+import {imagePlacement, MIXED_KINDS, planKeywordSpans, planTransitions, type ImagePos, type KeywordRule} from './autoScene';
+import {addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -163,6 +164,56 @@ export function placeSe(sound: {path: string; info: MediaInfo}, volume: number, 
   const ids = placeAudioItems(sound.path, sound.info, kept, {volume});
   notifyRef(`効果音を ${ids.length} 個置きました${kept.length < items.length ? `（重なる ${items.length - kept.length} 個は省きました）` : ''}`, 'info');
   return ids.length;
+}
+
+/** 画像を 1 枚選ぶ（大きさが分かるものだけ） */
+export async function pickImageFile(): Promise<{path: string; info: MediaInfo} | null> {
+  const a = await api;
+  const [path] = await a.pickMedia('image', false);
+  if (!path) return null;
+  try {
+    const info = await a.probeMedia(path, getState().projectPath);
+    if (info.kind !== 'image' || !info.width || !info.height) {
+      notifyRef('画像ファイルを選んでください', 'error');
+      return null;
+    }
+    return {path, info};
+  } catch (e) {
+    notifyRef(friendlyError(e), 'error');
+    return null;
+  }
+}
+
+/** 画像・動画のつなぎ目に切り替えをまとめて付ける。付けた数を返す */
+export function addTransitionsAuto(kind: TransitionKind | 'mixed', frames: number, scope: 'selected' | 'all', replace: boolean): number {
+  const s = getState();
+  if (!s.project) return 0;
+  const only = scope === 'selected' ? s.selectedClipIds : null;
+  const items = planTransitions(s.project, kind === 'mixed' ? MIXED_KINDS : [kind], frames, {only, replace});
+  if (!items.length) {
+    notifyRef(scope === 'selected' ? '選んだ画像・動画に、すき間なく続くつなぎ目がありません' : 'つなぎ目（すき間なく続く画像・動画）がありません', 'error');
+    return 0;
+  }
+  applyTransitions(items);
+  notifyRef(`切り替えを ${items.length} か所に付けました`, 'info');
+  return items.length;
+}
+
+/** 言葉を含むセリフの間に、その言葉の画像を置く。置いた数を返す */
+export function placeKeywordRules(rules: (KeywordRule & {width: number; height: number})[], size: number, pos: ImagePos): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const spans = planKeywordSpans(p, rules);
+  const groups = rules.map((r, i) => ({
+    path: r.path,
+    info: {kind: 'image', hasAudio: false, durationMs: null, width: r.width, height: r.height} as MediaInfo,
+    spans: spans[i],
+    place: imagePlacement(p.video, {width: r.width, height: r.height}, size, pos),
+  }));
+  const n = placeKeywordImages(groups);
+  if (!n) notifyRef('その言葉を含むセリフがありません', 'error');
+  else notifyRef(`画像を ${n} か所に置きました`, 'info');
+  return n;
 }
 
 let proxyListening = false;

@@ -106,6 +106,22 @@ export function talkScale(amount: number | null | undefined, mouth: number): num
 export interface Breath {
   amount: number;
   period: number;
+  /** 上下にふわふわ浮く量（画像の高さの %、0〜10。周期は period と同じ） */
+  float?: number;
+  /** 左右にゆっくりゆれる量（画像の幅の %、0〜10。周期は period の 2 倍） */
+  sway?: number;
+}
+
+/** 待機モーション：時刻 t 秒での、上へ浮く量（画像の高さに対する割合）。Rust の Breath::float_at と同じ式 */
+export function floatOffset(b: Breath | null | undefined, t: number): number {
+  if (!b || !(b.float && b.float > 0)) return 0;
+  return (Math.min(10, b.float) / 100) * Math.sin((2 * Math.PI * t) / Math.max(0.2, b.period));
+}
+
+/** 待機モーション：時刻 t 秒での、右へゆれる量（画像の幅に対する割合）。Rust の Breath::sway_at と同じ式 */
+export function swayOffset(b: Breath | null | undefined, t: number): number {
+  if (!b || !(b.sway && b.sway > 0)) return 0;
+  return (Math.min(10, b.sway) / 100) * Math.sin((Math.PI * t) / Math.max(0.2, b.period));
 }
 
 /** 時刻 t 秒での呼吸の縦の倍率。Rust の Breath::scale_at と同じ式 */
