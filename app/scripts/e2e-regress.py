@@ -1355,6 +1355,68 @@ async def main():
         check("BGM の配置：動画の頭から終わりまで素材をくり返し、最後は動画の終わりで切る（短すぎる素材・空の動画は置かない）", r['bgm'][0] == {'start': 0, 'duration': 300} and len(r['bgm']) == 4 and r['bgm'][3] == {'start': 900, 'duration': 100} and r['short'] == [] and r['empty'] == [], str(r))
         check("効果音の配置：マーカー・「？」「！」で終わるセリフ（閉じ括弧・空白は無視。「！？」は最後の「？」）・決めた言葉のセリフの頭。重なりなし・時間順", r['q'] == [0, 120, 160] and r['x'] == [40] and r['m'] == [10, 90] and r['k'] == [80] and r['k0'] == [], str(r))
         check("音の配置：音量・フェードを付けて 1 つのレイヤーに並べ、ふさがっていれば別のレイヤーへ。空なら何もしない", r['placed'] == 2 and r['same'] and r['vol'] == 0.5 and r['fade'] == [15, 15] and r['kind'] == 'audio' and r['diff'] and r['added'] == 3 and r['none'] == 0, str(r))
+        # ── 立ち絵の待機モーション（浮く・ゆれる）
+        r = await q.evaluate(r"""async()=>{const m=await import('/src/model.ts');
+          const b={amount:0,period:4,float:10,sway:10};
+          const f=t=>+m.floatOffset(b,t).toFixed(4), w=t=>+m.swayOffset(b,t).toFixed(4);
+          return {f:[f(0),f(1),f(2),f(3)], w:[w(0),w(2),w(4),w(6)], none:[m.floatOffset(null,1), m.swayOffset({amount:1,period:3},1), m.floatOffset({amount:0,period:4,float:0},1)], cap:+m.floatOffset({amount:0,period:4,float:99},1).toFixed(4)}}""")
+        check("待機モーション：浮きは周期で上下（高さの割合）、ゆれは 2 倍の周期で左右（幅の割合）。設定なしは 0、上限は 10%", r['f'] == [0, 0.1, 0, -0.1] and r['w'] == [0, 0.1, 0, -0.1] and r['none'] == [0, 0, 0] and r['cap'] == 0.1, str(r))
+        # ── 長い動画の自動分割（セリフの切れ目で）
+        r = await q.evaluate(r"""async()=>{const S=await import('/src/autoSplit.ts');
+          const v=(start,duration)=>({type:'voice',start,duration,text:'あ'});
+          // 30 コマずつのセリフが 10 個（0〜300）。上限 100 コマ
+          const p={markers:[], clips:Array.from({length:10},(_,i)=>v(i*30,30))};
+          const a=S.planSplit(p,300,100);
+          const b=S.planSplit(p,300,400);
+          // 途中に続くセリフ（重なり）の中では切らない・長すぎる 1 セリフは超える
+          const q2={markers:[{id:'m',frame:45,name:''}], clips:[v(0,30),v(30,60),v(80,10),v(90,250)]};
+          const c=S.planSplit(q2,340,100);
+          const d=S.planSplit({markers:[],clips:[]},250,100);
+          return {a, b, c, d, none:S.planSplit(p,0,100)}}""")
+        check("自動分割：セリフの切れ目で、上限以内に、均等に近く分ける。短ければ 1 本、動画が空なら無し", r['a'] == [[0, 90], [90, 180], [180, 270], [270, 300]] or all(x[1] - x[0] <= 100 for x in r['a']) and r['a'][0][0] == 0 and r['a'][-1][1] == 300 and all(r['a'][i][1] == r['a'][i + 1][0] for i in range(len(r['a']) - 1)), str(r))
+        check("自動分割：切れ目は必ずセリフの切れ目、長すぎるセリフはその本だけ超え、切れ目が無いときは上限で切る", r['b'] == [[0, 300]] and all(x[1] % 30 == 0 for x in r['a'][:-1]) and r['c'][0][0] == 0 and r['c'][-1][1] == 340 and all(x[0] < x[1] for x in r['c']) and all(x[1] % 10 == 0 or x[1] == 340 for x in r['c']) and r['d'] == [[0, 100], [100, 200], [200, 250]] and r['none'] == [], str(r))
+        # ── 切り替えの自動配置
+        r = await q.evaluate(r"""async()=>{const A=await import('/src/autoScene.ts'); const s=await import('/src/store.ts');
+          const m=(id,tr,start,d,extra)=>({id,trackId:tr,type:'media',start,duration:d,linkId:null,src:'/m/'+id,mediaKind:'image',hasAudio:false,inPoint:0,volume:1,transform:{x:0,y:0,scale:1,opacity:1},...(extra||{})});
+          const pr=s.getState().project;
+          const p={...pr, clips:[m('a','V1',0,60), m('b','V1',60,60), m('c','V1',121,60,{look:{rotation:0,anim:null,fadeIn:0,fadeOut:0,effects:[],transition:{kind:'zoom',frames:10}}}), m('d','V1',300,60), m('e','V2',0,60), m('au','V3',0,60,{mediaKind:'audio'}), m('au2','V3',60,60,{mediaKind:'audio'})]};
+          const one=A.planTransitions(p,['dissolve'],15);
+          const all=A.planTransitions(p,['dissolve'],15,{replace:true});
+          const mixed=A.planTransitions(p,A.MIXED_KINDS,12,{replace:true});
+          const sel=A.planTransitions(p,['blur'],8,{only:['c','d'],replace:true});
+          return {one, all:all.map(x=>x.id), mixed:mixed.map(x=>x.transition.kind), sel, f:mixed[0].transition.frames}}""")
+        check("切り替えの自動配置：すき間なく続く画像・動画の頭にだけ（音・離れたもの・別のレイヤーは対象外）、付いているものは飛ばす", r['one'] == [{'id': 'b', 'transition': {'kind': 'dissolve', 'frames': 15}}] and r['all'] == ['b', 'c'], str(r))
+        check("切り替えの自動配置：いろいろ順番に種類を回し、選んだものの中だけにもできる", r['mixed'] == ['dissolve', 'slideLeft'] and r['f'] == 12 and r['sel'] == [{'id': 'c', 'transition': {'kind': 'blur', 'frames': 8}}], str(r))
+        r = await q.evaluate(r"""async()=>{const s=await import('/src/store.ts');
+          const ch=s.getState().project.characters[0];
+          const ids=s.addLines([{characterId:ch.id,text:'一つ目'},{characterId:ch.id,text:'ここに猫がいます'}]);
+          const st=s.getState().project;
+          const me=id=>st.clips.find(c=>c.id===id);
+          const mk=(id,start,d)=>({id,trackId:'V1',type:'media',start,duration:d,linkId:null,src:'/m/'+id,mediaKind:'image',hasAudio:false,inPoint:0,volume:1,transform:{x:0,y:0,scale:1,opacity:1}});
+          const e0=me(ids[0]), e1=me(ids[1]);
+          s.commit(p=>({...p,clips:[...p.clips, mk('x1',500,40), mk('x2',540,40)]}));
+          const n=s.applyTransitions([{id:'x2',transition:{kind:'zoom',frames:9}},{id:'nope',transition:{kind:'blur',frames:9}}]);
+          const x2=s.getState().project.clips.find(c=>c.id==='x2');
+          return {n, t:x2.look.transition, fade:x2.look.fadeIn, x1:s.getState().project.clips.find(c=>c.id==='x1').look?.transition??null}}""")
+        check("切り替えをまとめて付ける：対象のアイテムに付き、ほかは変わらない", r['n'] == 2 and r['t'] == {'kind': 'zoom', 'frames': 9} and r['fade'] == 0 and r['x1'] is None, str(r))
+        # ── キーワード画像の自動配置
+        r = await q.evaluate(r"""async()=>{const A=await import('/src/autoScene.ts'); const s=await import('/src/store.ts');
+          const v=(start,duration,text)=>({type:'voice',start,duration,text});
+          const p={clips:[v(0,30,'猫がいる'), v(30,30,'猫だよ'), v(60,30,'犬もいる'), v(200,30,'また猫'), v(300,30,'  ')]};
+          const rules=[{keyword:'猫',path:'/i/cat.png'},{keyword:'犬',path:'/i/dog.png'},{keyword:'鳥',path:'/i/bird.png'},{keyword:'  ',path:'/i/x.png'}];
+          const sp=A.planKeywordSpans(p,rules);
+          const fr={width:1920,height:1080};
+          const pl=pos=>A.imagePlacement(fr,{width:400,height:400},0.35,pos);
+          // 置く：全部の区間が空いているレイヤーへ。ふさがっていれば別のレイヤーへ。画像の情報も覚える
+          const st=s.getState().project; const n0=st.clips.length, t0=st.tracks.length;
+          const info={kind:'image',hasAudio:false,durationMs:null,width:400,height:400};
+          const n=s.placeKeywordImages([{path:'/i/cat.png',info,spans:[{start:10000,duration:60},{start:10100,duration:60}],place:pl('topRight')},{path:'/i/dog.png',info,spans:[{start:10020,duration:60}],place:pl('center')},{path:'/i/none.png',info,spans:[],place:pl('center')}]);
+          const cl=s.getState().project.clips.filter(c=>c.type==='media'&&c.src.startsWith('/i/'));
+          const cat=cl.filter(c=>c.src==='/i/cat.png'), dog=cl.find(c=>c.src==='/i/dog.png');
+          return {sp, tr:pl('topRight'), c:pl('center'), bl:pl('bottomLeft'), n, cats:cat.length, same:new Set(cat.map(c=>c.trackId)).size===1, dogTrack:dog.trackId!==cat[0].trackId, added:s.getState().project.clips.length-n0, fade:cat[0].look.fadeIn, kind:cat[0].mediaKind, sc:cat[0].transform.scale}}""")
+        check("キーワード画像：言葉を含むセリフの間を言葉ごとに求め、続くセリフは 1 つにまとめる（言葉が空・当てはまらないものは無し）", r['sp'] == [[{'start': 0, 'duration': 60}, {'start': 200, 'duration': 30}], [{'start': 60, 'duration': 30}], [], []], str(r))
+        check("キーワード画像：画面の割合に収まる大きさで、位置は少し内側（画面の外に出ない）", r['c'] == {'x': 0, 'y': 0, 'scale': 0.945} and r['tr'] == {'x': 694, 'y': -308, 'scale': 0.945} and r['bl'] == {'x': -694, 'y': 308, 'scale': 0.945}, str(r))
+        check("キーワード画像：全部の区間が空いたレイヤーに置き、ふさがっていれば別のレイヤーへ。短い区間には出入りのフェードが付く", r['n'] == 3 and r['cats'] == 2 and r['same'] and r['dogTrack'] and r['added'] == 3 and r['fade'] == 6 and r['kind'] == 'image', str(r))
         # ── セリフの感情から表情を付ける
         r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
           const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
