@@ -13,6 +13,7 @@ import {Hint} from '../Hint';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {api, type Encoder, type ExportProgress, type ExportRequest} from '../ipc';
+import {planSplit} from '../autoSplit';
 import {collectCredits, framesToTimecode, overlappingLines, projectDuration, timecodeToFrames, ENGINE_LABEL, type Project} from '../model';
 import {getState, setState, useStore, type ExportJob} from '../store';
 import {cancelExport, exportSubtitles, openFile, pickExportPath, revealInFolder, runExport, type ExportKind} from '../actions';
@@ -155,6 +156,7 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const [encoder, setEncoder] = useState<Encoder>('x264');
   const [what, setWhat] = useState<ExportKind>('video');
   const [span, setSpan] = useState<Span>('all');
+  const [splitLen, setSplitLen] = useState('');
   const [backdrop, setBackdrop] = useState<Backdrop>('fill');
   const [loudness, setLoudnessState] = useState<string>(readLoudness);
   const setLoudness = (v: string) => {
@@ -247,6 +249,17 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
     .slice(1)
     .map((e, i) => [cuts[i], e] as [number, number])
     .filter(([a, b]) => b - a > 0);
+
+  // 指定の長さ以内に自動で分ける（セリフの切れ目で。空なら 1 分）
+  const splitF = timecodeToFrames(splitLen || framesToTimecode(v.fps * 60, v.fps), v.fps);
+  const splitPieces = splitF && splitF > 0 && what !== 'subtitle' ? planSplit(project, total, splitF) : [];
+  const enqueueSplit = async () => {
+    const out = await pickExportPath(what, alpha);
+    if (!out) return;
+    const dot = out.lastIndexOf('.');
+    const [stem, ext] = dot > out.lastIndexOf('/') && dot > out.lastIndexOf('\\') ? [out.slice(0, dot), out.slice(dot)] : [out, ''];
+    addJobs(splitPieces.map((r, i) => ({id: jobId(), out: `${stem}_${String(i + 1).padStart(2, '0')}${ext}`, what, options: request(r), label: `${kindDesc}、${spanDesc(r)}`})));
+  };
 
   const enqueue = async () => {
     const out = await pickExportPath(what, alpha);
@@ -480,6 +493,27 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                 />
               )}
               {needsVoice && pending > 0 && !problems.length && <Banner status="info" title={`まだ合成していないセリフが ${pending} 行あります`} description="書き出す前にまとめて合成します" />}
+              {what !== 'subtitle' && total > 0 && (
+                <VStack gap={2}>
+                  <HStack gap={2} vAlign="end" wrap="wrap">
+                    <div style={{width: 160}}>
+                      <TextInput
+                        label="1 本の長さの上限"
+                        value={splitLen || framesToTimecode(v.fps * 60, v.fps)}
+                        onChange={setSplitLen}
+                        status={splitF === null ? {type: 'error', message: '時:分:秒:フレーム'} : undefined}
+                      />
+                    </div>
+                    <Button
+                      label={splitPieces.length > 1 ? `${splitPieces.length} 本に自動で分けて予約…` : '自動で分けて予約…'}
+                      variant="secondary"
+                      isDisabled={splitPieces.length < 2 || (needsVoice && failedIds.length > 0)}
+                      onClick={() => void enqueueSplit()}
+                    />
+                  </HStack>
+                  <Hint>ショート・リール用：セリフの切れ目で、この長さ以内に分けて予約します（保存名に _01・_02… が付きます）</Hint>
+                </VStack>
+              )}
               <Credits />
               <HStack gap={2} hAlign="end" wrap="wrap">
                 <Button label="キャンセル" variant="ghost" onClick={() => close(false)} />
