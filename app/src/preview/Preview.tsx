@@ -6,7 +6,7 @@ import {useEffect, useRef, useState} from 'react';
 import type {Api} from '../ipc';
 import {api} from '../ipc';
 import {wrapSubtitle} from '../subtitleWrap';
-import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
+import {hasRuby, keepRubyWords, parseMarkup, rubyBase, rubyRows} from '../ruby';
 import type {Character, Clip, Effect, MediaClip, PortraitClip, Project, Transform, VisualClip} from '../model';
 import {
   audibleTracks,
@@ -234,7 +234,8 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const fs = st?.fontSize ?? 56;
   const size = fs * scale;
   // ルビの書き方を外した文で改行する。改行の位置は書き出しと同じ（画面の幅から左右の余白 40px ずつを引いた幅で切る）
-  const segs = parseRuby(text);
+  const mk = parseMarkup(text);
+  const segs = mk.segs;
   const ruby = hasRuby(segs);
   text = wrapSubtitle(rubyBase(text), fs, Math.max(0, p.video.width - 80), st?.maxChars ?? 0);
   const plain = text;
@@ -248,7 +249,13 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
   const lh = size * 1.25;
   // ルビは文字の半分の大きさで、行の上に小さい行として置く（書き出しの ASS と同じ）
   const rs = Math.max(1, Math.round(fs * 0.5)) * scale;
-  const extra = lines.map((_, i) => (rows?.[i]?.some(r => r.ruby !== undefined) ? rs * 1.25 : 0));
+  // 一部の文字の色・大きさ（書き出しの ASS と同じく、ルビのある字幕では大きさを使わない）
+  const styled = mk.styles.some(Boolean);
+  const sizeAt = (gi: number) => (ruby ? 1 : (mk.styles[gi]?.size ?? 1));
+  const lineBase = lines.map((_, i) => lines.slice(0, i).reduce((a, l) => a + [...l].length, 0));
+  // 大きさを変えた文字がある行は、その分だけ上へ広げる
+  const grow = lines.map((l, i) => (styled && !ruby ? (Math.max(1, ...[...l].map((_, k) => sizeAt(lineBase[i] + k))) - 1) * size : 0));
+  const extra = lines.map((_, i) => (rows?.[i]?.some(r => r.ruby !== undefined) ? rs * 1.25 : 0) + grow[i]);
   const w = p.video.width * scale;
   const h = p.video.height * scale;
   const margin = (st?.marginV ?? 60) * scale;
@@ -327,40 +334,71 @@ export function drawSubtitle(ctx: CanvasRenderingContext2D, text: string, ch: Ch
     ctx.clip();
   }
   // カラオケ：今の時刻までに塗る文字（書き出しの ASS の \kf と同じく、文字ごとに左から）
+  // 行の文字を 1 文字ずつ、それぞれの大きさ・色で描く（飾りがなければ今までどおり 1 かたまり）。base は行の頭が全文の何文字目か
+  const runLine = (line: string, base: number, nShown: number, x: number, y: number, color?: string) => {
+    const chars = [...line];
+    if (!styled) return run(chars.slice(0, nShown).join(''), x, y, size, 1, color);
+    let cx = x;
+    for (let j = 0; j < chars.length; j++) {
+      const px = size * sizeAt(base + j);
+      ctx.font = fontAt(px);
+      const adv = ctx.measureText(chars[j]).width;
+      if (j < nShown) run(chars[j], cx, y, px, 1, color ?? mk.styles[base + j]?.color);
+      cx += adv;
+    }
+    ctx.font = fontAt(size);
+  };
+  const lineWidth = (line: string, base: number) => {
+    if (!styled) {
+      ctx.font = fontAt(size);
+      return ctx.measureText(line).width;
+    }
+    const w = [...line].reduce((a, ch, j) => {
+      ctx.font = fontAt(size * sizeAt(base + j));
+      return a + ctx.measureText(ch).width;
+    }, 0);
+    ctx.font = fontAt(size);
+    return w;
+  };
   const kara = anim === 'karaoke' && !rows ? karaokeBounds([...text.replace(/\n/g, '')], duration, fps) : null;
   const now = (f / fps) * 100;
   let seen = 0;
   lines.forEach((line, i) => {
     const chars = [...line];
-    const shown = chars.slice(0, Math.max(0, Math.min(chars.length, count - seen))).join('');
+    const nShown = Math.max(0, Math.min(chars.length, count - seen));
+    const base = seen;
     seen += chars.length;
     const y = ys[i];
     // 全文の幅で左端を決め、左揃えで描く（中央揃えのまま文字だけ増やす）
     ctx.font = fontAt(size);
-    const x0 = w / 2 - ctx.measureText(line).width / 2;
-    run(shown, x0, y, size);
+    const x0 = w / 2 - lineWidth(line, base) / 2;
+    runLine(line, base, nShown, x0, y);
     if (kara) {
-      // この行で塗る幅
-      ctx.font = fontAt(size);
+      // この行で塗る幅（文字ごとの大きさも数える）
+      const adv = (j: number) => {
+        ctx.font = fontAt(size * sizeAt(base + j));
+        return ctx.measureText(chars[j]).width;
+      };
       let fillW = 0;
       for (let j = 0; j < chars.length; j++) {
-        const g = seen - chars.length + j;
+        const g = base + j;
         const a = kara[g];
         const b = kara[g + 1];
         if (now <= a) break;
-        const cw = ctx.measureText(chars[j]).width;
-        if (now >= b) fillW = ctx.measureText(chars.slice(0, j + 1).join('')).width;
+        const cw = adv(j);
+        if (now >= b) fillW += cw;
         else {
-          fillW = ctx.measureText(chars.slice(0, j).join('')).width + (cw * (now - a)) / Math.max(1e-9, b - a);
+          fillW += (cw * (now - a)) / Math.max(1e-9, b - a);
           break;
         }
       }
+      ctx.font = fontAt(size);
       if (fillW > 0) {
         ctx.save();
         ctx.beginPath();
         ctx.rect(x0 - size * 2, y - size * 3, size * 2 + fillW, size * 6);
         ctx.clip();
-        run(line, x0, y, size, 1, st?.karaokeColor || KARAOKE_COLOR);
+        runLine(line, base, chars.length, x0, y, st?.karaokeColor || KARAOKE_COLOR);
         ctx.restore();
       }
     }

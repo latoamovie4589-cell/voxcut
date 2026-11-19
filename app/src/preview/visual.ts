@@ -3,7 +3,8 @@
 // テキスト・図形は、ここで描いた画像をそのまま書き出しにも渡す（画面と動画で同じ見た目にするため）。
 
 import type {BlendMode, Effect, Look, Region, Project, ShapeClip, SubtitleCustom, TextClip, Transform, VisualClip, VoiceClip} from '../model';
-import {timerStep, timerText, type Marker} from '../model';
+import {CHAR_ANIM_PAD, bounceOut, timerStep, timerText, type Marker} from '../model';
+import {KARAOKE_COLOR} from '../subtitleAnim';
 import {animFrameAt, animFrames, animImage, animKey} from './anim';
 import {bubbleImage} from './bubble';
 import {RETRO_FX, retroActive, retroPad, retroPixels, type RetroEffect} from './retro';
@@ -24,7 +25,7 @@ import {
   type MediaClip,
 } from '../model';
 import {api, type LutFit} from '../ipc';
-import {hasRuby, keepRubyWords, parseRuby, rubyBase, rubyRows} from '../ruby';
+import {hasRuby, keepRubyWords, parseMarkup, rubyBase, rubyRows, type Span} from '../ruby';
 
 export interface VisualState {
   transform: Transform;
@@ -943,13 +944,19 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     m.letterSpacing = `${ls}px`;
     const lineH = Math.max(1, Math.round(c.fontSize * (ex.lineHeight ?? 1.3)));
     const charStep = c.fontSize + ls; // 縦書きの 1 文字の高さ
+    const fontOf = (k: number) => `${c.italic ? 'italic ' : ''}${c.bold ? 'bold ' : ''}${c.fontSize * k}px "${c.fontFamily}", "Yu Gothic UI", sans-serif`;
     // 折り返し（文字単位。縦書きでは列の高さ）
     const wrap = ex.wrapWidth ?? 0;
     const lines: string[] = [];
     // ルビは書き方を外した文の上（縦書きは右）に小さく出す
-    const segs = parseRuby(c.text || ' ');
+    const mk = parseMarkup(c.text || ' ');
+    const segs = mk.segs;
     const ruby = hasRuby(segs);
-    for (const para of (ruby ? rubyBase(c.text) : c.text || ' ').split('\n')) {
+    // 一部の文字の色・大きさ（ルビのある文では大きさは使わない）。縦書きでも大きさは使わない
+    const styled = mk.styles.some(Boolean);
+    const spanAt = (gi: number): Span | undefined => mk.styles[gi];
+    const sizeAt = (gi: number) => (ruby || ex.vertical ? 1 : (spanAt(gi)?.size ?? 1));
+    for (const para of (rubyBase(c.text || ' ') || ' ').split('\n')) {
       if (wrap <= 0) {
         lines.push(para);
         continue;
@@ -971,7 +978,20 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const rk = rs / c.fontSize;
     // ルビのある行だけ、ルビの分だけ広げる（off は行の頭までの距離）
     const rhOf = lines.map((_, i) => (rows?.[i]?.some(pc => pc.ruby !== undefined) ? Math.round(rs * 1.25) : 0));
-    const off = rhOf.map((_, i) => rhOf.slice(0, i).reduce((a, r) => a + lineH + r, 0));
+    // 一部の文字の大きさに合わせて、1 文字ごとの横幅と行の高さを決める（大きさを変えた文字がなければ今までどおり）
+    const lineBase = lines.map((_, i) => lines.slice(0, i).reduce((a, l) => a + Array.from(l).length, 0));
+    const sized = styled && !ex.vertical;
+    const advs: number[][] = sized
+      ? lines.map((l, i) =>
+          Array.from(l).map((ch, k) => {
+            m.font = fontOf(sizeAt(lineBase[i] + k));
+            return m.measureText(ch).width;
+          }),
+        )
+      : [];
+    m.font = font;
+    const lineHs = lines.map((l, i) => (sized ? Math.round(lineH * Math.max(1, ...Array.from(l).map((_, k) => sizeAt(lineBase[i] + k)))) : lineH));
+    const off = rhOf.map((_, i) => rhOf.slice(0, i).reduce((a, r, j) => a + lineHs[j] + r, 0));
     const extraAll = rhOf.reduce((a, r) => a + r, 0);
     // テキストアイテムの飾り（字幕の「個別に設定」の飾りとは別）
     const o2 = c.outline2Color && (c.outline2Width ?? 0) > 0 ? c.outline2Width! : 0;
@@ -979,16 +999,16 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     // 影と光は四方に同じだけ余白を取る（文字の中心がずれないように）
     const glow = shadowOn ? Math.ceil((c.shadowBlur ?? 0) * 2 + Math.max(Math.abs(c.shadowX ?? 0), Math.abs(c.shadowY ?? 0))) : 0;
     // はねる・下からは文字が枠の外へ出るので、四方に余白を足す（真ん中の位置は変えない）
-    const caPad = ca && (ca.kind === 'pop' || ca.kind === 'slideUp') ? Math.ceil(c.fontSize * 0.6) : 0;
+    const caPad = ca ? Math.ceil(c.fontSize * (CHAR_ANIM_PAD[ca.kind] ?? 0)) : 0;
     const pad = Math.ceil(c.outlineWidth + o2 + c.fontSize * 0.1) + caPad;
     const boxColor = ex.boxColor ?? (c.boxColor || undefined);
     const box = boxColor ? Math.max(0, ex.boxColor ? (ex.boxPadding ?? 16) : (c.boxPadding ?? 16)) : 0;
     const sh = ex.shadowColor ? Math.abs(ex.shadowOffset ?? 4) : 0;
-    const widths = lines.map(l => m.measureText(l).width);
+    const widths = lines.map((l, i) => (sized ? advs[i].reduce((a, b) => a + b, 0) : m.measureText(l).width));
     const longest = Math.max(1, ...lines.map(l => Array.from(l).length));
     // 文字が占める大きさ
     const tw = ex.vertical ? lineH * lines.length + extraAll : Math.ceil(Math.max(...widths));
-    const th = ex.vertical ? Math.ceil(longest * charStep) : lineH * lines.length + extraAll;
+    const th = ex.vertical ? Math.ceil(longest * charStep) : lineHs.reduce((a, b) => a + b, 0) + extraAll;
     const edge = pad + box;
     const cv = document.createElement('canvas');
     cv.width = Math.max(1, tw + edge * 2 + sh + glow * 2);
@@ -1013,7 +1033,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     let left = ex.visible ?? Infinity;
     // k はルビの縮め（文字の大きさの比）、sx は横の縮め
     // ci は何文字目か（1 文字ずつの登場に使う）
-    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number; ci?: number}[] = [];
+    const glyphs: {s: string; px: number; py: number; rot: boolean; punct?: boolean; k?: number; sx?: number; ci?: number; sz?: number; col?: string}[] = [];
     let ci0 = 0;
     const shownAll = ex.visible ?? Infinity;
     lines.forEach((l, i) => {
@@ -1031,7 +1051,7 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
         const colX = edge + tw - off[i] - rh - lineH / 2;
         const colH = chars.length * charStep;
         const y0 = edge + (c.align === 'left' ? 0 : c.align === 'right' ? th - colH : (th - colH) / 2);
-        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k]), ci: base + k});
+        for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: colX, py: y0 + charStep * k + charStep / 2, rot: ROTATE_V.has(chars[k]), punct: PUNCT_V.has(chars[k]), ci: base + k, col: spanAt(base + k)?.color});
         for (const pc of pieces) {
           if (!pc.ruby || pc.at >= shownAll) continue;
           const rc = Array.from(pc.ruby);
@@ -1043,16 +1063,17 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
       } else {
         const lx = edge + (c.align === 'left' ? 0 : c.align === 'right' ? tw - widths[i] : (tw - widths[i]) / 2);
         const rh = rhOf[i];
-        const py = edge + off[i] + rh + lineH / 2;
-        // 1 文字ずつ出すときは文字ごとに置く（位置は行をまとめて描いたときと同じ）
-        if (ca) for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: lx + m.measureText(chars.slice(0, k).join('')).width, py, rot: false, ci: base + k});
+        const py = edge + off[i] + rh + lineHs[i] / 2;
+        // 1 文字ずつ出すときと、一部の文字を飾るときは文字ごとに置く（位置は行をまとめて描いたときと同じ）
+        const pxOf = (k: number) => (sized ? advs[i].slice(0, k).reduce((a, b) => a + b, 0) : m.measureText(chars.slice(0, k).join('')).width);
+        if (ca || styled) for (let k = 0; k < n; k++) glyphs.push({s: chars[k], px: lx + pxOf(k), py, rot: false, ci: base + k, sz: sizeAt(base + k), col: spanAt(base + k)?.color});
         else glyphs.push({s: chars.slice(0, n).join(''), px: lx, py, rot: false});
         let x0 = lx;
         for (const pc of pieces) {
-          const wb = m.measureText(pc.text).width;
+          const wb = sized ? advs[i].slice(pc.at - base, pc.at - base + Array.from(pc.text).length).reduce((a, b) => a + b, 0) : m.measureText(pc.text).width;
           if (pc.ruby && pc.at < shownAll) {
             const wr = m.measureText(pc.ruby).width * rk;
-            glyphs.push({s: pc.ruby, px: wr <= wb ? x0 + (wb - wr) / 2 : x0, py: py - lineH / 2 - rh / 2, rot: false, k: rk, sx: wr <= wb ? 1 : wb / wr, ci: base + pc.at - at0});
+            glyphs.push({s: pc.ruby, px: wr <= wb ? x0 + (wb - wr) / 2 : x0, py: py - lineHs[i] / 2 - rh / 2, rot: false, k: rk, sx: wr <= wb ? 1 : wb / wr, ci: base + pc.at - at0});
           }
           x0 += wb;
         }
@@ -1061,23 +1082,77 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
     const outline = c.outlineWidth > 0 && c.outlineColor ? c.outlineWidth : 0;
     const paint = (dx: number, dy: number, fill: string, stroke: boolean, all = false) => {
       for (const g of glyphs) {
-        // 1 文字ずつの登場（まだ出ていない文字は描かない）
+        // 1 文字ずつの登場（まだ出ていない文字は描かない。カラオケは最初から出ている）
+        const kara = ca?.kind === 'karaoke';
         const pr = ca && g.ci !== undefined ? charProgress(ca, g.ci, ex.charFrame ?? 0) : 1;
-        if (pr <= 0) continue;
+        if (pr <= 0 && !kara) continue;
         x.save();
+        if (g.sz && g.sz !== 1) x.font = fontOf(g.sz);
         // 縦書きの句読点は、横書きの字形（左下）を升目の右上へ
         x.translate(g.px + dx + (g.punct ? c.fontSize * 0.6 : 0), g.py + dy - (g.punct ? c.fontSize * 0.6 : 0));
-        if (ca && pr < 1) {
-          x.globalAlpha *= pr;
-          if (ca.kind === 'slideUp') x.translate(0, (1 - pr) * c.fontSize * 0.6);
-          if (ca.kind === 'pop') {
-            // はねる：少し大きくなってから戻る（文字の真ん中を中心に）
-            const q = pr - 1;
-            const k = 0.4 + 0.6 * (1 + 2.70158 * q * q * q + 1.70158 * q * q);
-            const cw = ex.vertical ? 0 : x.measureText(g.s).width / 2;
+        if (ca && pr < 1 && !kara) {
+          const fs = c.fontSize;
+          // 文字の真ん中を中心に拡大・回転する
+          const cw = ex.vertical ? 0 : x.measureText(g.s).width / 2;
+          const around = (f: () => void) => {
             x.translate(cw, 0);
-            x.scale(k, k);
+            f();
             x.translate(-cw, 0);
+          };
+          switch (ca.kind) {
+            case 'slideUp':
+              x.globalAlpha *= pr;
+              x.translate(0, (1 - pr) * fs * 0.6);
+              break;
+            case 'slideDown':
+              x.globalAlpha *= pr;
+              x.translate(0, -(1 - pr) * fs * 0.6);
+              break;
+            case 'slideLeft':
+              x.globalAlpha *= pr;
+              x.translate(-(1 - pr) * fs, 0);
+              break;
+            case 'slideRight':
+              x.globalAlpha *= pr;
+              x.translate((1 - pr) * fs, 0);
+              break;
+            case 'pop': {
+              // はねる：少し大きくなってから戻る（文字の真ん中を中心に）
+              x.globalAlpha *= pr;
+              const q = pr - 1;
+              const k = 0.4 + 0.6 * (1 + 2.70158 * q * q * q + 1.70158 * q * q);
+              around(() => x.scale(k, k));
+              break;
+            }
+            case 'zoom': {
+              // 大きいところから縮んで定位置へ
+              x.globalAlpha *= pr;
+              const k = 1 + (1 - pr) * (1 - pr) * 1.4;
+              around(() => x.scale(k, k));
+              break;
+            }
+            case 'spin':
+              x.globalAlpha *= pr;
+              around(() => x.rotate((1 - pr) * Math.PI * 2));
+              break;
+            case 'blur':
+              x.globalAlpha *= pr;
+              x.filter = `blur(${((1 - pr) * fs * 0.25).toFixed(2)}px)`;
+              break;
+            case 'shake': {
+              // 揺れながら出て、だんだん静まる
+              x.globalAlpha *= Math.min(1, pr * 3);
+              const a = (1 - pr) * fs * 0.18;
+              x.translate(a * Math.sin(37 * pr + (g.ci ?? 0) * 1.7), a * Math.cos(29 * pr + (g.ci ?? 0) * 2.3));
+              break;
+            }
+            case 'drop':
+              // 上から落ちて、弾んで止まる
+              x.globalAlpha *= Math.min(1, pr * 4);
+              x.translate(0, -(1 - bounceOut(pr)) * fs * 1.2);
+              break;
+            default:
+              x.globalAlpha *= pr;
           }
         }
         if (g.k) x.scale(g.k * (g.sx ?? 1), g.k);
@@ -1099,7 +1174,8 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
           x.lineWidth = outline * 2;
           x.strokeText(g.s, 0, 0);
         }
-        if (stroke && c.gradientColor) {
+        if (stroke && g.col) x.fillStyle = g.col;
+        else if (stroke && c.gradientColor) {
           // 1 行ごとに、上は文字の色・下はグラデーションの色
           const gr = x.createLinearGradient(0, -c.fontSize / 2, 0, c.fontSize / 2);
           gr.addColorStop(0, c.color);
@@ -1107,6 +1183,16 @@ export function textImage(c: TextClip, ex: TextExtra = {}): HTMLCanvasElement {
           x.fillStyle = gr;
         } else x.fillStyle = fill;
         x.fillText(g.s, 0, 0);
+        // カラオケ：塗った分だけ、文字の上に別の色を重ねる（左から。縦書きは上から）
+        if (kara && stroke && pr > 0) {
+          const cw = ex.vertical ? c.fontSize : Math.max(1, x.measureText(g.s).width);
+          x.beginPath();
+          if (ex.vertical) x.rect(-c.fontSize, -c.fontSize / 2, c.fontSize * 2, c.fontSize * pr);
+          else x.rect(-c.fontSize * 0.2, -c.fontSize, cw * pr + c.fontSize * 0.2, c.fontSize * 2);
+          x.clip();
+          x.fillStyle = ca!.color || KARAOKE_COLOR;
+          x.fillText(g.s, 0, 0);
+        }
         x.restore();
       }
     };

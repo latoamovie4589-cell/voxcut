@@ -5,9 +5,9 @@
 // 音声は再生開始時に、再生位置以降のセリフだけを予約する。デコード結果はキャッシュする。
 
 import {api} from '../ipc';
-import type {MediaClip, VoiceClip} from '../model';
+import type {AudioFilter, MediaClip, Reverb, VoiceClip} from '../model';
 import {scheduleDuck, voiceIntervals} from '../ducking';
-import {effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed, hasAudioFx, soundFadeAt, withCrossfades} from '../model';
+import {EQ_HIGH_HZ, EQ_LOW_HZ, EQ_MID_Q, reverbPlan, effectiveVoice, panGains, projectDuration, audibleTracks, startOffsetOf, isRetimed, hasAudioFx, soundFadeAt, withCrossfades} from '../model';
 import {callRemote, getState, setState} from '../store';
 import {pauseAll} from './video';
 
@@ -58,20 +58,126 @@ function stopSources() {
   sources = [];
 }
 
+const dbToLin = (db: number) => 10 ** (db / 20);
+
+/** 音声エフェクト 1 つ分のつなぎ（書き出しの audiofx::filter_ff と同じ値） */
+export function filterNode(ac: BaseAudioContext, src: AudioNode, f: AudioFilter): AudioNode {
+  const clampDb = (v: number) => Math.min(24, Math.max(-24, v));
+  switch (f.kind) {
+    case 'highpass':
+    case 'lowpass': {
+      const bq = ac.createBiquadFilter();
+      bq.type = f.kind;
+      bq.frequency.value = Math.max(1, f.hz);
+      bq.Q.value = Math.SQRT1_2;
+      return src.connect(bq);
+    }
+    case 'eq': {
+      let node = src;
+      const band = (type: BiquadFilterType, hz: number, gain: number, q: number) => {
+        if (Math.abs(gain) < 0.05) return;
+        const bq = ac.createBiquadFilter();
+        bq.type = type;
+        bq.frequency.value = hz;
+        bq.gain.value = clampDb(gain);
+        bq.Q.value = q;
+        node = node.connect(bq);
+      };
+      band('lowshelf', EQ_LOW_HZ, f.lowDb, Math.SQRT1_2);
+      band('peaking', Math.min(8000, Math.max(100, f.midHz ?? 1000)), f.midDb, EQ_MID_Q);
+      band('highshelf', EQ_HIGH_HZ, f.highDb, Math.SQRT1_2);
+      return node;
+    }
+    case 'compressor': {
+      // 画面の DynamicsCompressor は肩 3dB。書き出しの acompressor と同じく自動の音量補正は付けない（補正は手で付ける）
+      const c = ac.createDynamicsCompressor();
+      const th = Math.min(0, Math.max(-60, f.thresholdDb));
+      const ratio = Math.min(20, Math.max(1, f.ratio));
+      c.threshold.value = th;
+      c.knee.value = 3;
+      c.ratio.value = ratio;
+      c.attack.value = Math.min(2000, Math.max(0.01, f.attackMs)) / 1000;
+      c.release.value = Math.min(9000, Math.max(0.01, f.releaseMs)) / 1000;
+      const g = ac.createGain();
+      g.gain.value = dbToLin(clampDb(f.makeupDb)) / compressorAutoGain(th, 3, ratio);
+      return src.connect(c).connect(g);
+    }
+    case 'limiter': {
+      const c = ac.createDynamicsCompressor();
+      const th = Math.min(0, Math.max(-24, f.ceilingDb));
+      c.threshold.value = th;
+      c.knee.value = 0;
+      c.ratio.value = 20;
+      c.attack.value = 0.003;
+      c.release.value = 0.05;
+      const g = ac.createGain();
+      g.gain.value = 1 / compressorAutoGain(th, 0, 20);
+      return src.connect(c).connect(g);
+    }
+  }
+}
+
 /**
- * セリフの声のつなぎ（書き出しの voice_audio_filters と同じ順）：音声エフェクト → エコー → 音量とフェード → 左右。
+ * DynamicsCompressorNode が勝手に付ける音量の補正（Web Audio の仕様どおり：0dBFS の音が通ったあとの大きさの逆数の 0.6 乗）。
+ * 書き出しの acompressor にはないので、この分を打ち消す
+ */
+export function compressorAutoGain(thresholdDb: number, kneeDb: number, ratio: number): number {
+  const lin = (db: number) => 10 ** (db / 20);
+  const db = (x: number) => 20 * Math.log10(x);
+  const linThreshold = lin(thresholdDb);
+  const kneeThresholdDb = thresholdDb + kneeDb;
+  const kneeThreshold = lin(kneeThresholdDb);
+  const kneeCurve = (x: number, k: number) => (x < linThreshold ? x : linThreshold + (1 - Math.exp(-k * (x - linThreshold))) / k);
+  const slopeAt = (x: number, k: number) => {
+    if (x < linThreshold) return 1;
+    const x2 = x * 1.001;
+    return (db(kneeCurve(x2, k)) - db(kneeCurve(x, k))) / (db(x2) - db(x));
+  };
+  // 肩の終わりで傾きが 1/ratio になる k を、二分探索で求める
+  let minK = 0.1;
+  let maxK = 10000;
+  let k = 5;
+  for (let i = 0; i < 15; i++) {
+    if (slopeAt(kneeThreshold, k) < 1 / ratio) maxK = k;
+    else minK = k;
+    k = Math.sqrt(minK * maxK);
+  }
+  const ykneeDb = db(kneeCurve(kneeThreshold, k));
+  const full = 1 < kneeThreshold ? kneeCurve(1, k) : lin(ykneeDb + (db(1) - kneeThresholdDb) / ratio);
+  return Math.pow(1 / full, 0.6);
+}
+
+/** リバーブ：2 段の反射（書き出しの audiofx::reverb_ff の aecho 2 段と同じ遅れ・大きさ）→ 音量の補正。rate は再生の速さ */
+export function reverbNode(ac: BaseAudioContext, src: AudioNode, r: Reverb, rate = 1): AudioNode {
+  const plan = reverbPlan(r);
+  if (!plan) return src;
+  let node: AudioNode = src;
+  for (const taps of plan.stages) {
+    // 元の音（そのまま）に、遅らせて小さくした音を足す
+    const sum = ac.createGain();
+    node.connect(sum);
+    for (const [ms, amp] of taps) {
+      const d = ac.createDelay(2);
+      d.delayTime.value = ms / 1000 / rate;
+      const g = ac.createGain();
+      g.gain.value = amp;
+      node.connect(d).connect(g).connect(sum);
+    }
+    node = sum;
+  }
+  const out = ac.createGain();
+  out.gain.value = plan.gain;
+  return node.connect(out);
+}
+
+/**
+ * セリフの声のつなぎ（書き出しの voice_audio_filters と同じ順）：音声エフェクト → エコー → リバーブ → 音量とフェード → 左右。
  * into は再生を始めるときのクリップの頭からの秒、at はそれが鳴る時刻
  */
 function voiceChain(ac: AudioContext, src: AudioNode, c: VoiceClip, vol: number, fps: number, into: number, at: number, rate: number): AudioNode {
   const fx = c.audioFx;
   let node: AudioNode = src;
-  for (const f of fx?.filters ?? []) {
-    const bq = ac.createBiquadFilter();
-    bq.type = f.kind;
-    bq.frequency.value = Math.max(1, f.hz);
-    bq.Q.value = Math.SQRT1_2;
-    node = node.connect(bq);
-  }
+  for (const f of fx?.filters ?? []) node = filterNode(ac, node, f);
   if (fx?.echo && fx.echo.delayMs > 0 && fx.echo.decay > 0) {
     const mix = ac.createGain();
     const delay = ac.createDelay(5);
@@ -82,6 +188,7 @@ function voiceChain(ac: AudioContext, src: AudioNode, c: VoiceClip, vol: number,
     node.connect(delay).connect(decay).connect(mix);
     node = mix;
   }
+  if (fx?.reverb) node = reverbNode(ac, node, fx.reverb, rate);
   // 音量とフェード（クリップの頭・終わりから。直線）
   const gain = ac.createGain();
   const dur = c.duration / fps;
