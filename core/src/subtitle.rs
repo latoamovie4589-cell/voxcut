@@ -156,7 +156,7 @@ pub fn karaoke_bounds(chars: &[char], duration: Frame, fps: u32) -> Vec<u32> {
     out
 }
 
-/// 一部の文字の飾り（色・大きさ）を ASS にするための材料。styles は文字ごと（改行は数えない）
+/// 一部の文字の飾り（色・大きさ・太字）を ASS にするための材料。styles は文字ごと（改行は数えない）
 struct Deco<'a> {
     styles: &'a [Option<Span>],
     /// 飾りのない文字の色（"#RRGGBB"）と大きさ
@@ -164,7 +164,7 @@ struct Deco<'a> {
     font_size: u32,
     /// カラオケでは、塗る前の色（副の色）を飾りの色にする（塗ったあとは塗る色）
     karaoke: bool,
-    /// ルビのある字幕では大きさを変えない（ルビの位置がずれるため）
+    /// ルビのある字幕では大きさ・太字を変えない（ルビの位置がずれるため）
     ignore_size: bool,
 }
 
@@ -174,9 +174,9 @@ impl Deco<'_> {
         self.styles.iter().any(Option::is_some)
     }
 
-    /// 文字 i の飾り（大きさを使わないときは外す）
+    /// 文字 i の飾り（大きさ・太字を使わないときは外す）
     fn at(&self, i: usize) -> Option<Span> {
-        self.styles.get(i).cloned().flatten().map(|s| Span { size: if self.ignore_size { None } else { s.size }, ..s }).filter(|s| s.color.is_some() || s.size.is_some())
+        self.styles.get(i).cloned().flatten().map(|s| Span { size: if self.ignore_size { None } else { s.size }, bold: s.bold && !self.ignore_size, ..s }).filter(|s| s.color.is_some() || s.size.is_some() || s.bold)
     }
 
     /// 前の文字の飾り prev から cur に変わるときのタグ（変わらなければ空）。飾りなしに戻るときは元の色・大きさを明示する
@@ -187,7 +187,8 @@ impl Deco<'_> {
         let col = cur.as_ref().and_then(|s| s.color.as_deref()).unwrap_or(self.color);
         let size = cur.as_ref().and_then(|s| s.size).map_or(self.font_size as f64, |k| self.font_size as f64 * k);
         let which = if self.karaoke { "2c" } else { "1c" };
-        format!("\\{which}{}&\\fs{:.0}", ass_color(col), size.max(1.0))
+        let b = u8::from(cur.as_ref().is_some_and(|s| s.bold));
+        format!("\\{which}{}&\\fs{:.0}\\b{b}", ass_color(col), size.max(1.0))
     }
 }
 
@@ -762,15 +763,15 @@ mod tests {
         let base: String = m.segs.iter().map(|s| s.base.as_str()).collect();
         assert_eq!(base, "あいうえ\nおか");
         // 文字ごと（改行は数えない）
-        let col = |c: &str| Some(Span { color: Some(c.into()), size: None });
+        let col = |c: &str| Some(Span { color: Some(c.into()), size: None, bold: false });
         assert_eq!(m.styles.len(), 6);
         assert_eq!(m.styles[0], None);
         assert_eq!(m.styles[1], col("#FF0000"));
-        assert_eq!(m.styles[2], Some(Span { color: Some("#FF0000".into()), size: Some(1.5) }));
+        assert_eq!(m.styles[2], Some(Span { color: Some("#FF0000".into()), size: Some(1.5), bold: false }));
         assert_eq!((m.styles[3].clone(), m.styles[4].clone()), (None, None));
         assert_eq!(m.styles[5], col("#12AB34"));
         // 書き方に合わない < はそのまま文字。大きさは 0.3〜4 に収める
-        assert_eq!(crate::text::strip_markup("a<b>c <c=#xyz>d <s=9>e</s>"), "a<b>c <c=#xyz>d e");
+        assert_eq!(crate::text::strip_markup("a<i>c <c=#xyz>d <s=9>e</s>"), "a<i>c <c=#xyz>d e");
         assert_eq!(parse_markup("<s=9>e").styles[0].as_ref().unwrap().size, Some(4.0));
         // 声・SRT にも書き方は入らない
         assert_eq!(crate::text::ruby_reading("<c=#f00>明日《あした》</c>は"), "あしたは");
@@ -778,19 +779,28 @@ mod tests {
 
         // ふつうに出す：色は 1c、大きさは fs（50 × 1.5 = 75）。もとに戻るときは文字の色と大きさを明示する
         let p = line_with("あ<c=#ff0000>い<s=1.5>う</s></c>え", SubtitleAnimation::None);
-        assert_eq!(dialogues(&p), vec!["あ{\\1c&H000000FF&\\fs50}い{\\1c&H000000FF&\\fs75}う{\\1c&H00FFFFFF&\\fs50}え"]);
+        assert_eq!(dialogues(&p), vec!["あ{\\1c&H000000FF&\\fs50\\b0}い{\\1c&H000000FF&\\fs75\\b0}う{\\1c&H00FFFFFF&\\fs50\\b0}え"]);
         // 飾りがなければ今までどおり
         assert_eq!(dialogues(&line_with("あいう", SubtitleAnimation::None)), vec!["あいう"]);
         // 1 文字ずつ：まだ出ない文字は透明にする（飾りは保つ）
         let t = dialogues(&line_with("あ<c=#ff0000>いう</c>", SubtitleAnimation::Typewriter));
-        assert!(t[1].ends_with("あ{\\1c&H000000FF&\\fs50\\alpha&HFF&}いう"), "{t:?}");
-        assert_eq!(t.last().unwrap(), "あ{\\1c&H000000FF&\\fs50}いう");
+        assert!(t[1].ends_with("あ{\\1c&H000000FF&\\fs50\\b0\\alpha&HFF&}いう"), "{t:?}");
+        assert_eq!(t.last().unwrap(), "あ{\\1c&H000000FF&\\fs50\\b0}いう");
         // カラオケ：塗る前の色（2c）を飾りの色にする
         let k = dialogues(&line_with("あ<c=#00ff00>い</c>", SubtitleAnimation::Karaoke));
-        assert!(k[0].contains("{\\kf") && k[0].contains("\\2c&H0000FF00&\\fs50}い"), "{k:?}");
+        assert!(k[0].contains("{\\kf") && k[0].contains("\\2c&H0000FF00&\\fs50\\b0}い"), "{k:?}");
         // ルビのある字幕では大きさを使わない（色は使う）
         let r = dialogues(&line_with("<c=#ff0000><s=2>明日《あした》</s></c>", SubtitleAnimation::None));
         assert!(r[0].contains("\\1c&H000000FF&") && !r[0].contains("\\fs100"), "{r:?}");
+        // 太字：<b>…</b>（入れ子・色との組み合わせ）。ふつうの文字に戻るときは \b0 を明示する
+        let m = parse_markup("あ<b>い<c=#f00>う</c></b>え");
+        assert_eq!(m.styles.iter().map(|x| x.as_ref().map(|s| s.bold)).collect::<Vec<_>>(), vec![None, Some(true), Some(true), None]);
+        assert_eq!(crate::text::strip_markup("<b><b>あ</b>い</b>う</b>"), "あいう");
+        let b = dialogues(&line_with("あ<b>い</b>う", SubtitleAnimation::None));
+        assert_eq!(b, vec!["あ{\\1c&H00FFFFFF&\\fs50\\b1}い{\\1c&H00FFFFFF&\\fs50\\b0}う"]);
+        // ルビのある字幕では太字も使わない
+        let rb = dialogues(&line_with("<b>明日《あした》</b>", SubtitleAnimation::None));
+        assert!(rb.iter().all(|l| !l.contains("\\b1")), "{rb:?}");
     }
 
     #[test]

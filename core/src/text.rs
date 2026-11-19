@@ -72,13 +72,15 @@ pub fn parse_ruby(text: &str) -> Vec<RubySeg> {
     parse_markup(text).segs
 }
 
-/// 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）。どちらも入れ子にできる）
+/// 一部の文字だけの飾り（`<c=#FF0000>赤</c>` で色、`<s=1.5>大</s>` で大きさ（倍）、`<b>太</b>` で太字。どれも入れ子にできる）
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
     /// "#RRGGBB"（大文字）
     pub color: Option<String>,
     /// 大きさの倍率（0.3〜4）
     pub size: Option<f64>,
+    /// 太字（`<b>太</b>`）
+    pub bold: bool,
 }
 
 /// ルビと飾りを読み取った結果。segs は飾りの書き方を外した区切り、styles は文字ごとの飾り（改行は数えない。飾りなしは None）
@@ -95,6 +97,8 @@ enum Tag {
     Size(f64),
     EndColor,
     EndSize,
+    Bold,
+    EndBold,
 }
 
 fn parse_tag(c: &[char], i: usize) -> Option<(Tag, usize)> {
@@ -107,6 +111,8 @@ fn parse_tag(c: &[char], i: usize) -> Option<(Tag, usize)> {
     match inner.as_str() {
         "/c" => return Some((Tag::EndColor, n)),
         "/s" => return Some((Tag::EndSize, n)),
+        "/b" => return Some((Tag::EndBold, n)),
+        "b" => return Some((Tag::Bold, n)),
         _ => {}
     }
     if let Some(v) = inner.strip_prefix("c=") {
@@ -135,6 +141,7 @@ fn parse_tag(c: &[char], i: usize) -> Option<(Tag, usize)> {
 pub fn parse_markup(text: &str) -> Markup {
     let mut colors: Vec<String> = vec![];
     let mut sizes: Vec<f64> = vec![];
+    let mut bold = 0usize;
     let mut segs = vec![];
     let mut styles = vec![];
     for seg in parse_ruby_raw(text) {
@@ -152,6 +159,8 @@ pub fn parse_markup(text: &str) -> Markup {
                     Tag::EndSize => {
                         sizes.pop();
                     }
+                    Tag::Bold => bold += 1,
+                    Tag::EndBold => bold = bold.saturating_sub(1),
                 }
                 i += n;
                 continue;
@@ -159,7 +168,7 @@ pub fn parse_markup(text: &str) -> Markup {
             base.push(c[i]);
             if c[i] != '\n' {
                 let (col, sz) = (colors.last().cloned(), sizes.last().copied());
-                styles.push(if col.is_none() && sz.is_none() { None } else { Some(Span { color: col, size: sz }) });
+                styles.push(if col.is_none() && sz.is_none() && bold == 0 { None } else { Some(Span { color: col, size: sz, bold: bold > 0 }) });
             }
             i += 1;
         }
