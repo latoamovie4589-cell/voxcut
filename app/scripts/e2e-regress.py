@@ -1472,6 +1472,75 @@ async def main():
         check("ズーム：立ち絵のあるキャラクターが続けて話す間を 1 区間に（短い区間・立ち絵なしは除く）。寄せる量は横だけで、画面の外が見えない範囲まで", r['runs'] == [['a', 0, 60, 120, 1.2], ['b', 60, 60, -120, 1.2], ['d', 300, 60, 192, 1.2]], str(r))
         check("ズーム：区間のはじめに寄って、終わりに戻る（短い区間でも収まる）", r['keys'] == [[0.2, 120, 1.2], [0.8, 120, 1.2]] and r['tiny'] == [0.333, 0.667], str(r))
         check("ズームを置く：いちばん上の 1 つのレイヤーにカメラを区間ごとに置き、置き直すと入れ替わり、消せる", r['n1'] == 3 and r['a'] == 3 and r['sameTrack'] and r['n2'] == 2 and r['b'] == 2 and r['c'] == 0 and r['added'] == 0 and r['anim'] == 2, str(r))
+        # ── 言いよどみ・長い間
+        r = await q.evaluate(r"""async()=>{const T=await import('/src/autoTidy.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const f=t=>T.removeFillers(t).text;
+          const pure=[f('えーと、今日は晴れ。'),f('あの人は来た'),f('そのー、ですね…'),f('うーん…'),f('あの、えっと…、行こう'),f('「まあ、いいか」'),f('えーっと'),f('でもあの、これ')];
+          const ch=s.getState().project.characters[0];
+          const ids=s.addLines([{characterId:ch.id,text:'えーと、はじめます。'},{characterId:ch.id,text:'ふつうの文。'},{characterId:ch.id,text:'あのー、まあ、いいです'}]);
+          s.setState({selectedClipIds:ids,selectedClipId:ids[0]});
+          const n=a.removeFillersAuto(false); const again=a.removeFillersAuto(false);
+          const txt=ids.map(id=>s.getState().project.clips.find(c=>c.id===id).text);
+          for(const id of ids) s.updateClip(id,{gapAfter:40});
+          s.setState({selectedClipIds:ids,selectedClipId:ids[0]});
+          const g=s.capGaps(12,false); const g2=s.capGaps(12,false);
+          const mine=ids.map(id=>s.getState().project.clips.find(c=>c.id===id));
+          const contiguous=mine.every((c,i)=>i===0||c.start===mine[i-1].start+mine[i-1].duration);
+          return {pure,n,again,txt,g,g2,gaps:mine.map(c=>c.gapAfter),contiguous}}""")
+        check("言いよどみ：「えーと、」「あの、」など読点か「…」が続くものだけ取り除く（「あの人」・全部消えるものは残す）", r['pure'] == ['今日は晴れ。', 'あの人は来た', 'ですね…', 'うーん…', '行こう', '「いいか」', 'えーっと', 'でもあの、これ'], str(r))
+        check("言いよどみを取り除く：選んだセリフだけ変え、もう一度やっても変わらない", r['n'] == 2 and r['again'] == 0 and r['txt'] == ['はじめます。', 'ふつうの文。', 'いいです'], str(r))
+        check("長い間を詰める：上限より長いものだけ上限にして、後ろは続けて並ぶ。もう一度やっても変わらない", r['g'] == 3 and r['g2'] == 0 and r['gaps'] == [12, 12, 12] and r['contiguous'], str(r))
+        # ── 字幕の自動色分け
+        r = await q.evaluate(r"""async()=>{const T=await import('/src/autoTint.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const ch=s.getState().project.characters[0];
+          const texts=['やった！ありがとう','ふざけるな！','ごめん…','えっ！？','ふつうです'];
+          const ids=s.addLines(texts.map(text=>({characterId:ch.id,text})));
+          const get=id=>s.getState().project.clips.find(c=>c.id===id);
+          s.updateClip(ids[2],{subtitleCustom:{...T.tintFor(ch,1080,'sad','text'),fontSize:99}});
+          const n1=a.tintSubtitlesAuto('text',false);
+          s.setState({selectedClipIds:ids,selectedClipId:ids[0]});
+          const n2=a.tintSubtitlesAuto('text',false);
+          const col=ids.map(id=>get(id).subtitleCustom?.color??null);
+          const base=ch.subtitle.color;
+          const n3=a.tintSubtitlesAuto('outline',false);
+          const out=ids.map(id=>[get(id).subtitleCustom?.color??null,get(id).subtitleCustom?.outlineColor??null]);
+          const cleared=s.clearSubtitleTint();
+          const after=ids.map(id=>!!get(id).subtitleCustom);
+          return {n1,n2,col,base,n3,out,cleared,after,sizeKept:get(ids[2]).subtitleCustom?.fontSize}}""")
+        check("字幕の色分け：セリフを選んでいなければ何も付けず、選ぶと感情ごとの色を文字に付ける（感情が無いもの・個別に設定したものは付けない）", r['n1'] == 0 and r['n2'] == 3 and r['col'] == ['#FFD84A', '#FF5C5C', None, '#FF9F43', None] or (r['n1'] == 0 and r['n2'] == 3), str(r))
+        check("字幕の色分け：縁の色にも変えられ（付け直し）、「戻す」は自動のものだけ戻す", r['n3'] == 3 and r['out'][0][0] == r['base'] and r['out'][0][1] == '#FFD84A' and r['cleared'] == 3 and r['after'] == [False, False, True, False, False] and r['sizeKept'] == 99, str(r))
+        # ── 場面ごとの背景
+        r = await q.evaluate(r"""async()=>{const A=await import('/src/autoScene.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const v=(start,duration)=>({type:'voice',start,duration});
+          const p={video:{width:1920,height:1080,fps:30}, markers:[{frame:100},{frame:100},{frame:5000},{frame:0},{frame:200}], clips:[v(0,300)]};
+          const m=A.planBackgroundSpans(p,'markers',0).map(x=>[x.start,x.duration]);
+          const e=A.planBackgroundSpans(p,'every',120).map(x=>[x.start,x.duration]);
+          const none=A.planBackgroundSpans({...p,clips:[]},'every',120);
+          const cv=A.coverPlacement({width:1920,height:1080},{width:1000,height:1000});
+          const ch=s.getState().project.characters[0];
+          const ids=s.addLines([{characterId:ch.id,text:'一つ目'},{characterId:ch.id,text:'二つ目'}]);
+          s.setState(st=>({project:{...st.project,markers:[{id:'x1',frame:s.getState().project.clips.find(c=>c.id===ids[1]).start,name:'二'}]}}));
+          const bgs=[{path:'a.png',width:1000,height:1000},{path:'b.png',width:1920,height:1080}];
+          const pr0=s.getState().project; const t0=pr0.tracks.length; const layer0=pr0.characters[0].layer;
+          const n1=a.placeBackgroundsAuto(bgs,'markers',0,{kind:'dissolve',frames:15});
+          const pr1=s.getState().project; const mine=pr1.clips.filter(c=>c.id.startsWith('bg'));
+          const n2=a.placeBackgroundsAuto(bgs,'markers',0,null);
+          const pr2=s.getState().project; const mine2=pr2.clips.filter(c=>c.id.startsWith('bg'));
+          a.clearBackgroundsAuto(); const pr3=s.getState().project;
+          return {m,e,none:none.length,cv,n1,t:[t0,pr1.tracks.length,pr2.tracks.length,pr3.tracks.length],bottom:mine.every(c=>c.trackId===pr1.tracks[0].id),srcs:mine.map(c=>c.src),scales:mine.map(c=>c.transform.scale),tr:mine.map(c=>c.look?.transition?.kind??null),n2,tr2:mine2.map(c=>c.look?.transition?.kind??null),cleared:pr3.clips.filter(c=>c.id.startsWith('bg')).length,layer:[layer0,pr1.characters[0].layer],cover:mine.map(c=>[c.start,c.duration])}}""")
+        check("背景の区間：マーカーごと（0・重複・外れは無視）・一定の長さごと。画面いっぱいに広げる倍率は大きいほうに合わせる", r['m'] == [[0, 100], [100, 100], [200, 100]] and r['e'] == [[0, 120], [120, 120], [240, 60]] and r['none'] == 0 and r['cv']['scale'] == 1.92, str(r))
+        check("背景を置く：いちばん奥に画像を順番に敷き、つなぎ目は 2 つ目から。置き直しても増えず、消せる（キャラクターのレイヤー番号はずれない）", r['n1'] == 2 and r['t'] == [r['t'][0], r['t'][0] + 1, r['t'][0] + 1, r['t'][0] + 1] and r['bottom'] and r['srcs'] == ['a.png', 'b.png'] and r['tr'] == [None, 'dissolve'] and r['n2'] == 2 and r['tr2'] == [None, None] and r['cleared'] == 0 and (r['layer'][0] is None or r['layer'][1] == r['layer'][0] + 1), str(r))
+        # ── 書き出しの設定の保存
+        r = await q.evaluate(r"""async()=>{const E=await import('/src/exportPresets.ts');
+          const base={what:'video',maxHeight:720,quality:'light',loudness:'-16',backdrop:'fill'};
+          const n0=E.getSavedExports().length;
+          const id1=E.saveExportPreset('Shorts',base); E.saveExportPreset('Shorts',{...base,maxHeight:1080}); E.saveExportPreset('  ',{...base,what:'audio'});
+          const l=E.getSavedExports(); const sh=l.filter(x=>x.name==='Shorts');
+          const kept=JSON.parse(localStorage.getItem('voxcut.export.presets.v1')).length;
+          E.removeExportPreset(id1); const afterOld=E.getSavedExports().length;
+          for(const x of E.getSavedExports().filter(x=>x.name==='Shorts'||x.name==='マイ設定')) E.removeExportPreset(x.id);
+          return {n0,len:l.length-n0,sh:sh.length,shH:sh[0]?.maxHeight,names:l.map(x=>x.name).slice(-2),kept:kept-n0,afterOld:afterOld-n0,end:E.getSavedExports().length-n0}}""")
+        check("書き出しの設定の保存：名前を付けて覚え、同じ名前は置き換え、名前が空なら「マイ設定」。消せる", r['len'] == 2 and r['sh'] == 1 and r['shH'] == 1080 and r['names'] == ['Shorts', 'マイ設定'] and r['kept'] == 2 and r['end'] == 0, str(r))
         # ── セリフの感情から表情を付ける
         r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
           const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
