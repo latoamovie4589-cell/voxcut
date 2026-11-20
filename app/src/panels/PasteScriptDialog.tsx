@@ -10,7 +10,7 @@ import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
-import {namesIn, parseScript, parseScriptFile, splitLongText, toScriptText} from '../script';
+import {namesIn, parseScript, parseScriptFile, scriptHeadings, splitLongText, toScriptText} from '../script';
 import {Icon} from '@astryxdesign/core/Icon';
 import {FileText} from 'lucide-react';
 import {ENGINE_LABEL, type EngineId} from '../model';
@@ -29,6 +29,7 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
   const [synthNow, setSynthNow] = useState(true);
   const [autoSplit, setAutoSplit] = useState(false);
   const [splitMax, setSplitMax] = useState(30);
+  const [headingMarks, setHeadingMarks] = useState(true);
   const [seen, setSeen] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -45,6 +46,7 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
   }
   const lines = useMemo(() => parseScript(text), [text]);
   const names = useMemo(() => namesIn(lines), [lines]);
+  const headings = useMemo(() => scriptHeadings(text), [text]);
   if (!project) return null;
   const chars = project.characters;
   const fallback = selected ?? chars[0]?.id ?? '';
@@ -110,15 +112,19 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
       updateCharacter(id, speaker ? {name, voice: {...base.voice, engine, speaker}} : {name});
       created.set(name, id);
     }
-    const items = lines.flatMap(l => {
+    // 行ごとに何個のアイテムになるか（見出しのマーカーを置く位置のため）
+    const per = lines.map(l => {
       const characterId = l.name ? (created.get(l.name) ?? target(l.name)) : fallback;
       return (autoSplit ? splitLongText(l.text, splitMax) : [l.text]).map(text => ({characterId, text}));
     });
+    const items = per.flat();
+    const starts = per.reduce<number[]>((a, x) => [...a, a[a.length - 1] + x.length], [0]);
+    const marks = headingMarks ? headings.map(h => ({before: starts[Math.min(h.before, lines.length)], name: h.name})) : [];
     // 選んでいたキャラクターに戻す（addCharacter が選択を変えるため）
     setState({selectedCharacterId: prevSel});
-    const ids = addLines(items);
+    const ids = addLines(items, marks);
     close();
-    notify(`${ids.length} 行を追加しました${created.size ? `。キャラクターを ${created.size} 人作りました` : ''}`);
+    notify(`${ids.length} 行を追加しました${marks.length ? `。マーカーを ${marks.length} 個付けました` : ''}${created.size ? `。キャラクターを ${created.size} 人作りました` : ''}`);
     if (synthNow && ids.length) void synthesize(notify, ids);
   };
 
@@ -200,6 +206,7 @@ export function PasteScriptDialog({notify}: {notify: Notify}) {
               </div>
             )}
           </HStack>
+          {headings.length > 0 && <CheckboxInput label={`「# 見出し」の行をマーカー（チャプター）にする（${headings.length} 個）`} value={headingMarks} onChange={setHeadingMarks} />}
           {autoSplit && <Text type="supporting">文の終わり（。！？）、足りなければ読点（、）で切ります。「」の中では切りません。</Text>}
         </VStack>
       </div>
