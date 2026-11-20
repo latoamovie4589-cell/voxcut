@@ -8,7 +8,7 @@ import {HStack, VStack} from '@astryxdesign/core/Layout';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
-import {capGapsAuto, clearTintAuto, removeFillersAuto, tintSubtitlesAuto} from '../actions';
+import {capGapsAuto, clearTintAuto, fitSubtitlesAuto, removeFillersAuto, tintSubtitlesAuto} from '../actions';
 import {TINT_COLOR, TINT_LABEL, TINT_TARGET_LABEL, type TintTarget} from '../autoTint';
 import type {Emotion} from '../emotion';
 import {setState, useStore} from '../store';
@@ -21,13 +21,15 @@ export function AutoTidyDialog() {
   const [scope, setScope] = useState<'all' | 'selected'>('all');
   const [maxGap, setMaxGap] = useState(Math.round(fps * 0.8));
   const [target, setTarget] = useState<TintTarget>('text');
+  const [maxLines, setMaxLines] = useState(2);
+  const [minSize, setMinSize] = useState(36);
   if (!project) return null;
   const close = () => setState({autoTidyOpen: false});
   const all = scope === 'all';
   const noSel = !all && !selCount;
   return (
     <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={520} maxHeight="92dvh" purpose="info">
-      <DialogHeader title="言いよどみ・字幕の色を自動で" onOpenChange={o => !o && close()} />
+      <DialogHeader title="言いよどみ・字幕を自動で整える" onOpenChange={o => !o && close()} />
       <div style={{maxHeight: 'calc(92dvh - 72px)', overflowY: 'auto'}}>
         <VStack gap={5} padding={4}>
           <Selector
@@ -68,6 +70,19 @@ export function AutoTidyDialog() {
               <Button label="自動の色を戻す" variant="ghost" onClick={clearTintAuto} />
             </HStack>
             <Text type="supporting">感情は、声の感情の設定か、セリフの言葉づかいから決めます。字幕を個別に設定したセリフは触りません。</Text>
+          </VStack>
+          <VStack gap={2}>
+            <Text type="label">字幕を画面に収める</Text>
+            <HStack gap={2} wrap="wrap">
+              <div style={{width: 150}}>
+                <NumberInput label="行数の上限" units="行" value={maxLines} min={1} max={6} onChange={v => setMaxLines(Math.max(1, Math.round(v || 1)))} />
+              </div>
+              <div style={{width: 150}}>
+                <NumberInput label="文字の最小の大きさ" units="px" value={minSize} min={8} max={200} onChange={v => setMinSize(Math.max(8, Math.round(v || 8)))} />
+              </div>
+            </HStack>
+            <Button label="行が多い字幕を収める" variant="primary" onClick={() => fitSubtitlesAuto(maxLines, minSize)} />
+            <Text type="supporting">行数の上限を超える字幕のあるキャラクターの文字を、収まる大きさまで小さくします（個別に設定した字幕は変えません）。それでも収まらないときは、セリフを分けてください。</Text>
           </VStack>
           <HStack hAlign="end">
             <Button label="閉じる" onClick={close} />

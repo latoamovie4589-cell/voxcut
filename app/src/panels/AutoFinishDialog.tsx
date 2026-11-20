@@ -10,7 +10,8 @@ import {Selector} from '@astryxdesign/core/Selector';
 import {Slider} from '@astryxdesign/core/Slider';
 import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
-import {adjustGapsAuto, clearZoomAuto, exportStills, placeZoomAuto, type Notify} from '../actions';
+import {adjustGapsAuto, arrangeAuto, clearShakeAuto, clearZoomAuto, exportStills, placeShakeAuto, placeZoomAuto, type Notify} from '../actions';
+import {SHAKE_MODE_LABEL, type ShakeMode} from '../autoShake';
 import {planStills, STILL_MODE_LABEL, type StillMode} from '../autoStills';
 import {setState, useStore} from '../store';
 
@@ -29,12 +30,17 @@ export function AutoFinishDialog({notify}: {notify: Notify}) {
   const [ease, setEase] = useState(12);
   const [mode, setMode] = useState<StillMode>('markers');
   const [count, setCount] = useState(6);
+  const [shakeMode, setShakeMode] = useState<ShakeMode>('strong');
+  const [shakeLen, setShakeLen] = useState(10);
+  const [shakeAmp, setShakeAmp] = useState(14);
+  const [span, setSpan] = useState(0.8);
+  const [onlyAppearing, setOnlyAppearing] = useState(true);
   if (!project) return null;
   const close = () => setState({autoFinishOpen: false});
   const frames = planStills(project, mode, count);
   return (
     <Dialog isOpen={isOpen} onOpenChange={o => !o && close()} width={520} maxHeight="92dvh" purpose="info">
-      <DialogHeader title="間・ズーム・サムネイルを自動で" onOpenChange={o => !o && close()} />
+      <DialogHeader title="間・ズーム・揺れ・立ち位置・サムネイルを自動で" onOpenChange={o => !o && close()} />
       <div style={{maxHeight: 'calc(92dvh - 72px)', overflowY: 'auto'}}>
         <VStack gap={5} padding={4}>
           <VStack gap={2}>
@@ -82,6 +88,23 @@ export function AutoFinishDialog({notify}: {notify: Notify}) {
               </div>
             )}
             <Button label={frames.length ? `${frames.length} 枚を書き出す…` : '書き出せるコマがありません'} variant="primary" isDisabled={!frames.length || !!busy} onClick={() => void exportStills(notify, frames)} />
+          </VStack>
+          <VStack gap={2}>
+            <Text type="label">画面の揺れ（強い感情のセリフの頭で、カメラをぶるっと揺らす）</Text>
+            <Selector label="揺らすセリフ" value={shakeMode} options={(Object.keys(SHAKE_MODE_LABEL) as ShakeMode[]).map(k => ({value: k, label: SHAKE_MODE_LABEL[k]}))} onChange={v => setShakeMode(v as ShakeMode)} width="100%" />
+            <Slider label="揺れの大きさ" value={shakeAmp} min={4} max={40} step={1} valueDisplay="text" formatValue={v => `${v} px`} onChange={(v: number) => setShakeAmp(Math.round(v))} />
+            <Slider label="揺れる長さ" value={shakeLen} min={4} max={30} step={1} valueDisplay="text" formatValue={v => `${v} コマ`} onChange={(v: number) => setShakeLen(Math.round(v))} />
+            <HStack gap={2}>
+              <Button label="揺れを置く" variant="primary" onClick={() => placeShakeAuto(shakeMode, shakeLen, shakeAmp)} />
+              <Button label="自動の揺れを消す" variant="ghost" onClick={clearShakeAuto} />
+            </HStack>
+          </VStack>
+          <VStack gap={2}>
+            <Text type="label">立ち位置（立ち絵を画面に均等に並べる）</Text>
+            <Slider label="使う画面の幅" value={span} min={0.5} max={1} step={0.05} valueDisplay="text" formatValue={v => `${Math.round(v * 100)}%`} onChange={(v: number) => setSpan(v)} />
+            <Switch label="セリフのあるキャラクターだけ並べる" value={onlyAppearing} onChange={setOnlyAppearing} labelPosition="start" labelSpacing="spread" width="100%" />
+            <Button label="立ち位置を並べる" variant="primary" onClick={() => arrangeAuto(span, onlyAppearing)} />
+            <Text type="supporting">いまの左から右への順のまま、立ち絵の横の位置だけを等間隔にします（大きさ・縦の位置は変えません）。</Text>
           </VStack>
           <HStack hAlign="end">
             <Button label="閉じる" onClick={close} />
