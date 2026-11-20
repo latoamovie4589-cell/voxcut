@@ -1541,6 +1541,64 @@ async def main():
           for(const x of E.getSavedExports().filter(x=>x.name==='Shorts'||x.name==='マイ設定')) E.removeExportPreset(x.id);
           return {n0,len:l.length-n0,sh:sh.length,shH:sh[0]?.maxHeight,names:l.map(x=>x.name).slice(-2),kept:kept-n0,afterOld:afterOld-n0,end:E.getSavedExports().length-n0}}""")
         check("書き出しの設定の保存：名前を付けて覚え、同じ名前は置き換え、名前が空なら「マイ設定」。消せる", r['len'] == 2 and r['sh'] == 1 and r['shH'] == 1080 and r['names'] == ['Shorts', 'マイ設定'] and r['kept'] == 2 and r['end'] == 0, str(r))
+        # ── 字幕を画面に収める
+        r = await q.evaluate(r"""async()=>{const F=await import('/src/autoFit.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const ch=(id,fs)=>({id,subtitle:{fontSize:fs}});
+          const v=(characterId,text,extra={})=>({type:'voice',characterId,text,...extra});
+          const p={video:{width:1920,height:1080,fps:30}, characters:[ch('a',80),ch('b',80),ch('c',80)], clips:[v('a','あ'.repeat(60)),v('b','あ'.repeat(400)),v('c','短い'),v('c','あ'.repeat(400),{subtitleCustom:{}})]};
+          const lc=[F.subtitleLineCount('あ'.repeat(60),p.characters[0].subtitle,1920), F.subtitleLineCount('あ'.repeat(60),p.characters[0].subtitle,1920,60)];
+          const plan=F.planFit(p,2,36).map(x=>[x.characterId,x.from,x.to,x.left]);
+          const over=F.overflowLines(p,2).length;
+          const c0=s.getState().project.characters[0]; const fs0=c0.subtitle.fontSize;
+          const ids=s.addLines([{characterId:c0.id,text:'あ'.repeat(120)}]);
+          const before=F.overflowLines(s.getState().project,2).length;
+          const n=a.fitSubtitlesAuto(2,12);
+          const pr=s.getState().project; const fs1=pr.characters.find(c=>c.id===c0.id).subtitle.fontSize;
+          const after=F.overflowLines(pr,2).length;
+          const again=a.fitSubtitlesAuto(2,12);
+          return {lc,plan,over,before,n,fs0,fs1,after,again}}""")
+        check("字幕を画面に収める：行数は折り返しの計算どおり。上限を超えるキャラクターだけ、収まる大きさまで 2px 刻みで下げる（収まらなければ最小まで）。個別に設定した字幕は除く", r['lc'] == [3, 2] and r['plan'] == [['a', 80, 60, 0], ['b', 80, 36, 1]] and r['over'] == 2, str(r))
+        check("字幕を画面に収める：実際のキャラクターの文字の大きさが下がって収まり、もう一度やっても変わらない", r['before'] >= 1 and r['n'] >= 1 and r['fs1'] < r['fs0'] and r['after'] == 0 and r['again'] == 0, str(r))
+        # ── 画面の揺れ
+        r = await q.evaluate(r"""async()=>{const K=await import('/src/autoShake.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const v=(start,duration,text)=>({type:'voice',start,duration,text,characterId:'a'});
+          const p={video:{width:1920,height:1080,fps:30}, characters:[{id:'a',voice:{params:{}}}], clips:[v(0,30,'やった！'),v(100,30,'ふざけるな！'),v(105,30,'えっ！？'),v(200,6,'えっ！？'),v(300,30,'ふつう。')]};
+          const strong=K.planShake(p,'strong',10,12).map(r=>[r.start,r.duration]);
+          const all=K.planShake(p,'all',10,12).map(r=>[r.start,r.duration]);
+          const keys=K.shakeKeys({start:0,duration:10,amp:10}).map(k=>[+k.at.toFixed(3),k.transform.x,k.transform.y]);
+          const want=K.planShake(s.getState().project,'all',10,12).length;
+          const cams=()=>s.getState().project.clips.filter(c=>c.id.startsWith('cs')&&c.control?.kind==='camera');
+          const n1=a.placeShakeAuto('all',10,12); const c1=cams(); const n2=a.placeShakeAuto('all',10,12); const c2=cams();
+          const tracks=new Set(c2.map(c=>c.trackId)).size;
+          a.clearShakeAuto(); const c3=cams().length;
+          return {strong,all,keys,want,n1,c1:c1.length,n2,c2:c2.length,tracks,c3,anim:c2[0]?.look?.anim?.keys?.length,ease:c2[0]?.look?.anim?.ease}}""")
+        check("画面の揺れ：「！」「？」で終わるセリフの頭に（強くは怒り・驚きだけ）。前の揺れと重なるもの・3 コマ未満は省く", r['strong'] == [[100, 10], [200, 6]], str(r))
+        check("画面の揺れ：右上・左下と交互に、だんだん小さくなる", r['all'] == [[0, 10], [100, 10], [200, 6]] and r['keys'] == [[0.167, 10, -5], [0.333, -8, 4], [0.5, 6, -3], [0.667, -4, 2], [0.833, 2, -1]], str(r))
+        check("揺れを置く：1 つのレイヤーにカメラを置き、置き直すと入れ替わり、消せる", r['n1'] == r['want'] and r['c1'] == r['want'] and r['n2'] == r['want'] and r['c2'] == r['want'] and r['tracks'] == 1 and r['c3'] == 0 and r['ease'] == 'linear' and r['anim'] >= 2, str(r))
+        # ── 立ち位置の整列
+        r = await q.evaluate(r"""async()=>{const R=await import('/src/autoArrange.ts'); const s=await import('/src/store.ts'); const a=await import('/src/actions.ts');
+          const ch=(id,x,visible=true)=>({id,portrait:{visible,transform:{x,y:0,scale:1,opacity:1}}});
+          const v=characterId=>({type:'voice',characterId});
+          const p={video:{width:1920,height:1080,fps:30}, characters:[ch('a',500),ch('b',-300),ch('c',0),ch('d',0,false)], clips:[v('a'),v('b')]};
+          const only=R.planArrange(p,0.8,true).map(x=>[x.characterId,x.x]);
+          const everyone=R.planArrange(p,0.8,false).map(x=>[x.characterId,x.x]);
+          const clamp=R.planArrange(p,0.1,true).map(x=>x.x);
+          const n=a.arrangeAuto(0.8,false); const pr=s.getState().project;
+          const xs=pr.characters.filter(c=>c.portrait?.visible).map(c=>c.portrait.transform.x).sort((x,y)=>x-y);
+          const again=a.arrangeAuto(0.8,false);
+          return {only,everyone,clamp,n,xs,again,count:pr.characters.filter(c=>c.portrait?.visible).length}}""")
+        check("立ち位置の整列：今の左から右の順のまま、幅を人数で等分した真ん中に置く（同じ位置は省く・使う幅は 50% 以上）", r['only'] == [['b', -384], ['a', 384]] and r['everyone'] == [['b', -512], ['a', 512]] and r['clamp'] == [-240, 240], str(r))
+        check("立ち位置の整列：実際のキャラクターが並び、もう一度やっても変わらない", r['again'] == 0 and len(set(r['xs'])) == r['count'] and (r['count'] < 2 or r['xs'][0] == -r['xs'][-1]), str(r))
+        # ── 書き出し前の点検
+        r = await q.evaluate(r"""async()=>{const C=await import('/src/autoCheck.ts');
+          const v=(id,start,duration,text,extra={})=>({id,type:'voice',characterId:'a',start,duration,text,gapAfter:0,...extra});
+          const p={video:{width:1920,height:1080,fps:30}, characters:[{id:'a',subtitle:{fontSize:56}}], clips:[
+            v('v1',0,30,'まだ',{audio:null,gapAfter:100}), v('v2',130,30,'済み',{audio:{}}), v('v3',160,30,'  ',{audio:{}}), v('v4',200,30,'あ'.repeat(200),{audio:{}}),
+            {id:'m1',type:'media',src:'x.png'},{id:'m2',type:'media',src:'y.png'}]};
+          const full=C.checkProject(p,['x.png']).map(i=>[i.kind,i.level,i.ids]);
+          const clean=C.checkProject({...p,clips:[v('v2',0,30,'済み',{audio:{}})]},[]).length;
+          return {full,clean}}""")
+        check("書き出し前の点検：未合成・素材なし（直さないと困る）→ 空・はみ出す字幕・長い間（確かめたい）の順に見つける", r['full'] == [['unsynth', 'error', ['v1']], ['missing', 'error', ['m1']], ['empty', 'warn', ['v3']], ['overflow', 'warn', ['v4']], ['bigGap', 'warn', ['v1']]] and r['clean'] == 0, str(r))
         # ── セリフの感情から表情を付ける
         r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
           const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
