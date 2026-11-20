@@ -72,6 +72,22 @@ export function parseScript(src: string): ScriptLine[] {
   return out;
 }
 
+/**
+ * 台本の「# 見出し」の行（# を 1〜3 個＋見出し）。before は、その見出しより前にあるセリフの行数
+ * （parseScript の返す行の並びでの位置）。チャプターのマーカーにする
+ */
+export function scriptHeadings(src: string): {before: number; name: string}[] {
+  const out: {before: number; name: string}[] = [];
+  let count = 0;
+  for (const row of joinBracketLines(src.replace(/\r\n?/g, '\n').split('\n'))) {
+    if (row.startsWith('#')) {
+      const m = row.match(/^#{1,3}\s*(\S.*)$/);
+      if (m) out.push({before: count, name: m[1].trim().slice(0, 40)});
+    } else if (row.trim()) count++;
+  }
+  return out;
+}
+
 /** 名前ごとの行数（出てきた順） */
 export function namesIn(lines: ScriptLine[]): {name: string; count: number}[] {
   const m = new Map<string, number>();

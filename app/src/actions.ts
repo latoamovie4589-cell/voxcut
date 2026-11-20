@@ -30,8 +30,10 @@ import {
 } from './model';
 import {bakeTalkBounce, ensurePeaks, mouthLevelsFor, type TalkMode} from './talkBounce';
 import {planBgm, planSe, type SeTrigger} from './autoSound';
+import {planSpeakerZoom} from './autoCamera';
+import type {GapRule} from './autoGap';
 import {imagePlacement, MIXED_KINDS, planKeywordSpans, planTransitions, type ImagePos, type KeywordRule} from './autoScene';
-import {addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
+import {adjustGaps, placeSpeakerCameras, addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -214,6 +216,33 @@ export function placeKeywordRules(rules: (KeywordRule & {width: number; height: 
   if (!n) notifyRef('その言葉を含むセリフがありません', 'error');
   else notifyRef(`画像を ${n} か所に置きました`, 'info');
   return n;
+}
+
+/** セリフの後ろの間を、文の終わりの記号で変える */
+export function adjustGapsAuto(rule: GapRule, all: boolean): number {
+  const n = adjustGaps(rule, all);
+  notifyRef(n ? `${n} 行の後ろの間を変えました（声は作り直さなくて大丈夫です）` : all ? '変わるセリフがありません' : '変わる選んだセリフがありません（セリフを選んでください）', n ? 'info' : 'error');
+  return n;
+}
+
+/** しゃべる人へのズームを置く（前に自動で置いたものは置き直す）。置いた数を返す */
+export function placeZoomAuto(scale: number, easeFrames: number): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const runs = planSpeakerZoom(p, {scale, minFrames: p.video.fps, ease: easeFrames});
+  if (!runs.length) {
+    notifyRef('ズームする区間がありません（立ち絵を表示しているキャラクターが 1 秒以上しゃべる所が必要です）', 'error');
+    return 0;
+  }
+  const n = placeSpeakerCameras(runs);
+  notifyRef(`ズームを ${n} か所に置きました（いちばん上のレイヤー）`, 'info');
+  return n;
+}
+
+/** 自動で置いたズームを消す */
+export function clearZoomAuto(): void {
+  placeSpeakerCameras([]);
+  notifyRef('自動のズームを消しました', 'info');
 }
 
 let proxyListening = false;
@@ -1103,6 +1132,40 @@ export async function exportStill(notify: Notify): Promise<void> {
     const last = Math.max(0, projectDuration(main) - 1);
     await a.exportVideo(main, s.projectPath, out, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: Math.min(s.playhead, last)});
     notify(`画像を書き出しました：${baseName(out)}`, 'info', 'still', {label: '場所を開く', onClick: () => void a.revealInFolder(out)});
+  } catch (e) {
+    notify(friendlyError(e), 'error');
+  } finally {
+    setState({busy: null});
+  }
+}
+
+/** サムネイル候補を、決めたコマの分だけまとめて画像で書き出す（保存名に _01・コマの位置 が付く） */
+export async function exportStills(notify: Notify, frames: number[]): Promise<void> {
+  const s = getState();
+  if (!s.project || s.busy || !frames.length) return;
+  const a = await api;
+  const base = s.projectPath ? s.projectPath.replace(/\.voxcut$/i, '') : s.project.name || 'image';
+  const out = await a.pickSavePath('image', `${base}.png`);
+  if (!out) return;
+  const dot = out.lastIndexOf('.');
+  const [stem, ext] = dot > Math.max(out.lastIndexOf('/'), out.lastIndexOf('\\')) ? [out.slice(0, dot), out.slice(dot)] : [out, '.png'];
+  stop();
+  setState({busy: {label: '画像を書き出しています', ratio: 0}});
+  try {
+    let portraitFrames: ExportRequest['portraitFrames'];
+    if (s.project.characters.some(c => c.portrait?.visible && c.portrait.psd)) {
+      const {bakePsdFrames} = await import('./psd/portrait');
+      portraitFrames = await bakePsdFrames(s.project, s.projectPath, () => {});
+    }
+    const {bakeItemImages} = await import('./preview/visual');
+    const main = canonicalProject(s.project);
+    const itemImages = await bakeItemImages(withTransitions(withScenes(main)));
+    for (let i = 0; i < frames.length; i++) {
+      setState({busy: {label: `画像を書き出しています（${i + 1} / ${frames.length}）`, ratio: i / frames.length}});
+      const name = `${stem}_${String(i + 1).padStart(2, '0')}_${framesToTimecode(frames[i], s.project.video.fps).replace(/:/g, '-')}${ext}`;
+      await a.exportVideo(main, s.projectPath, name, {crf: 18, height: null, portraitFrames, itemImages, stillFrame: frames[i]});
+    }
+    notify(`画像を ${frames.length} 枚書き出しました`, 'info', 'still', {label: '場所を開く', onClick: () => void a.revealInFolder(`${stem}_01_${framesToTimecode(frames[0], s.project!.video.fps).replace(/:/g, '-')}${ext}`)});
   } catch (e) {
     notify(friendlyError(e), 'error');
   } finally {

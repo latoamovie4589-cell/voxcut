@@ -33,6 +33,8 @@ import type {
 } from './model';
 import {autoExpression} from './emotion';
 import {splitLongText} from './script';
+import {gapFor, type GapRule} from './autoGap';
+import {zoomAnim, type ZoomRun} from './autoCamera';
 import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
 import type {GroupItem} from './templates';
 import {LINES_PRESET, PARTICLE_PRESET} from './preview/anim';
@@ -149,6 +151,7 @@ export interface State {
   projectSettingsOpen: boolean;
   autoSoundOpen: boolean;
   autoSceneOpen: boolean;
+  autoFinishOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
   /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
@@ -233,6 +236,7 @@ let state: State = {
   projectSettingsOpen: false,
   autoSoundOpen: false,
   autoSceneOpen: false,
+  autoFinishOpen: false,
   unsavedAsk: false,
   openSeq: 0,
   historyFlash: null,
@@ -695,6 +699,26 @@ export function setGapForSelection(gapAfter: number) {
 }
 
 /**
+ * セリフの後ろの間を、文の終わりの記号で変える（選んだセリフ、または全部）。長さはそのぶん伸び縮みし、後ろのアイテムも付いていく。
+ * 変えたセリフの数を返す（鍵のかかったレイヤーのセリフは変えない）
+ */
+export function adjustGaps(rule: GapRule, all: boolean): number {
+  const p = state.project;
+  if (!p) return 0;
+  const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+  let picked = (all ? p.clips : editableSelection()).filter((c): c is VoiceClip => c.type === 'voice' && !locked.has(c.trackId));
+  if (rule.keepLast) {
+    const last = p.clips.filter((c): c is VoiceClip => c.type === 'voice').reduce<VoiceClip | null>((m, c) => (!m || c.start + c.duration > m.start + m.duration ? c : m), null);
+    picked = picked.filter(c => c.id !== last?.id);
+  }
+  const next = new Map(picked.map(c => [c.id, Math.max(0, Math.round(gapFor(c.text, rule)))]));
+  const changed = picked.filter(c => c.gapAfter !== next.get(c.id));
+  if (!changed.length) return 0;
+  commit(pr => reflowAll({...pr, clips: pr.clips.map(c => (c.type === 'voice' && next.has(c.id) ? {...c, gapAfter: next.get(c.id)!} : c))}));
+  return changed.length;
+}
+
+/**
  * 選んでいるセリフのうち、max 文字を超えるものを、文の終わり・読点で分ける（script.ts の splitLongText）。
  * 分けた行は、もとの行の場所にそのまま続けて並べる（後ろのアイテムは、増えた分だけ後ろへずらす）。声は作り直す。
  * 分けた行の数と、増えた行数を返す
@@ -1049,7 +1073,7 @@ export function addLine(characterId: string, text: string, presetId: string | nu
  * 再生位置から時間順に、それぞれのキャラクターのトラックへ置く。入れた分だけ、そのトラックの後ろのアイテムを後ろへずらす。
  * 1 回の「元に戻す」で全部戻る。追加した行の ID を返す
  */
-export function addLines(items: {characterId: string; text: string}[]): string[] {
+export function addLines(items: {characterId: string; text: string}[], marks: {before: number; name: string}[] = []): string[] {
   const ids: string[] = [];
   let end = 0;
   commit(p0 => {
@@ -1073,7 +1097,14 @@ export function addLines(items: {characterId: string; text: string}[]): string[]
     end = t;
     // 入れた分だけ、後ろのアイテムを全トラックでずらす（掛け合いの順番を崩さない）
     const moved = rippleFrom(p, at, t - at);
-    return {...moved, clips: [...moved.clips, ...added]};
+    // 台本の見出し：その行の頭にマーカー（チャプター）を付ける。同じ位置にもうあれば付けない
+    let markers = moved.markers;
+    for (const m of marks) {
+      const frame = m.before < added.length ? added[Math.max(0, m.before)].start : t;
+      if ((markers ?? []).some(x => x.frame === frame)) continue;
+      markers = [...(markers ?? []), {id: newId('mk'), frame, name: m.name}].sort((a, b) => a.frame - b.frame);
+    }
+    return {...moved, markers, clips: [...moved.clips, ...added]};
   });
   if (ids.length) {
     appendAnchor = {clipId: ids.at(-1)!, playhead: end};
@@ -1454,6 +1485,56 @@ export function addControl(kind: Control['kind'], effects?: Effect[]): string | 
   });
   setState(s => ({selectedClipId: id, revealSeq: s.revealSeq + 1}));
   return id;
+}
+
+/**
+ * しゃべる人へのズーム（カメラ）をまとめて置く。いちばん上の新しいレイヤーに、区間ごとに 1 つ。
+ * 前に自動で置いたもの（id が cz で始まる）は消して置き直す。1 回の「元に戻す」で全部戻る。置いた数を返す
+ */
+export function placeSpeakerCameras(runs: ZoomRun[]): number {
+  const p = state.project;
+  if (!p) return 0;
+  const old = (c: Clip) => c.id.startsWith('cz') && 'control' in c && c.control?.kind === 'camera';
+  const ids: string[] = [];
+  commit(pr => {
+    const keep = pr.clips.filter(c => !old(c));
+    if (!runs.length) return {...pr, clips: keep};
+    // 前に置いたレイヤーが空になったら、そこを使う
+    const vt = videoTracks({...pr, clips: keep});
+    let top = vt.at(-1);
+    const free = (t: Track) => !keep.some(c => c.trackId === t.id);
+    let tracks = pr.tracks;
+    if (!top || !free(top) || top.locked) {
+      const nt = newLayer(newId('V'), 'video');
+      const a = tracks.findIndex(t => t.kind === 'audio');
+      tracks = a < 0 ? [...tracks, nt] : [...tracks.slice(0, a), nt, ...tracks.slice(a)];
+      top = nt;
+    }
+    const clips: Clip[] = runs.map(r => {
+      const id = newId('cz');
+      ids.push(id);
+      const {keys} = zoomAnim(r);
+      return {
+        id,
+        trackId: top!.id,
+        start: r.start,
+        duration: r.duration,
+        type: 'shape',
+        shape: 'rect',
+        width: 200,
+        height: 120,
+        fill: '#5AC8FA',
+        stroke: '',
+        strokeWidth: 0,
+        transform: {x: 0, y: 0, scale: 1, opacity: 1},
+        look: {...plainLook(), anim: {to: {x: 0, y: 0, scale: 1, opacity: 1}, rotation: 0, ease: 'smooth', keys}},
+        control: {kind: 'camera', layers: 1},
+      } as Clip;
+    });
+    return {...pr, tracks, clips: [...keep, ...clips]};
+  });
+  setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1}));
+  return ids.length;
 }
 
 /** 新しいシーンを作って開く（レイヤー 2 つ） */

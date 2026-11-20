@@ -28,7 +28,7 @@ export const SE_TRIGGER_LABEL: Record<SeTrigger, string> = {
 };
 
 /** 文の終わり（閉じ括弧や空白は無視）の記号 */
-const lastMark = (t: string) => [...t.trim().replace(/[」』）)\]】\s]+$/u, '')].at(-1) ?? '';
+export const lastMark = (t: string) => [...t.trim().replace(/[」』）)\]】\s]+$/u, '')].at(-1) ?? '';
 
 /** 効果音を置く位置（フレーム。重複なし・時間順） */
 export function planSe(p: Project, trigger: SeTrigger, keyword = ''): number[] {
