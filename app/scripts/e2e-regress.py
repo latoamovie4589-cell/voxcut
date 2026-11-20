@@ -1417,6 +1417,61 @@ async def main():
         check("キーワード画像：言葉を含むセリフの間を言葉ごとに求め、続くセリフは 1 つにまとめる（言葉が空・当てはまらないものは無し）", r['sp'] == [[{'start': 0, 'duration': 60}, {'start': 200, 'duration': 30}], [{'start': 60, 'duration': 30}], [], []], str(r))
         check("キーワード画像：画面の割合に収まる大きさで、位置は少し内側（画面の外に出ない）", r['c'] == {'x': 0, 'y': 0, 'scale': 0.945} and r['tr'] == {'x': 694, 'y': -308, 'scale': 0.945} and r['bl'] == {'x': -694, 'y': 308, 'scale': 0.945}, str(r))
         check("キーワード画像：全部の区間が空いたレイヤーに置き、ふさがっていれば別のレイヤーへ。短い区間には出入りのフェードが付く", r['n'] == 3 and r['cats'] == 2 and r['same'] and r['dogTrack'] and r['added'] == 3 and r['fade'] == 6 and r['kind'] == 'image', str(r))
+        # ── セリフの間の一括調整（文の終わりの記号で）
+        r = await q.evaluate(r"""async()=>{const G=await import('/src/autoGap.ts'); const s=await import('/src/store.ts');
+          const rule={sentence:10,strong:20,other:4,keepLast:true};
+          const g=t=>G.gapFor(t,rule);
+          const pure=[g('おはよう。'),g('えっ？'),g('やった！」'),g('そして、'),g('ええと…'),g('はい'),g('本当？ 」'),g('')];
+          const ch=s.getState().project.characters[0];
+          const texts=['おはよう。','えっ？','そして、','ありがとう。'];
+          const ids=s.addLines(texts.map(text=>({characterId:ch.id,text})));
+          s.setState({selectedClipIds:ids,selectedClipId:ids[0]});
+          const n=s.adjustGaps({...rule,keepLast:false},false);
+          const mine=ids.map(id=>s.getState().project.clips.find(c=>c.id===id));
+          const contiguous=mine.every((c,i)=>i===0||c.start===mine[i-1].start+mine[i-1].duration);
+          const again=s.adjustGaps({...rule,keepLast:false},false);
+          const durOk=mine.every(c=>c.duration>=c.gapAfter);
+          return {pure, n, gaps:mine.map(c=>c.gapAfter), contiguous, again, durOk}}""")
+        check("間の一括調整：「。」「…」「！」「？」「それ以外」で後ろの間を決める（括弧・空白は無視）", r['pure'] == [10, 20, 20, 4, 10, 4, 20, 4], str(r))
+        check("間の一括調整：選んだセリフの後ろの間を変え、後ろのセリフは続けて並び、もう一度やっても変わらない", r['n'] == 4 and r['gaps'] == [10, 20, 4, 10] and r['contiguous'] and r['again'] == 0 and r['durOk'], str(r))
+        # ── 台本の「# 見出し」をチャプターに
+        r = await q.evaluate(r"""async()=>{const S=await import('/src/script.ts'); const s=await import('/src/store.ts');
+          const src='# はじめに\nA「こんにちは」\nB「やあ」\n## 本題\n#\nA「ところで」\n#タイトル\n';
+          const h=S.scriptHeadings(src); const n=S.parseScript(src).length;
+          const ch=s.getState().project.characters[0];
+          const m0=(s.getState().project.markers??[]).length;
+          const ids=s.addLines([{characterId:ch.id,text:'見出し一'},{characterId:ch.id,text:'見出し二'},{characterId:ch.id,text:'見出し三'}],[{before:0,name:'MK1'},{before:2,name:'MK2'},{before:3,name:'MK3'}]);
+          const st=s.getState().project; const start=id=>st.clips.find(c=>c.id===id).start;
+          const last=st.clips.find(c=>c.id===ids[2]);
+          const mk=name=>(st.markers??[]).find(m=>m.name===name);
+          return {h, n, added:(st.markers??[]).length-m0, f:[mk('MK1')?.frame===start(ids[0]), mk('MK2')?.frame===start(ids[2]), mk('MK3')?.frame===last.start+last.duration]}}""")
+        check("台本の見出し：「# 見出し」の行を、その後ろのセリフの位置の見出しとして読む（# だけ・コメントは除く）", r['h'] == [{'before': 0, 'name': 'はじめに'}, {'before': 2, 'name': '本題'}, {'before': 3, 'name': 'タイトル'}] and r['n'] == 3, str(r))
+        check("台本の見出し：行を追加するとき、見出しの位置にマーカーを付ける（最後の見出しは最後の行の終わり）", r['added'] == 3 and r['f'] == [True, True, True], str(r))
+        # ── サムネイル候補のコマ
+        r = await q.evaluate(r"""async()=>{const A=await import('/src/autoStills.ts');
+          const v=(start,duration,text)=>({type:'voice',start,duration,text});
+          const p={video:{width:1920,height:1080,fps:30}, markers:[{id:'a',frame:50,name:''},{id:'b',frame:10,name:''},{id:'c',frame:9999,name:''},{id:'d',frame:50,name:''}], tracks:[], clips:[v(0,100,'すごい！'),v(100,100,'ふつう。'),v(200,100,'えっ？')]};
+          return {m:A.planStills(p,'markers',6), e:A.planStills(p,'even',3), s:A.planStills(p,'strong',6), s1:A.planStills(p,'strong',1), empty:A.planStills({...p,clips:[]},'even',3), many:A.planStills(p,'even',9999).length}}""")
+        check("サムネイル候補：マーカー（外れは最後のコマに、同じ位置は 1 つ）・等間隔・「！」「？」で終わるセリフの途中。多ければ間引く", r['m'] == [10, 50, 299] and r['e'] == [50, 150, 250] and r['s'] == [40, 240] and len(r['s1']) == 1 and r['empty'] == [] and r['many'] == 60, str(r))
+        # ── しゃべる人へのズーム
+        r = await q.evaluate(r"""async()=>{const C=await import('/src/autoCamera.ts'); const s=await import('/src/store.ts');
+          const v=(start,duration,characterId)=>({type:'voice',start,duration,characterId,text:'あ'});
+          const ch=(id,x,visible)=>({id,portrait:{visible,transform:{x,y:0,scale:1,opacity:1}}});
+          const p={video:{width:1920,height:1080,fps:30}, characters:[ch('a',100,true),ch('b',-100,true),ch('c',0,false),ch('d',900,true)],
+            clips:[v(0,30,'a'),v(30,30,'a'),v(60,60,'b'),v(120,15,'a'),v(135,165,'c'),v(300,60,'d')]};
+          const runs=C.planSpeakerZoom(p,{scale:1.2,minFrames:30,ease:12});
+          const an=C.zoomAnim(runs[0]);
+          const tiny=C.zoomAnim({...runs[0],duration:9});
+          // 置く：前に自動で置いたものは入れ替え、消せる
+          const cams=()=>s.getState().project.clips.filter(c=>c.id.startsWith('cz')&&c.control?.kind==='camera');
+          const n0=s.getState().project.clips.length;
+          const n1=s.placeSpeakerCameras(runs); const a=cams();
+          const n2=s.placeSpeakerCameras(runs.slice(0,2)); const b=cams();
+          s.placeSpeakerCameras([]); const c=cams();
+          return {runs:runs.map(r=>[r.characterId,r.start,r.duration,r.zoom.x,r.zoom.scale]), keys:an.keys.map(k=>[+k.at.toFixed(3),k.transform.x,k.transform.scale]), tiny:tiny.keys.map(k=>+k.at.toFixed(3)), n1, a:a.length, sameTrack:new Set(a.map(x=>x.trackId)).size===1, n2, b:b.length, c:c.length, added:s.getState().project.clips.length-n0, anim:a[0].look.anim.keys.length}}""")
+        check("ズーム：立ち絵のあるキャラクターが続けて話す間を 1 区間に（短い区間・立ち絵なしは除く）。寄せる量は横だけで、画面の外が見えない範囲まで", r['runs'] == [['a', 0, 60, 120, 1.2], ['b', 60, 60, -120, 1.2], ['d', 300, 60, 192, 1.2]], str(r))
+        check("ズーム：区間のはじめに寄って、終わりに戻る（短い区間でも収まる）", r['keys'] == [[0.2, 120, 1.2], [0.8, 120, 1.2]] and r['tiny'] == [0.333, 0.667], str(r))
+        check("ズームを置く：いちばん上の 1 つのレイヤーにカメラを区間ごとに置き、置き直すと入れ替わり、消せる", r['n1'] == 3 and r['a'] == 3 and r['sameTrack'] and r['n2'] == 2 and r['b'] == 2 and r['c'] == 0 and r['added'] == 0 and r['anim'] == 2, str(r))
         # ── セリフの感情から表情を付ける
         r = await q.evaluate(r"""async()=>{const E=await import('/src/emotion.ts');
           const pt={psd:'x', expressions:[{name:'にっこり'},{name:'ぷんぷん（怒）'},{name:'しょんぼり'},{name:'びっくり'}]};
