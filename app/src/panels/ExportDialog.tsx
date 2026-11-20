@@ -14,6 +14,7 @@ import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {api, type Encoder, type ExportProgress, type ExportRequest} from '../ipc';
 import {planSplit} from '../autoSplit';
+import {removeExportPreset, saveExportPreset, useSavedExports} from '../exportPresets';
 import {collectCredits, framesToTimecode, overlappingLines, projectDuration, timecodeToFrames, ENGINE_LABEL, type Project} from '../model';
 import {getState, setState, useStore, type ExportJob} from '../store';
 import {cancelExport, exportSubtitles, openFile, pickExportPath, revealInFolder, runExport, type ExportKind} from '../actions';
@@ -159,6 +160,9 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
   const [splitLen, setSplitLen] = useState('');
   const [backdrop, setBackdrop] = useState<Backdrop>('fill');
   const [loudness, setLoudnessState] = useState<string>(readLoudness);
+  const mine = useSavedExports();
+  const [mineId, setMineId] = useState('');
+  const [mineName, setMineName] = useState('');
   const setLoudness = (v: string) => {
     setLoudnessState(v);
     try {
@@ -210,6 +214,16 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
     setQuality(pr.quality);
     setBackdrop('fill');
     setLoudnessState(pr.loudness);
+  };
+  const applyMine = (id: string) => {
+    setMineId(id);
+    const m = mine.find(x => x.id === id);
+    if (!m) return;
+    setWhat(m.what);
+    setHeight(heightFor(m.what, m.maxHeight));
+    setQuality(m.quality);
+    setBackdrop(m.what === 'video' ? m.backdrop : 'fill');
+    setLoudnessState(m.loudness);
   };
   // いまの設定がどの用途と同じか（どれとも違えば「自分で選ぶ」）
   const presetNow =
@@ -352,6 +366,34 @@ export function ExportDialog({isOpen, onOpenChange}: {isOpen: boolean; onOpenCha
                 onChange={id => applyPreset(id)}
                 width="100%"
               />
+              <VStack gap={2}>
+                {mine.length > 0 && (
+                  <HStack gap={2} vAlign="end">
+                    <Selector label="保存した設定" value={mineId} placeholder="選んで呼び出す" options={mine.map(x => ({value: x.id, label: x.name}))} onChange={applyMine} width="100%" />
+                    <Button
+                      label="消す"
+                      variant="ghost"
+                      isDisabled={!mine.some(x => x.id === mineId)}
+                      onClick={() => {
+                        removeExportPreset(mineId);
+                        setMineId('');
+                      }}
+                    />
+                  </HStack>
+                )}
+                <HStack gap={2} vAlign="end">
+                  <TextInput label="いまの設定に名前を付けて保存" placeholder="例：Shorts 用" value={mineName} onChange={setMineName} />
+                  <Button
+                    label="保存"
+                    variant="secondary"
+                    onClick={() => {
+                      const id = saveExportPreset(mineName, {what, maxHeight: height === 'same' ? 99999 : Number(height), quality, loudness, backdrop});
+                      setMineId(id);
+                      setMineName('');
+                    }}
+                  />
+                </HStack>
+              </VStack>
               {what !== 'subtitle' && (
                 <VStack gap={2}>
                   <Text type="label">書き出す範囲</Text>
