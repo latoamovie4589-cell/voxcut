@@ -31,11 +31,14 @@ import {
 import {bakeTalkBounce, ensurePeaks, mouthLevelsFor, type TalkMode} from './talkBounce';
 import {planBgm, planSe, type SeTrigger} from './autoSound';
 import {planSpeakerZoom} from './autoCamera';
+import {planShake, shakeKeys, type ShakeMode} from './autoShake';
+import {planArrange} from './autoArrange';
+import {planFit} from './autoFit';
 import {planTint, type TintTarget} from './autoTint';
 import {removeFillers} from './autoTidy';
 import type {GapRule} from './autoGap';
 import {coverPlacement, imagePlacement, MIXED_KINDS, planBackgroundSpans, planKeywordSpans, planTransitions, type ImagePos, type KeywordRule} from './autoScene';
-import {placeSceneBackgrounds, adjustGaps, capGaps, clearSubtitleTint, replaceLineTexts, tintSubtitles, placeSpeakerCameras, addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
+import {moveCharactersX, placeCameraRuns, setSubtitleSizes, placeSceneBackgrounds, adjustGaps, capGaps, clearSubtitleTint, replaceLineTexts, tintSubtitles, placeSpeakerCameras, addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -298,6 +301,51 @@ export function placeBackgroundsAuto(bgs: {path: string; width: number; height: 
 export function clearBackgroundsAuto(): void {
   placeSceneBackgrounds([]);
   notifyRef('自動の背景を消しました', 'info');
+}
+
+/** 強い感情のセリフの頭で、画面を揺らす（前に自動で置いたものは置き直す）。置いた数を返す */
+export function placeShakeAuto(mode: ShakeMode, frames: number, amp: number): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const runs = planShake(p, mode, frames, amp);
+  if (!runs.length) {
+    notifyRef('揺らすセリフがありません（「！」「？」で終わるセリフが必要です）', 'error');
+    return 0;
+  }
+  const n = placeCameraRuns('cs', runs.map(r => ({start: r.start, duration: r.duration, keys: shakeKeys(r), ease: 'linear' as const})));
+  notifyRef(`画面の揺れを ${n} か所に置きました（いちばん上のレイヤー）`, 'info');
+  return n;
+}
+
+/** 自動で置いた画面の揺れを消す */
+export function clearShakeAuto(): void {
+  placeCameraRuns('cs', []);
+  notifyRef('自動の画面の揺れを消しました', 'info');
+}
+
+/** 立ち絵を出しているキャラクターを、画面に均等に並べる。動かした人数を返す */
+export function arrangeAuto(span: number, onlyAppearing: boolean): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const items = planArrange(p, span, onlyAppearing);
+  const n = moveCharactersX(items);
+  notifyRef(n ? `${n} 人の立ち位置を並べ直しました` : '並べ直す立ち絵がありません（もう並んでいるか、立ち絵が表示されていません）', n ? 'info' : 'error');
+  return n;
+}
+
+/** 行が多すぎる字幕を、文字の大きさを下げて画面に収める。変えたキャラクターの数を返す */
+export function fitSubtitlesAuto(maxLines: number, minSize: number): number {
+  const p = getState().project;
+  if (!p) return 0;
+  const plan = planFit(p, maxLines, minSize);
+  if (!plan.length) {
+    notifyRef('文字の大きさを変えて収められる字幕はありません', 'error');
+    return 0;
+  }
+  setSubtitleSizes(plan.map(f => ({characterId: f.characterId, size: f.to})));
+  const left = plan.reduce((a, f) => a + f.left, 0);
+  notifyRef(`${plan.length} 人の字幕の文字を小さくしました${left ? `。まだ収まらないセリフが ${left} 個あります（セリフを分けてください）` : ''}`, left ? 'error' : 'info');
+  return plan.length;
 }
 
 /** しゃべる人へのズームを置く（前に自動で置いたものは置き直す）。置いた数を返す */

@@ -12,6 +12,7 @@ import type {
   CaptionClip,
   Character,
   AnimMid,
+  Ease,
   Transition,
   Control,
   PortraitClip,
@@ -155,6 +156,7 @@ export interface State {
   autoSceneOpen: boolean;
   autoFinishOpen: boolean;
   autoTidyOpen: boolean;
+  autoCheckOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
   /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
@@ -241,6 +243,7 @@ let state: State = {
   autoSceneOpen: false,
   autoFinishOpen: false,
   autoTidyOpen: false,
+  autoCheckOpen: false,
   unsavedAsk: false,
   openSeq: 0,
   historyFlash: null,
@@ -1535,9 +1538,17 @@ export function addControl(kind: Control['kind'], effects?: Effect[]): string | 
  * 前に自動で置いたもの（id が cz で始まる）は消して置き直す。1 回の「元に戻す」で全部戻る。置いた数を返す
  */
 export function placeSpeakerCameras(runs: ZoomRun[]): number {
+  return placeCameraRuns('cz', runs.map(r => ({start: r.start, duration: r.duration, keys: zoomAnim(r).keys, ease: 'smooth'})));
+}
+
+/**
+ * カメラ（制御アイテム）を区間ごとに置く。id が prefix で始まる前の自動のカメラは消して置き直す。
+ * いちばん上のレイヤーが空ならそこへ、そうでなければ新しいレイヤーをいちばん上に足す。置いた数を返す
+ */
+export function placeCameraRuns(prefix: string, runs: {start: number; duration: number; keys: AnimMid[]; ease: Ease}[]): number {
   const p = state.project;
   if (!p) return 0;
-  const old = (c: Clip) => c.id.startsWith('cz') && 'control' in c && c.control?.kind === 'camera';
+  const old = (c: Clip) => c.id.startsWith(prefix) && 'control' in c && c.control?.kind === 'camera';
   const ids: string[] = [];
   commit(pr => {
     const keep = pr.clips.filter(c => !old(c));
@@ -1554,9 +1565,8 @@ export function placeSpeakerCameras(runs: ZoomRun[]): number {
       top = nt;
     }
     const clips: Clip[] = runs.map(r => {
-      const id = newId('cz');
+      const id = newId(prefix);
       ids.push(id);
-      const {keys} = zoomAnim(r);
       return {
         id,
         trackId: top!.id,
@@ -1570,7 +1580,7 @@ export function placeSpeakerCameras(runs: ZoomRun[]): number {
         stroke: '',
         strokeWidth: 0,
         transform: {x: 0, y: 0, scale: 1, opacity: 1},
-        look: {...plainLook(), anim: {to: {x: 0, y: 0, scale: 1, opacity: 1}, rotation: 0, ease: 'smooth', keys}},
+        look: {...plainLook(), anim: {to: {x: 0, y: 0, scale: 1, opacity: 1}, rotation: 0, ease: r.ease, keys: r.keys}},
         control: {kind: 'camera', layers: 1},
       } as Clip;
     });
@@ -1578,6 +1588,22 @@ export function placeSpeakerCameras(runs: ZoomRun[]): number {
   });
   setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1}));
   return ids.length;
+}
+
+/** 立ち絵の横の位置をまとめて変える（立ち位置の整列） */
+export function moveCharactersX(items: {characterId: string; x: number}[]): number {
+  if (!items.length) return 0;
+  const m = new Map(items.map(a => [a.characterId, a.x]));
+  commit(p => ({...p, characters: p.characters.map(c => (m.has(c.id) && c.portrait ? {...c, portrait: {...c.portrait, transform: {...c.portrait.transform, x: m.get(c.id)!}}} : c))}));
+  return items.length;
+}
+
+/** キャラクターの字幕の文字の大きさをまとめて変える（字幕を画面に収める） */
+export function setSubtitleSizes(items: {characterId: string; size: number}[]): number {
+  if (!items.length) return 0;
+  const m = new Map(items.map(a => [a.characterId, a.size]));
+  commit(p => ({...p, characters: p.characters.map(c => (m.has(c.id) ? {...c, subtitle: {...c.subtitle, fontSize: m.get(c.id)!}} : c))}));
+  return items.length;
 }
 
 /** 新しいシーンを作って開く（レイヤー 2 つ） */
