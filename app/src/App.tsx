@@ -66,6 +66,7 @@ import {ProjectSettingsDialog} from './panels/ProjectSettingsDialog';
 import {AutoSoundDialog} from './panels/AutoSoundDialog';
 import {AutoSceneDialog} from './panels/AutoSceneDialog';
 import {AutoFinishDialog} from './panels/AutoFinishDialog';
+import {AutoTidyDialog} from './panels/AutoTidyDialog';
 import {UnsavedDialog} from './panels/UnsavedDialog';
 import {toggleFullscreen} from './preview/PreviewControls';
 import './app.css';
@@ -311,7 +312,8 @@ function MenuBar({notify, openSettings, openExport}: {notify: Notify; openSettin
         <DropdownMenuItem label="素材の場所と整理…" description="見つからない素材をつなぎ直す・1 つのフォルダに集める" onClick={() => setState({mediaOpen: true})} />
         <DropdownMenuDivider />
         <DropdownMenuItem label="BGM・効果音を自動で置く…" description="BGM を全体に敷く／マーカーや「？」「！」のセリフに効果音" onClick={() => setState({autoSoundOpen: true})} />
-        <DropdownMenuItem label="切り替え・画像を自動で置く…" description="つなぎ目の切り替えをまとめて付ける／言葉に合わせて画像を出す" onClick={() => setState({autoSceneOpen: true})} />
+        <DropdownMenuItem label="切り替え・画像・背景を自動で置く…" description="つなぎ目の切り替えをまとめて付ける／言葉に合わせて画像を出す" onClick={() => setState({autoSceneOpen: true})} />
+        <DropdownMenuItem label="言いよどみ・字幕の色を自動で…" description="言いよどみを取り除く／長い間を詰める／字幕を感情ごとの色にする" isDisabled={empty} onClick={() => setState({autoTidyOpen: true})} />
         <DropdownMenuItem label="間・ズーム・サムネイルを自動で…" description="セリフの間を整える／しゃべる人へズーム／サムネイル候補をまとめて書き出す" isDisabled={empty} onClick={() => setState({autoFinishOpen: true})} />
         <DropdownMenuItem label="プロジェクトの設定…" description="動画の大きさ（縦長のショートも）・fps・背景色" onClick={() => setState({projectSettingsOpen: true})} />
         <DropdownMenuItem label="合成ソフトの設定…" onClick={openSettings} />
@@ -805,6 +807,7 @@ export function App() {
       <AutoSoundDialog />
       <AutoSceneDialog />
       <AutoFinishDialog notify={notify} />
+      <AutoTidyDialog />
       <UnsavedDialog />
       <ExportDialog isOpen={exportOpen} onOpenChange={setExportOpen} />
       <PasteScriptDialog notify={notify} />

@@ -93,3 +93,26 @@ export function imagePlacement(frame: {width: number; height: number}, img: {wid
   const y = pos === 'bottomRight' || pos === 'bottomLeft' ? dy : pos === 'topRight' || pos === 'topLeft' ? -dy : 0;
   return {x: Math.round(x), y: Math.round(y), scale: Number(scale.toFixed(4))};
 }
+
+/** 背景を切り替える区間：マーカー（チャプター）で区切る（頭から最初のマーカー、マーカーどうしの間、最後のマーカーから終わり）か、一定のコマ数ごと */
+export function planBackgroundSpans(p: Project, mode: 'markers' | 'every', every: number): {start: number; duration: number}[] {
+  const total = p.clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
+  if (total <= 0) return [];
+  let cuts: number[];
+  if (mode === 'markers') cuts = [...new Set([0, ...(p.markers ?? []).map(m => m.frame).filter(f => f > 0 && f < total), total])].sort((a, b) => a - b);
+  else {
+    const n = Math.max(1, Math.round(every));
+    cuts = [];
+    for (let f = 0; f < total; f += n) cuts.push(f);
+    cuts.push(total);
+  }
+  return cuts
+    .slice(1)
+    .map((e, i) => ({start: cuts[i], duration: e - cuts[i]}))
+    .filter(s => s.duration > 0);
+}
+
+/** 画面いっぱいに敷く（余白ができないように大きいほうに合わせる）画像の位置 */
+export function coverPlacement(frame: {width: number; height: number}, img: {width: number; height: number}): {x: number; y: number; scale: number} {
+  return {x: 0, y: 0, scale: Number(Math.max(frame.width / img.width, frame.height / img.height).toFixed(4))};
+}

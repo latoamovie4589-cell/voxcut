@@ -25,6 +25,7 @@ import type {
   ShapeKind,
   Track,
   Transform,
+  SubtitleCustom,
   VisualClip,
   VoiceClip,
   VoiceInfo,
@@ -34,6 +35,7 @@ import type {
 import {autoExpression} from './emotion';
 import {splitLongText} from './script';
 import {gapFor, type GapRule} from './autoGap';
+import {autoTinted} from './autoTint';
 import {zoomAnim, type ZoomRun} from './autoCamera';
 import type {DictEntry, ExportRequest, MediaInfo} from './ipc';
 import type {GroupItem} from './templates';
@@ -152,6 +154,7 @@ export interface State {
   autoSoundOpen: boolean;
   autoSceneOpen: boolean;
   autoFinishOpen: boolean;
+  autoTidyOpen: boolean;
   /** 保存していない変更があるときの「保存して続ける／保存しない／キャンセル」 */
   unsavedAsk: boolean;
   /** プロジェクトを開いた回数（開いたときに全体が見える拡大率にするため） */
@@ -237,6 +240,7 @@ let state: State = {
   autoSoundOpen: false,
   autoSceneOpen: false,
   autoFinishOpen: false,
+  autoTidyOpen: false,
   unsavedAsk: false,
   openSeq: 0,
   historyFlash: null,
@@ -696,6 +700,45 @@ export function setGapForSelection(gapAfter: number) {
   if (!ids.size) return 0;
   commit(p => reflowAll({...p, clips: p.clips.map(c => (ids.has(c.id) && c.type === 'voice' ? {...c, gapAfter: Math.max(0, Math.round(gapAfter))} : c))}));
   return ids.size;
+}
+
+/** 字幕の色分け：セリフの字幕を「個別に設定」にして色を付ける（前に自動で付けたものは付け直す） */
+export function tintSubtitles(items: {id: string; custom: SubtitleCustom}[]): number {
+  if (!items.length) return 0;
+  const m = new Map(items.map(x => [x.id, x.custom]));
+  commit(p => ({...p, clips: p.clips.map(c => (c.type === 'voice' && m.has(c.id) ? {...c, subtitleCustom: m.get(c.id)!} : c))}));
+  return items.length;
+}
+
+/** 自動で付けた字幕の色を、キャラクターの字幕設定に戻す。戻したセリフの数を返す */
+export function clearSubtitleTint(): number {
+  const p = state.project;
+  if (!p) return 0;
+  const ids = new Set(autoTinted(p));
+  if (!ids.size) return 0;
+  commit(pr => ({...pr, clips: pr.clips.map(c => (c.type === 'voice' && ids.has(c.id) ? {...c, subtitleCustom: null} : c))}));
+  return ids.size;
+}
+
+/** セリフの言葉を入れ替える（言いよどみを取り除くなど）。字幕は文に合わせ直し、声は作り直しになる */
+export function replaceLineTexts(items: {id: string; text: string}[]): number {
+  if (!items.length) return 0;
+  const m = new Map(items.map(x => [x.id, x.text]));
+  commit(p => invalidateChangedVoices(p, {...p, clips: p.clips.map(c => (c.type === 'voice' && m.has(c.id) ? {...c, text: m.get(c.id)!, subtitle: null} : c))}));
+  return items.length;
+}
+
+/** 長すぎる間を上限にそろえる（選んだセリフ、または全部。鍵のかかったレイヤーは除く）。変えた数を返す */
+export function capGaps(max: number, all: boolean): number {
+  const p = state.project;
+  if (!p) return 0;
+  const locked = new Set(p.tracks.filter(t => t.locked).map(t => t.id));
+  const cap = Math.max(0, Math.round(max));
+  const picked = (all ? p.clips : editableSelection()).filter((c): c is VoiceClip => c.type === 'voice' && !locked.has(c.trackId) && c.gapAfter > cap);
+  if (!picked.length) return 0;
+  const ids = new Set(picked.map(c => c.id));
+  commit(pr => reflowAll({...pr, clips: pr.clips.map(c => (c.type === 'voice' && ids.has(c.id) ? {...c, gapAfter: cap} : c))}));
+  return picked.length;
 }
 
 /**
@@ -2133,6 +2176,52 @@ export function applyTransitions(items: {id: string; transition: Transition}[]):
     }),
   }));
   return items.length;
+}
+
+/**
+ * 場面ごとの背景（画像）を、いちばん奥のレイヤーに置く。前に自動で置いたもの（id が bg で始まる）は消して置き直す。
+ * いちばん奥のレイヤーが空（か前の自動の背景だけ）ならそこへ、そうでなければ新しいレイヤーをいちばん奥に足す。置いた数を返す
+ */
+export function placeSceneBackgrounds(items: {path: string; info: MediaInfo; start: number; duration: number; place: {x: number; y: number; scale: number}; transition?: Transition | null}[]): number {
+  const p0 = state.project;
+  if (!p0) return 0;
+  const isAuto = (c: Clip) => c.id.startsWith('bg') && c.type === 'media';
+  const ids: string[] = [];
+  commit(pr => {
+    const keep = pr.clips.filter(c => !isAuto(c));
+    if (!items.length) return {...pr, clips: keep};
+    let tracks = pr.tracks;
+    let characters = pr.characters;
+    const bottom = tracks[0];
+    if (!bottom || bottom.locked || keep.some(c => c.trackId === bottom.id)) {
+      const nt = newLayer(newId('V'), 'video');
+      tracks = [nt, ...tracks];
+      const bump = (n?: number | null) => (n ? n + 1 : n);
+      characters = characters.map(c => ({...c, layer: bump(c.layer), audioLayer: bump(c.audioLayer)}));
+    }
+    const trackId = tracks[0].id;
+    const clips: Clip[] = items.map((it, i) => {
+      const id = newId('bg');
+      ids.push(id);
+      return {
+        id,
+        trackId,
+        start: it.start,
+        duration: it.duration,
+        type: 'media',
+        src: it.path,
+        mediaKind: 'image',
+        hasAudio: false,
+        inPoint: 0,
+        volume: 1,
+        transform: {x: it.place.x, y: it.place.y, scale: it.place.scale, opacity: 1},
+        ...(it.transition && i > 0 ? {look: {...plainLook(), transition: it.transition}} : {}),
+      } as MediaClip;
+    });
+    return {...pr, tracks, characters, clips: [...keep, ...clips]};
+  });
+  setState(s => ({selectedClipId: ids[0] ?? null, revealSeq: s.revealSeq + 1, media: {...s.media, ...Object.fromEntries(items.map(it => [it.path, it.info]))}}));
+  return ids.length;
 }
 
 /**

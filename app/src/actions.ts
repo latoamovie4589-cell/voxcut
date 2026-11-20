@@ -2,7 +2,7 @@
 
 import {parseSubtitles} from './srt';
 import {api, type AiProgress, type ExportProgress, type ExportRequest, type MediaInfo} from './ipc';
-import type {EngineId, Portrait, Project, TransitionKind, VoiceClip} from './model';
+import type {EngineId, Portrait, Project, Transition, TransitionKind, VoiceClip} from './model';
 import {
   ENGINE_LABEL,
   effectiveVoice,
@@ -31,9 +31,11 @@ import {
 import {bakeTalkBounce, ensurePeaks, mouthLevelsFor, type TalkMode} from './talkBounce';
 import {planBgm, planSe, type SeTrigger} from './autoSound';
 import {planSpeakerZoom} from './autoCamera';
+import {planTint, type TintTarget} from './autoTint';
+import {removeFillers} from './autoTidy';
 import type {GapRule} from './autoGap';
-import {imagePlacement, MIXED_KINDS, planKeywordSpans, planTransitions, type ImagePos, type KeywordRule} from './autoScene';
-import {adjustGaps, placeSpeakerCameras, addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
+import {coverPlacement, imagePlacement, MIXED_KINDS, planBackgroundSpans, planKeywordSpans, planTransitions, type ImagePos, type KeywordRule} from './autoScene';
+import {placeSceneBackgrounds, adjustGaps, capGaps, clearSubtitleTint, replaceLineTexts, tintSubtitles, placeSpeakerCameras, addCaptionClips, applyTransitions, placeAudioItems, placeKeywordImages, cutRanges, addCharacterFrom, addMediaClips, commit, getState, relinkPaths, resizeVideo, replaceProject, setState, splitClip} from './store';
 import {forget, stop} from './preview/playback';
 
 /** key を付けると同じ種類の通知を置き換え、clearNotice(key) で消せる */
@@ -223,6 +225,79 @@ export function adjustGapsAuto(rule: GapRule, all: boolean): number {
   const n = adjustGaps(rule, all);
   notifyRef(n ? `${n} 行の後ろの間を変えました（声は作り直さなくて大丈夫です）` : all ? '変わるセリフがありません' : '変わる選んだセリフがありません（セリフを選んでください）', n ? 'info' : 'error');
   return n;
+}
+
+/** 字幕を、感情ごとの色にする（選んだセリフだけ、または全部）。付けた数を返す */
+export function tintSubtitlesAuto(target: TintTarget, all: boolean): number {
+  const s = getState();
+  if (!s.project) return 0;
+  const items = planTint(s.project, target, all ? null : s.selectedClipIds);
+  if (!items.length) {
+    notifyRef(all ? '色を付けられるセリフがありません（感情が分かる言葉か、声の感情の設定があるセリフが必要です）' : '選んだセリフに、色を付けられるものがありません', 'error');
+    return 0;
+  }
+  tintSubtitles(items);
+  notifyRef(`${items.length} 行の字幕に色を付けました`, 'info');
+  return items.length;
+}
+
+/** 自動で付けた字幕の色を、キャラクターの設定に戻す */
+export function clearTintAuto(): void {
+  const n = clearSubtitleTint();
+  notifyRef(n ? `${n} 行の字幕の色を戻しました` : '自動で付けた色はありません', n ? 'info' : 'error');
+}
+
+/** 言いよどみを取り除く（選んだセリフだけ、または全部）。声は作り直しになる。取り除いた行の数を返す */
+export function removeFillersAuto(all: boolean): number {
+  const s = getState();
+  if (!s.project) return 0;
+  const locked = new Set(s.project.tracks.filter(t => t.locked).map(t => t.id));
+  const ids = all ? null : s.selectedClipIds;
+  const items: {id: string; text: string}[] = [];
+  for (const c of s.project.clips) {
+    if (c.type !== 'voice' || locked.has(c.trackId) || (ids && !ids.includes(c.id))) continue;
+    const r = removeFillers(c.text);
+    if (r.removed.length) items.push({id: c.id, text: r.text});
+  }
+  if (!items.length) {
+    notifyRef(all ? '取り除ける言いよどみ（「えーと、」「あの、」など）がありません' : '選んだセリフに、取り除ける言いよどみがありません', 'error');
+    return 0;
+  }
+  replaceLineTexts(items);
+  notifyRef(`${items.length} 行から言いよどみを取り除きました（声は作り直しになります）`, 'info');
+  return items.length;
+}
+
+/** 長すぎる間を上限にそろえる */
+export function capGapsAuto(maxFrames: number, all: boolean): number {
+  const n = capGaps(maxFrames, all);
+  notifyRef(n ? `${n} 行の長い間を詰めました` : '詰める間がありません', n ? 'info' : 'error');
+  return n;
+}
+
+/** 場面ごとに、用意した背景を順番に敷く（前に自動で置いたものは置き直す）。置いた数を返す */
+export function placeBackgroundsAuto(bgs: {path: string; width: number; height: number}[], mode: 'markers' | 'every', every: number, transition: Transition | null): number {
+  const p = getState().project;
+  if (!p || !bgs.length) return 0;
+  const spans = planBackgroundSpans(p, mode, every);
+  if (!spans.length) {
+    notifyRef('背景を置く区間がありません（セリフなどを置いてください）', 'error');
+    return 0;
+  }
+  const items = spans.map((sp, i) => {
+    const b = bgs[i % bgs.length];
+    const t = transition && transition.frames > 0 ? {...transition, frames: Math.max(1, Math.min(transition.frames, sp.duration, spans[i - 1]?.duration ?? sp.duration))} : null;
+    return {path: b.path, info: {kind: 'image', hasAudio: false, durationMs: null, width: b.width, height: b.height} as MediaInfo, ...sp, place: coverPlacement(p.video, b), transition: t};
+  });
+  const n = placeSceneBackgrounds(items);
+  notifyRef(`背景を ${n} か所に置きました（いちばん奥のレイヤー）`, 'info');
+  return n;
+}
+
+/** 自動で置いた背景を消す */
+export function clearBackgroundsAuto(): void {
+  placeSceneBackgrounds([]);
+  notifyRef('自動の背景を消しました', 'info');
 }
 
 /** しゃべる人へのズームを置く（前に自動で置いたものは置き直す）。置いた数を返す */
